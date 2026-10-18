@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1, 2, 3a and 3b built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 to 3 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace, with the rebuild and setup primitives unwired): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -16,9 +16,11 @@ Steps 1 and 2 of the Cost section's sequence are built: a config home and
 working directory per conversation, with `cwd` on launch, on today's
 one-conversation machines (step 1); and the `workspaces` table, with an
 implicit workspace beside every live sandbox, which nothing reads yet
-(step 2). So are step 3's first two PRs: the lease columns on `workspaces`
-(3a), and the owner registered, locked and leased by workspace (3b), with
-0058 amended to say so. The rest is not built; the Cost section sets out the
+(step 2); and step 3, in three PRs: the lease columns on `workspaces` (3a),
+the owner registered, locked and leased by workspace (3b), with 0058 amended
+to say so, and the rebuild of a lost machine under that owner and the seam
+for an owner to set a machine up with no conversation (3c), neither of which
+anything calls yet. The rest is not built; the Cost section sets out the
 work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
@@ -622,3 +624,18 @@ A PR sequence, each releasable alone:
   busy; every new sandbox must name a workspace.
   Every message to an owner now names its sandbox, so a message in an earlier
   release's shape is refused by the rollout clause.
+- 2026-10-18 — Step 3c built, unwired: `Machines.Provision.rebuild/3`
+  (`Machine.rebuild/3`) retires a lost machine's row and inserts the next in
+  the same workspace in one commit under one epoch (`Lease.succeed/3`,
+  inside the fleet reservation), stamps the workspace `provisioning`
+  (`rebuild`), and builds the new row in the same bracket a provision uses,
+  so no second owner claims it; and `Machines.Setup`, the machine-level steps
+  (env file, packages, repositories, setup script) as one implementation a
+  conversation's provision runs and an owner can run with no conversation
+  (`Machine.set_up/3`). A workspace's transition belongs to its current
+  sandbox: a retired one beside a live successor reads none and its writes
+  leave the workspace's alone. The wake still gives a fresh sandbox a fresh
+  workspace: keeping the conversation's workspace across a loss needs the
+  conversations to follow the rebuilt machine, which is step 4's. What
+  network a conversation-less setup runs under (today the floor and the
+  broker CA are a conversation's) is step 5's.

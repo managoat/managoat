@@ -78,6 +78,9 @@ defmodule Fountain.Conversations.StageOutput do
   def tail(%__MODULE__{tail: tail}), do: tail
 
   defp write(s, ""), do: s
+  # A step run with no conversation (`Fountain.Machines.Setup`) keeps only
+  # its tail, for the error that quotes it.
+  defp write(%{ctx: %{conversation_id: nil}} = s, _data), do: s
   defp write(s, data), do: %{s | output: Output.log(s.output, s.ctx, "stdout", data)}
 
   defp keep_tail(bin) when byte_size(bin) > @tail_bytes,
