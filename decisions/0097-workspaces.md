@@ -1,23 +1,19 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Unbuilt: a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds, and an explicit one parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Unbuilt: a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
-status: draft
+status: stable
 adr: "0097"
-adr_status: "Proposed"
+adr_status: "Accepted"
 date: 2026-10-18
 ---
 
 # 0097 — A workspace owns the sandbox, and conversations run in it
 
-**Status:** Proposed, 2026-10-18. Nothing here is built. The design points
-were chosen by the maintainer, including six calls made in review on
-2026-10-18 (the ceiling interrupts running turns and parks an explicit
-workspace, no cap or retention bounds parked ones, the owner is keyed by
-workspace, a delete terminates live conversations, gemini's config home);
-the calls still marked **(open)** were made while drafting and are his to
-confirm. If accepted, it amends
+**Status:** Accepted, 2026-10-18, by the maintainer, in review on #2984.
+Nothing here is built; the Cost section sets out the work and its order. It
+amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -77,7 +73,21 @@ as its sandbox, with the environment and vault the launch resolved as it does
 today, and destroyed with the conversation. So there is one lifecycle owner
 everywhere, and today's behaviour is the implicit case. Implicit workspaces
 are marked as such and are not listed by `GET /api/workspaces` unless asked
-**(open)**.
+(`?implicit=true`).
+
+### The workspace API
+
+`POST /api/workspaces` (`environment_id`, `vault_id`, `name`, optional
+`sandbox_provider`) creates an explicit workspace and starts provisioning
+it at once: it answers `201` with `status: "provisioning"`. A workspace
+carries a `status` of `provisioning`, `ready` or `failed`, with an `error`
+when `failed` (redacted like the transcript), on `GET /api/workspaces` and
+`GET /api/workspaces/:id`, beside its current sandbox's own status
+(`ready`, `suspended`, or none after a loss). Each status change is a
+`workspace.status` event on the account event stream. A create when the
+fleet ceiling is full is refused with the launch's `503 fleet_full`.
+`DELETE /api/workspaces/:id` deletes it (see Lifecycle). Create and delete
+are audited in the context, with the caller, outside any transaction.
 
 ### Launching into a workspace
 
@@ -88,19 +98,20 @@ are marked as such and are not listed by `GET /api/workspaces` unless asked
   instructions and permission policy; the environment and vault come from
   the workspace. A launch that also names an `environment_id` or `vault_id`
   different from the workspace's is refused with
-  `422 workspace_fixes_environment` **(open)**. The agent's
+  `422 workspace_fixes_environment`. The agent's
   `allowed_environment_ids` and vault allowlist still apply to the
-  workspace's environment and vault **(open)**, and the agent's
-  `sandbox_provider` is not consulted: the workspace's provider wins
-  **(open)**. A workspace that is not the caller's is `404 not_found`.
+  workspace's environment and vault, and the agent's `sandbox_provider` is
+  not consulted: the workspace's provider wins. A workspace that is not the
+  caller's is `404 not_found`. A launch into a workspace that is still
+  `provisioning` is accepted, and its first prompt waits for `ready`.
 - `cwd`: an absolute path the conversation's agent runs in, fixed for the
   conversation's life. Today `Fountain.RuntimeDispatch.cwd/1` fixes it per
   runtime; that stays the default. The path must lie under `/home/sprite`
-  (or the runtime's own home, for gemini's `/tmp`) and is created if missing
-  **(open)**. It is accepted with or without a workspace.
+  (for gemini, also under `/tmp`, where its default working directory is)
+  and is created if missing. It is accepted with or without a workspace.
 
 `sandbox_id` keeps its refusal, `422 sandbox_attach_unsupported`, with the
-message pointing at `workspace_id` **(open)**. A sandbox row is a
+message pointing at `workspace_id`. A sandbox row is a
 succession member of a workspace, not a handle a client should hold.
 
 A sandbox key (`sprite` scope) may not name a `workspace_id` and may not
@@ -151,7 +162,7 @@ process.
 ### Lifecycle
 
 - **Ending a conversation** (terminate, delete) stops its adapter process and
-  removes its config home **(open)**. The sandbox stays, unless the workspace
+  removes its config home. The sandbox stays, unless the workspace
   is implicit, in which case the workspace and its sandbox are destroyed as
   today.
 - **Deleting a workspace** terminates every live conversation on it
@@ -159,12 +170,26 @@ process.
   (`Machines.Destroy`), with one `sandbox.destroyed` and one
   `workspace.deleted` audit event carrying the caller. It is not refused
   while conversations are live.
-- **Provisioning is lazy.** Creating a workspace writes the row; the first
-  prompt of the first conversation on it provisions the sandbox from the
-  workspace's environment, and every later conversation attaches its adapter
-  to the running machine **(open: no eager provision on create)**. Two
-  conversations prompting a workspace with no sandbox provision it once; the
-  second waits, as two wakes resume once today.
+- **An explicit workspace is provisioned on create.** The workspace's owner
+  runs the machine-level steps itself, with no conversation involved:
+  create the machine, write the environment and vault, the broker CA and
+  relay, packages, repositories and the setup script. It sets `ready` or
+  `failed`. Every conversation then attaches its own steps (config home,
+  instructions, skills, MCP configuration, adapter) to the running machine.
+  A prompt into a `failed` workspace retries the provision; the prompt
+  waits for it and fails with it if it fails again. Two prompts into one
+  failed workspace retry it once; the second waits.
+- **A rebuild after a sandbox loss is lazy**: nothing provisions until the
+  next prompt in any of the workspace's conversations, which sets the
+  workspace back to `provisioning` (see Sandbox lost). Two prompts into a
+  workspace with no sandbox rebuild it once; the second waits, as two wakes
+  resume once today.
+- **An implicit workspace is unchanged**: its sandbox is provisioned with its
+  conversation, as today, and its status follows that provision.
+- A `ready` explicit workspace with no conversations is idle from the moment
+  it is ready, so the reaper parks it on the same idle bound as any other
+  (see Park). A workspace created and never used costs a provision and then
+  a parked machine.
 - **Park** happens when no conversation in the workspace has a running turn
   and the workspace has been idle for `SANDBOX_IDLE_TIMEOUT_MINUTES`, measured
   from the last turn end of any of its conversations. **Wake is lazy per
@@ -232,8 +257,7 @@ on any other it is `:detached`. `Machines.Occupancy`, which still reads a machin
 a set of conversations, becomes the real answer to "is anyone mid-turn" for
 the park. `machine_gone` tells every conversation bound to the machine.
 Admission does not cap turns per workspace; the fleet ceiling counts
-sandboxes, so a workspace is one however many conversations it runs
-**(open)**.
+sandboxes, so a workspace is one however many conversations it runs.
 
 ### Files
 
@@ -242,7 +266,7 @@ served at `/api/workspaces/:id/files`, `/file`, `/diff` and `/git-status`,
 resolving to the workspace's current sandbox, full scope only, with the same
 admission, bounds and never-resume rule. A relative path resolves from
 `/home/sprite`, and the confinement roots are `/home/sprite` and the `cwd` of
-every live conversation on the workspace **(open)**. Redaction covers the
+every live conversation on the workspace. Redaction covers the
 workspace's environment and vault plus whatever every live conversation on it
 registered. The `/api/sandboxes/:id` routes stay.
 
@@ -264,7 +288,7 @@ hostile process. This is accepted, not mitigated:
   (today `launch.ex` refuses it with a caller-chosen machine name, #1632).
   So `workspace_id` with `"none"` is refused with
   `422 invalid_sandbox_api_access`, and `"none"` exists only on an implicit
-  workspace **(open: refuse, rather than allow and document)**.
+  workspace.
 - The broker's placeholders hold ([0019](0019-egress-credential-brokerage.md)):
   the sandbox still holds no real outbound credential, but each
   conversation's proxy session token is readable by the others.
@@ -282,14 +306,16 @@ A caller who wants isolation launches without a `workspace_id`.
 ### Data
 
 A `workspaces` table (`user_id`, `environment_id`, `vault_id`, `provider`,
-`name`, `implicit`), `sandboxes.workspace_id` with a partial unique index on
+`name`, `implicit`, `status`, `error`, and the lease columns),
+`sandboxes.workspace_id` with a partial unique index on
 the non-terminal row, and `conversations.workspace_id`. Deleting an
 environment or vault that a non-implicit workspace names is refused with
-`409` while the workspace exists **(open: today the foreign keys nilify)**.
+`409` while the workspace exists; today the foreign keys nilify, and they
+still do for implicit workspaces.
 The migration makes one implicit workspace per non-terminal sandbox, from the
 environment and vault of its conversation, and points the sandbox and the
-conversation at it; terminal sandbox rows keep a null `workspace_id`
-**(open)**.
+conversation at it, with the status its sandbox implies; terminal sandbox
+rows keep a null `workspace_id`.
 
 ### Naming
 
@@ -390,8 +416,10 @@ directory" or `cwd` when this is built.
 - `Machines.Occupancy` stops being degenerate, and the park reads it for real.
 - New API surface: `/api/workspaces` (create, list, show, delete, and the four
   file reads), two launch fields, the SDK and CLI for them, and a manual page.
-- Unbuilt, and not proposed here: eager provisioning on create, a workspace
-  setup step independent of any conversation, and copying a workspace.
+- Provisioning on create gives a workspace a setup step independent of any
+  conversation, run by its owner, so environment setup is paid once before
+  the first agent arrives rather than inside the first prompt. Not proposed
+  here: copying a workspace.
 
 ## Cost
 
@@ -410,13 +438,14 @@ one-agent-per-runtime rule have no code left to remove.
 | Schema, `Fountain.Workspaces` context, migration and backfill | 500–750 | 450–650 |
 | Machines: owner and lease moved to the workspace (registry key, advisory lock, epoch compare-and-set across two tables, boot sweep, `destroying` driver, reads admission), rebuild under one owner, `detach` keep rule | 1,800–3,100 | 3,800–4,400 |
 | Conversations: launch, split provision into machine and conversation steps, wake and re-provision across siblings, terminate, cwd | 900–1,600 | 2,000–3,500 |
+| Provision on create: the owner runs the machine-level steps without a conversation server, workspace status and error, the `workspace.status` event, retry on prompt | 250–450 | 450–750 |
 | Park, idle clock, the ceiling parking an explicit workspace, reaper | 200–400 | 450–800 |
 | Runtimes: layout from a config root, `skills_root/1`, Claude MCP config, per-conversation auth paths | 250–450 | 400–700 |
 | Skills record on the conversation | 100–200 | 250–400 |
 | Sandbox key rules | 60–150 | 200–350 |
 | Files routes by workspace | 80–160 | 200–350 |
 | API, schemas, SDK, CLI | 850–1,400 | 1,000–1,650 |
-| **Total** | **about 4.7k–8.2k** | **about 8.8k–12.8k** |
+| **Total** | **about 5.0k–8.7k** | **about 9.3k–13.6k** |
 
 Plus about 1–1.5k lines of manual. Keying the owner by workspace accounts
 for about 1.5–2.5k lib and 3k test lines of that: the machine layer
@@ -437,15 +466,17 @@ A PR sequence, each releasable alone:
    with the lease columns on `workspaces`, and nothing reads them yet.
 3. The owner and lease move to the workspace: registry key, advisory lock,
    compare-and-set, boot sweep, the `destroying` driver and reads admission,
-   with the migration carrying in-flight stamps. Implicit workspaces only, so
+   with the migration carrying in-flight stamps; the owner also learns to run
+   the machine-level provision steps itself. Implicit workspaces only, so
    there is one owner per conversation as today and behaviour is unchanged.
    Likely two or three PRs, as 0058's own stages were, each with adversarial
    review.
 4. The lifecycle reads the workspace: rebuild after a loss under the owner,
    `detach`, the idle clock, the ceiling's park for an explicit workspace,
    the reaper. Still unreachable without the API.
-5. `/api/workspaces`, `workspace_id` on launch, the sandbox-key and `none`
-   refusals, the file routes, the SDK regeneration.
+5. `/api/workspaces` with provision on create, status and its event,
+   `workspace_id` on launch, the sandbox-key and `none` refusals, the file
+   routes, the SDK regeneration.
 6. CLI and the manual page.
 
 ## Alternatives considered
@@ -486,6 +517,14 @@ A PR sequence, each releasable alone:
   a cost the operator already sees on the provider's bill.
 - **Attach by `sandbox_id`.** A sandbox row does not outlive a loss, so a
   client holding one would be stranded on the first provider death.
+- **Provisioning an explicit workspace lazily, on its first prompt.** Less
+  code, since the conversation server's pipeline already provisions, but the
+  caller asked for a machine set up from an environment and would learn
+  that setup failed only by prompting an agent into it, and the first agent
+  would pay the whole setup inside its first turn.
+- **Rebuilding eagerly after a loss.** It would spend a provision on a
+  workspace nobody may come back to; the next prompt is the first moment
+  anyone needs the machine.
 
 ## History
 
@@ -498,3 +537,17 @@ A PR sequence, each releasable alone:
   per-account workspace cap nor a retention bound on parked sandboxes
   ships, because Managoat is self-hosted and the operator watches provider
   storage.
+- 2026-10-18 — Accepted by the maintainer. He confirmed the remaining calls
+  as drafted: `422 workspace_fixes_environment`, the agent's allowlists
+  applying to the workspace's environment and vault, the workspace's
+  provider winning, `cwd` (absolute, under `/home/sprite` or gemini's own,
+  created if missing, with or without a workspace), `sandbox_id` keeping
+  its 422, implicit workspaces hidden unless asked, `"none"` refused on a
+  workspace, file-route roots, the config home removed when a conversation
+  ends, no per-workspace turn cap, `409` on deleting an environment or vault
+  an explicit workspace names, and the backfill of non-terminal sandboxes
+  only. He changed one: an explicit workspace is provisioned on create,
+  with a status (`provisioning`, `ready`, `failed` and an error) and a
+  `workspace.status` event, a prompt into a failed one retrying the
+  provision; a rebuild after a loss stays lazy, and implicit workspaces are
+  unchanged.
