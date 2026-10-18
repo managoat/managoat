@@ -179,6 +179,11 @@ defmodule Fountain.AuditGuardrailTest do
     "Fountain.Machines.Destroy.run/2 on a row whose user_id is nil" =>
       "account deletion nilifies user_id before its machines are torn down (#2329), so the " <>
         "destroy has no tenant to attribute; the deletion's own trail is the record of it",
+    "Workspaces.insert_implicit/1, settle_provision/1 and delete_for_account/1" =>
+      "an implicit workspace is made inside the launch's reservation transaction, where no " <>
+        "audit can be recorded, and only gives the launch's own sandbox an owner record; " <>
+        "conversation.created and sandbox.provisioned/provision_failed describe it, and " <>
+        "account.deleted records the account deletion that removes them (ADR 0097)",
     "Accounts.touch_api_key/1" => "a last-used stamp on every authenticated request",
     "ChatGPT.refresh/1 on success" =>
       "a token rotation keeps the subscription as it was; a refusal that revokes it is audited",

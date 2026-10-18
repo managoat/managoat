@@ -537,12 +537,28 @@ defmodule Fountain.Conversations.Launch do
         {:error, reason} -> Repo.rollback(reason)
       end
 
+      # The sandbox's implicit workspace (ADR 0097), from the same resolved
+      # environment, vault and provider as its row. Inserted here, before the
+      # fleet lock, so the global critical section is no longer than it was; a
+      # refused reservation rolls it back with everything else. A new row, so
+      # the live-workspace index cannot refuse the sandbox below.
+      workspace =
+        case Fountain.Workspaces.insert_implicit(sandbox_attrs) do
+          {:ok, workspace} -> workspace
+          {:error, reason} -> Repo.rollback(reason)
+        end
+
       result =
         Fountain.Quotas.with_sandbox_reservation([provider: sandbox_attrs.provider], fn ->
-          with {:ok, sandbox} <- Fountain.Machines.Provision.reserve(sandbox_attrs),
+          with {:ok, sandbox} <-
+                 Fountain.Machines.Provision.reserve(
+                   Map.put(sandbox_attrs, :workspace_id, workspace.id)
+                 ),
                {:ok, conv} <-
                  Conversations.insert_conversation_row(
-                   Map.put(conversation_attrs, :sandbox_id, sandbox.id)
+                   conversation_attrs
+                   |> Map.put(:sandbox_id, sandbox.id)
+                   |> Map.put(:workspace_id, workspace.id)
                  ),
                :ok <- reserve_inference(conv) do
             {:ok, {sandbox, conv}}

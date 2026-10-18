@@ -812,6 +812,7 @@ defmodule Fountain.Machines.Provision do
 
     case Lease.cas_update(sandbox.id, epoch, attrs, refuse_fenced: true) do
       {:ok, %Sandbox{} = ready} ->
+        :ok = Fountain.Workspaces.settle_provision(ready)
         audit(ready, "sandbox.provisioned", %{}, opts)
         {:ok, :provisioned, result}
 
@@ -892,6 +893,7 @@ defmodule Fountain.Machines.Provision do
 
     case Lease.cas_update(sandbox.id, epoch, attrs, []) do
       {:ok, %Sandbox{} = failed} ->
+        :ok = Fountain.Workspaces.settle_provision(failed)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 
@@ -1030,6 +1032,7 @@ defmodule Fountain.Machines.Provision do
 
     case outcome do
       {:ok, %Sandbox{} = failed} ->
+        :ok = Fountain.Workspaces.settle_provision(failed)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 
@@ -1046,6 +1049,14 @@ defmodule Fountain.Machines.Provision do
   end
 
   # ── after the finalize ────────────────────────────────────────────────────
+
+  # Each `ready` or `failed` this module commits is followed, outside the
+  # transaction and before the audit event, by
+  # `Fountain.Workspaces.settle_provision/1`: the sandbox's implicit workspace
+  # takes the provision's outcome (ADR 0097, step 2). Best effort and read by
+  # nothing yet. A sandbox retired before its provision settles — destroyed by
+  # a wake that lost the start race, say — leaves its workspace `provisioning`;
+  # no conversation points at that workspace.
 
   # One completed-operation event per owner verb is the pattern stages 5, 6 and
   # 7a set (`sandbox.destroyed`, `sandbox.suspended`, `sandbox.resumed`); these

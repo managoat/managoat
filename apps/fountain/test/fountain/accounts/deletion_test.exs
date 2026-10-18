@@ -67,6 +67,17 @@ defmodule Fountain.Accounts.DeletionTest do
       assert Repo.all(from k in Fountain.Accounts.ApiKey, where: k.user_id == ^user.id) == []
     end
 
+    test "the account's workspaces, leaving their sandboxes as history (ADR 0097)" do
+      user = insert_verified_user()
+      ws = insert_workspace(user_id: user.id)
+      sandbox = insert_sandbox(user_id: user.id, workspace_id: ws.id, status: "terminated")
+
+      capture_log(fn -> assert {:ok, _} = Deletion.delete_user(user) end)
+
+      refute Repo.get(Fountain.Workspaces.Workspace, ws.id)
+      assert %Sandbox{user_id: nil, workspace_id: nil} = Repo.get!(Sandbox, sandbox.id)
+    end
+
     test "the tenant's data encryption key" do
       # The crypto-shred. Every environment and vault secret is encrypted with
       # this key, so destroying it makes any ciphertext that outlives the

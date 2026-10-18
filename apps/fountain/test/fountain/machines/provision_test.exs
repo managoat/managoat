@@ -1132,6 +1132,63 @@ defmodule Fountain.Machines.ProvisionTest do
     Repo.delete!(user)
   end
 
+  # ── the implicit workspace (ADR 0097, step 2) ──────────────────────────────
+
+  describe "the sandbox's implicit workspace" do
+    setup ctx do
+      ws = insert_workspace(user_id: ctx.user.id)
+      stamp(ctx, workspace_id: ws.id)
+      {:ok, ws: ws}
+    end
+
+    test "takes ready when the provision finalizes", ctx do
+      stub_create(ctx)
+
+      assert {:ok, :provisioned, :built} =
+               Provision.run(ctx.sandbox.id, recording_pipeline(), opts())
+
+      assert Repo.reload!(ctx.ws).status == "ready"
+    end
+
+    test "takes failed when the pipeline fails", ctx do
+      stub_create(ctx)
+      stub(Managoat.Sandbox, :destroy, fn _ -> :ok end)
+
+      assert {:error, :apt_failed, :reached} =
+               answer(fn ->
+                 Provision.run(
+                   ctx.sandbox.id,
+                   fn _h, _e -> {:error, :apt_failed, :reached} end,
+                   opts()
+                 )
+               end)
+
+      assert Repo.reload!(ctx.ws).status == "failed"
+    end
+
+    test "takes failed when fail/2 retires the row, with or without :before_write", ctx do
+      assert {:ok, :failed} =
+               Provision.fail(ctx.sandbox.id,
+                 actor: "system:launch",
+                 reason: :server_start_failed,
+                 before_write: fn _ -> :ok end
+               )
+
+      assert Repo.reload!(ctx.ws).status == "failed"
+    end
+
+    test "stays provisioning when a before_write stands the retire down", ctx do
+      assert {:ok, :not_provisioning} =
+               Provision.fail(ctx.sandbox.id,
+                 actor: "system:launch",
+                 reason: :server_start_failed,
+                 before_write: fn _ -> :stale end
+               )
+
+      assert Repo.reload!(ctx.ws).status == "provisioning"
+    end
+  end
+
   # One task on a connection of its own, announcing its backend pid so the test
   # can watch what it holds.
   defp independent(fun) do

@@ -96,6 +96,13 @@ defmodule Fountain.Conversations.Sandbox do
     belongs_to :agent, Fountain.Agents.Agent
     belongs_to :vault, Fountain.Vaults.Vault
     belongs_to :user, User
+    # The workspace that owns this machine (ADR 0097). Every sandbox created
+    # since step 2 is born with an implicit one, in its reservation's
+    # transaction; a terminal row from before then has none. At most one
+    # non-terminal sandbox per workspace (`sandboxes_live_workspace_index`).
+    # Nilified when the workspace is deleted, as the row outlives its user.
+    # Nothing reads it yet.
+    belongs_to :workspace, Fountain.Workspaces.Workspace
     has_many :conversations, Conversation
     timestamps(type: :utc_datetime)
   end
@@ -118,7 +125,8 @@ defmodule Fountain.Conversations.Sandbox do
       :environment_id,
       :agent_id,
       :vault_id,
-      :user_id
+      :user_id,
+      :workspace_id
     ])
     |> validate_required([:machine_name, :status, :provider])
     |> validate_owner()
@@ -128,6 +136,11 @@ defmodule Fountain.Conversations.Sandbox do
       name: :sandboxes_live_machine_name_index,
       message: "is already assigned to a live sandbox on this provider"
     )
+    |> unique_constraint(:workspace_id,
+      name: :sandboxes_live_workspace_index,
+      message: "already has a live sandbox"
+    )
+    |> foreign_key_constraint(:workspace_id)
   end
 
   # Deleting a user nilifies `sandboxes.user_id` (the row is kept for billing
