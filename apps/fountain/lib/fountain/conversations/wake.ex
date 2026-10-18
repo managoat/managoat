@@ -868,6 +868,12 @@ defmodule Fountain.Conversations.Wake do
   defp unmark_waking(%Conversation{status: "pending"}, %Conversation{status: "pending"}), do: :ok
 
   defp unmark_waking(_marked, %Conversation{status: status} = conv) do
+    if ConversationServer.whereis(conv.id),
+      do: :ok,
+      else: restore_status(conv, status)
+  end
+
+  defp restore_status(conv, status) do
     # ownership: as above.
     Conversations.update_conversation(Conversations._unsafe_get_conversation!(conv.id), %{
       status: status

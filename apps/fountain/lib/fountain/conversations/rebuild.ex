@@ -120,9 +120,9 @@ defmodule Fountain.Conversations.Rebuild do
       # restarted onto a row its watchdog failed, with the conversation, must
       # not provision a second machine).
       conv.status in @terminal_statuses -> :none
+      conv.status != "pending" -> :none
       conv.sandbox_id != sandbox.id and moved_within?(conv, sandbox) -> :follow
       conv.sandbox_id != sandbox.id -> :none
-      conv.status != "pending" -> :none
       kept_workspace?(conv, sandbox, agent) -> :rebuild
       true -> :none
     end
@@ -148,11 +148,7 @@ defmodule Fountain.Conversations.Rebuild do
   @spec not_rebuilt(map(), map()) :: {:stop, :normal, map()}
   def not_rebuilt(state, conv) do
     if conv.status == "pending" do
-      Output.publish_stage(state.conversation_id, "provision", "failed", %{
-        reason: "workspace_not_kept",
-        retryable: true
-      })
-
+      retryable_stop(state, "workspace_not_kept")
       Fountain.Conversations.Wake.report_unrun_prompt(state.conversation_id, :machine_lost)
     end
 
@@ -230,11 +226,7 @@ defmodule Fountain.Conversations.Rebuild do
   # No room for a machine. Retryable, and not the conversation's failure:
   # the prompt is reported as not run and the conversation stays as it was.
   defp answer({:error, :fleet_full}, state, _conv) do
-    Output.publish_stage(state.conversation_id, "provision", "failed", %{
-      reason: "fleet_full",
-      retryable: true
-    })
-
+    retryable_stop(state, "fleet_full")
     {:rebuild, {:stop, :normal, state}}
   end
 
@@ -253,29 +245,89 @@ defmodule Fountain.Conversations.Rebuild do
   # lease lost, a database fault) nothing moved: the prompt is reported as
   # not run and the conversation stays resumable, as a refused wake left it.
   defp answer({:error, reason}, state, conv) do
-    # ownership: the server's own conversation.
-    current = Conversations._unsafe_get_conversation(conv.id)
-
-    if current && current.sandbox_id != state.sandbox_id do
-      Fountain.Conversations.ActorStatus.fail(
-        %{conversation_id: conv.id, sandbox_id: current.sandbox_id},
-        %{reason: inspect(reason)}
-      )
-    else
-      Logger.warning("conv #{conv.id}: machine not rebuilt: #{inspect(reason)}")
-
-      Output.publish_stage(state.conversation_id, "provision", "failed", %{
-        reason: to_string_reason(reason),
-        retryable: true
-      })
-
-      Fountain.Conversations.Wake.report_unrun_prompt(conv.id, reason)
-    end
-
-    {:rebuild, {:stop, :normal, state}}
+    {:rebuild, failed(state, conv, reason, %{reason: inspect(reason)})}
   end
 
   defp answer(other, _state, _conv), do: other
+
+  @doc """
+  Where a rebuild's failure lands, for an answer with no pipeline state to
+  unwind and for a raise out of the pipeline (`FreshProvision`'s rescue).
+
+  After the succession the conversation is bound to the new row this
+  attempt built, which is `failed` or left mid-provision: that row is
+  retired through its owner and the conversation failed against it, as a
+  fresh provision's failure fails it (review of step 4b). Otherwise nothing
+  of this attempt's moved it (an error before the succession, or a
+  co-tenant's rebuild moved it to a machine that is not this attempt's): the
+  prompt is reported as not run and the conversation is left resumable, its
+  wake's `pending` mark undone.
+  """
+  @spec failed(map(), map(), term(), map()) :: {:stop, :normal, map()}
+  def failed(state, conv, reason, metadata) do
+    # ownership: the server's own conversation and its current machine.
+    current = Conversations._unsafe_get_conversation(conv.id)
+
+    sandbox =
+      current && current.sandbox_id != state.sandbox_id &&
+        Conversations._unsafe_get_sandbox(current.sandbox_id)
+
+    if this_attempts?(sandbox) do
+      Fountain.Conversations.ConversationServer.fail_machine(
+        sandbox.id,
+        :provision_raised,
+        conv.id
+      )
+
+      Fountain.Conversations.ActorStatus.fail(
+        %{conversation_id: conv.id, sandbox_id: sandbox.id},
+        metadata
+      )
+    else
+      Logger.warning("conv #{conv.id}: machine not rebuilt: #{inspect(reason)}")
+      retryable_stop(state, to_string_reason(reason))
+      Fountain.Conversations.Wake.report_unrun_prompt(conv.id, reason)
+    end
+
+    {:stop, :normal, state}
+  end
+
+  # The row this attempt's succession made and could not finish: failed, or
+  # still mid-provision with nobody holding its lease (this server's lease
+  # was released when the bracket unwound). A live or building row is a
+  # co-tenant's.
+  defp this_attempts?(%Sandbox{status: "failed"}), do: true
+
+  defp this_attempts?(%Sandbox{status: status} = sandbox) when status in ["pending", "starting"],
+    do: not Machine.busy?(sandbox)
+
+  defp this_attempts?(_sandbox), do: false
+
+  # A retryable stop's stage, and the wake's `pending` mark undone, so the
+  # conversation does not read as active until its next prompt.
+  defp retryable_stop(state, reason) do
+    Output.publish_stage(state.conversation_id, "provision", "failed", %{
+      reason: reason,
+      retryable: true
+    })
+
+    unmark(state.conversation_id)
+  end
+
+  defp unmark(conv_id) do
+    import Ecto.Query, only: [from: 2]
+
+    # ownership: the server's own conversation.
+    _ =
+      Repo.update_all(
+        from(c in Fountain.Conversations.Conversation,
+          where: c.id == ^conv_id and c.status == "pending"
+        ),
+        set: [status: "idle", updated_at: DateTime.utc_now()]
+      )
+
+    :ok
+  end
 
   @doc "Whether `sandbox`'s workspace has a live machine other than it."
   @spec workspace_has_other_live?(Sandbox.t()) :: boolean()
@@ -374,11 +426,7 @@ defmodule Fountain.Conversations.Rebuild do
       "conv #{state.conversation_id}: not following the workspace's machine (#{inspect(reason)})"
     )
 
-    Output.publish_stage(state.conversation_id, "provision", "failed", %{
-      reason: to_string_reason(reason),
-      retryable: true
-    })
-
+    retryable_stop(state, to_string_reason(reason))
     {:stop, :normal, state}
   end
 

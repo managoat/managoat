@@ -107,14 +107,20 @@ defmodule Fountain.Conversations.FreshProvision do
         msg = Exception.format(:error, exception, stack)
         Logger.error("provision raised an unhandled exception:\n#{msg}")
 
-        ConversationServer.fail_machine(sandbox.id, :provision_raised, conv.id)
-
-        ActorStatus.fail(state, %{
+        metadata = %{
           reason: Exception.message(exception),
           stack: Exception.format_stacktrace(stack) |> String.slice(0, 2000)
-        })
+        }
 
-        {:stop, :normal, state}
+        if Keyword.get(opts, :rebuild, false) do
+          # The succession may have moved the conversation to a new row:
+          # the failure lands there (`Rebuild.failed/4`, review of step 4b).
+          Fountain.Conversations.Rebuild.failed(state, conv, :provision_raised, metadata)
+        else
+          ConversationServer.fail_machine(sandbox.id, :provision_raised, conv.id)
+          ActorStatus.fail(state, metadata)
+          {:stop, :normal, state}
+        end
     end
   end
 

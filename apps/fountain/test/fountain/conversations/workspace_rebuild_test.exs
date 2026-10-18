@@ -88,6 +88,26 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
              )
     end
 
+    test "a pipeline that raises after the succession fails the conversation where it now is",
+         _ctx do
+      {_user, _agent, conv, old} = lost_conversation()
+      stub_happy_sprite()
+
+      stub(Fountain.Conversations.Provisioning, :record_sandbox_url, fn _sandbox,
+                                                                        _handle,
+                                                                        _epoch ->
+        raise "boom"
+      end)
+
+      {_pid, ref, _} = start_server(conv)
+      assert :normal = assert_stopped(ref)
+
+      moved = Repo.reload!(conv)
+      assert moved.sandbox_id != old.id
+      assert moved.status == "failed"
+      assert Repo.get!(Sandbox, moved.sandbox_id).status == "failed"
+    end
+
     test "a co-tenant moved by the rebuild is told on its own transcript", _ctx do
       {user, agent, conv, old} = lost_conversation()
       explicit_workspace!(old)
@@ -117,7 +137,7 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
     end
 
     test "follows a co-tenant's rebuilt machine instead of building a second", _ctx do
-      {user, agent, conv, old} = lost_conversation(conv_status: "idle")
+      {user, agent, conv, old} = lost_conversation()
       explicit_workspace!(old)
       stub_happy_sprite()
 
