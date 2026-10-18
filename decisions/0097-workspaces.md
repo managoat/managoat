@@ -12,8 +12,9 @@ date: 2026-10-18
 # 0097 — A workspace owns the sandbox, and conversations run in it
 
 **Status:** Proposed, 2026-10-18. Nothing here is built. The design points
-were chosen by the maintainer, including four calls made in review on
-2026-10-18 (the ceiling parks an explicit workspace, the owner is keyed by
+were chosen by the maintainer, including six calls made in review on
+2026-10-18 (the ceiling interrupts running turns and parks an explicit
+workspace, no cap or retention bounds parked ones, the owner is keyed by
 workspace, a delete terminates live conversations, gemini's config home);
 the calls still marked **(open)** were made while drafting and are his to
 confirm. If accepted, it amends
@@ -184,9 +185,10 @@ process.
   the ceiling because it fires on a conversation that never stops being
   busy, with a detachable session still running, and a park would leave that
   exec burning unattended; so on an explicit workspace the ceiling first
-  ends every running turn as interrupted, then parks **(open: interrupt the
-  running turns, rather than wait for them)**. The clock restarts from the
-  wake (`last_resumed_at`), as 0017 measures it.
+  interrupts every running turn on it (each is cancelled and marked
+  interrupted, its transcript kept), then parks. It does not wait for the
+  turns to finish. The clock restarts from the wake (`last_resumed_at`), as
+  0017 measures it.
 
   So **an explicit workspace's sandbox has no hard lifetime ceiling.** It
   lives until the workspace is deleted or the sandbox is lost. Nothing in
@@ -195,10 +197,9 @@ process.
   there is no per-account cap ([0005](0005-platform-shared-sprites-token.md),
   2026-10-13). What bounds them is the number of workspaces callers create
   and keep, and the provider: its storage billing for a suspended machine
-  and any account-level machine cap, which 0017 already names as the trigger
-  for a retention bound. **(open: whether explicit workspaces need a count
-  limit per account, or parked ones a retention bound, before this ships;
-  this draft proposes neither.)**
+  and any account-level machine cap. Neither a per-account workspace cap nor
+  a retention bound on parked sandboxes ships: Managoat is self-hosted, and
+  the operator watches provider storage (see Consequences).
 - **Account deletion** deletes the account's workspaces with their sandboxes.
 
 ### The owner
@@ -371,6 +372,18 @@ directory" or `cwd` when this is built.
 - An explicit workspace's machine has no hard lifetime: Managoat's own
   bounds park it and never destroy it, so parked machines accumulate with
   the workspaces callers keep.
+- **Nothing in Managoat bounds that accumulation, by decision.** There is no
+  per-account workspace cap and no retention bound on parked sandboxes.
+  Managoat is self-hosted ([0005](0005-platform-shared-sprites-token.md):
+  no per-account cap since 2026-10-13), so the person running it is also
+  the one paying the provider, and they watch provider storage and delete
+  workspaces they no longer want. If a provider's account-level machine cap
+  or storage bill starts binding, 0017's retention knob is the one to add,
+  with #649's caveat.
+- At the ceiling, an explicit workspace's running turns are interrupted
+  (marked interrupted, transcripts kept) so the park does not leave a
+  session running unattended. A long turn that crosses the ceiling is cut
+  off, as it would be by a destroy, but its disk and session survive.
 - The lease move is a change to 0058's protocol, so it needs the adversarial
   review 0058 asks for (#2262), and the migration must carry any
   `destroying` stamp from a sandbox row to its workspace.
@@ -458,6 +471,19 @@ A PR sequence, each releasable alone:
 - **Destroying an explicit workspace's machine at the ceiling**, as 0073
   does for every machine. It would turn an operator's backstop into a
   periodic wipe of a disk the caller kept on purpose.
+- **Waiting for running turns at the ceiling before parking.** The ceiling
+  exists for the conversation that never stops being busy; waiting would let
+  that conversation hold the machine past it indefinitely.
+- **A retention bound on parked explicit sandboxes.** It would destroy a disk
+  the caller kept on purpose, on a clock the caller did not set, which is
+  the amnesia 0017 was written to stop (#649); on a self-hosted deployment
+  the operator can delete a workspace instead.
+- **A per-account cap on explicit workspaces.** Managoat has no per-account
+  caps since 0005's 2026-10-13 change, and on a self-hosted deployment the
+  accounts are the operator's own people; a cap would be a knob with no one
+  it protects.
+- **Both a cap and a retention bound.** Two knobs, each refused above, for
+  a cost the operator already sees on the provider's bill.
 - **Attach by `sandbox_id`.** A sandbox row does not outlive a loss, so a
   client holding one would be stranded on the first provider death.
 
@@ -467,3 +493,8 @@ A PR sequence, each releasable alone:
   ceiling parks an explicit workspace, that the owner and lease are keyed by
   workspace, that deleting a workspace terminates its live conversations,
   and that gemini's config home is set with `GEMINI_CLI_HOME`.
+- 2026-10-18 — The maintainer decided that the ceiling interrupts an
+  explicit workspace's running turns, then parks; and that neither a
+  per-account workspace cap nor a retention bound on parked sandboxes
+  ships, because Managoat is self-hosted and the operator watches provider
+  storage.
