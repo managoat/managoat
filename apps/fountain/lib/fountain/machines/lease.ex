@@ -382,7 +382,13 @@ defmodule Fountain.Machines.Lease do
   def sweep_boot do
     prefix = boot_prefix() <> "%"
 
-    {:ok, count} = Repo.transaction(fn -> sweep_rows(prefix) end)
+    # The reconcile's ten seconds: a stray session holding a row makes the boot
+    # log a failure rather than wedge.
+    {:ok, count} =
+      Repo.transaction(fn ->
+        Repo.query!("SET LOCAL lock_timeout = '10s'")
+        sweep_rows(prefix)
+      end)
 
     if count > 0, do: Logger.info("machine leases: cleared #{count} left by an earlier boot")
     count

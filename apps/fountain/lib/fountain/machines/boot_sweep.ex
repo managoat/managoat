@@ -19,9 +19,10 @@ defmodule Fountain.Machines.BootSweep do
   tidiness on a deployment that rolled back.
 
   A failure is logged, not raised: every lease of an earlier boot already reads
-  as dead (`Lease.live?/1`), so what the sweep adds is tidiness — no stale
-  holder on the admin table, no stale `parking` stamp for the next owner to
-  take over — and a database hiccup at boot must not stop the node starting.
+  as dead (`Lease.live?/1`), the tidying half (no stale holder on the admin
+  table, no stale `parking` stamp for the next owner to take over) can wait a
+  boot, and the carry and the copy are retried by the next one; a database
+  hiccup at boot must not stop the node starting.
 
   `config :fountain, :machine_boot_sweep, false` turns it off; the test suite
   does, and calls `Lease.sweep_boot/0` itself.

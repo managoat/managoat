@@ -398,9 +398,15 @@ defmodule Fountain.Workers.SandboxReaper do
   # it: two readings of one rule drift.
   #
   # The stamp is the workspace's (ADR 0097, step 3b), read through
-  # `Lease.machines/0`'s `:workspace` binding.
+  # `Lease.machines/0`'s `:workspace` binding (a sandbox with no workspace off
+  # its own row, as `Lease.machines/0` reads it).
   defp not_destroying do
-    dynamic([workspace: w], is_nil(w.transition) or w.transition != ^@destroying)
+    dynamic(
+      [s, workspace: w],
+      is_nil(fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition)) or
+        fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) !=
+          ^@destroying
+    )
   end
 
   # A live ConversationServer means provisioning is still in flight, however
@@ -832,7 +838,9 @@ defmodule Fountain.Workers.SandboxReaper do
     Lease.machines()
     |> where(
       [s, workspace: w],
-      s.status not in ^@terminal_statuses and w.transition == ^@destroying
+      s.status not in ^@terminal_statuses and
+        fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) ==
+          ^@destroying
     )
     # The grace window runs from the row's last write, which for a stamped row
     # is the stamp: every reader refuses a `destroying` row, and a

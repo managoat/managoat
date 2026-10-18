@@ -252,6 +252,9 @@ defmodule Fountain.Machines.WorkspaceLeaseTest do
       )
       |> Repo.update!()
 
+      # The workspace already past the epoch that release used: not lowered.
+      other_ws |> Ecto.Changeset.change(lease_epoch: 8) |> Repo.update!()
+
       Lease.sweep_boot()
 
       assert %{
@@ -262,7 +265,7 @@ defmodule Fountain.Machines.WorkspaceLeaseTest do
              } =
                assert_agree(ctx)
 
-      assert %{transition: nil, lease_node: nil, lease_epoch: 3} = lease_of(other_ws)
+      assert %{transition: nil, lease_node: nil, lease_epoch: 8} = lease_of(other_ws)
       assert lease_of(parked) == lease_of(other_ws)
       assert {:ok, 6} = Lease.claim(ctx.sandbox.id)
     end
