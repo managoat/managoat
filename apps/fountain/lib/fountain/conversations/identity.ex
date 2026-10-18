@@ -87,8 +87,21 @@ defmodule Fountain.Conversations.Identity do
   """
   @spec disk_env([{String.t(), String.t()}]) :: [{String.t(), String.t()}]
   def disk_env(sprite_env) when is_list(sprite_env) do
-    Enum.reject(sprite_env, fn {k, _v} -> to_string(k) in @process_only end)
+    Enum.reject(sprite_env, fn {k, v} ->
+      to_string(k) in @process_only or conversation_home_pair?(to_string(k), v)
+    end)
   end
+
+  # A conversation's config home (ADR 0097) is its own too: the variable that
+  # points a runtime at it names one conversation's directory. Told apart by
+  # its value rather than its name, because a tenant's own `CODEX_HOME` (say)
+  # is machine-wide configuration and stays on the disk.
+  @config_vars ~w(CLAUDE_CONFIG_DIR CODEX_HOME GEMINI_CLI_HOME MANAGOAT_SKILLS_DIR FOUNTAIN_SKILLS_DIR)
+
+  defp conversation_home_pair?(key, value) when key in @config_vars and is_binary(value),
+    do: String.starts_with?(value, Managoat.Runtimes.Layout.config_homes() <> "/")
+
+  defp conversation_home_pair?(_key, _value), do: false
 
   @doc """
   Wrap a command so its session is tagged with `conv_id` and the process sees

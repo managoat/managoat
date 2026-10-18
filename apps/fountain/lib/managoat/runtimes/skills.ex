@@ -77,6 +77,8 @@ defmodule Managoat.Runtimes.Skills do
     * `:runtime` (required) — the runtime string (`"claude"`, resolved
       through `Managoat.Runtimes.for_runtime/1`) or a module implementing the
       `Managoat.Runtimes` behaviour.
+    * `:config_home` (required) — the conversation's config home; the skills
+      go under the runtime's `skills_root/1` of it.
     * `:env` — `{name, value}` pairs for the github fetches' exec, such as
       a proxy and the CA it is trusted through. Default `[]`.
 
@@ -100,7 +102,7 @@ defmodule Managoat.Runtimes.Skills do
   end
 
   defp install_for(handle, runtime_module, skills, opts) do
-    skills_root = runtime_module.skills_root()
+    skills_root = runtime_module.skills_root(Keyword.fetch!(opts, :config_home))
 
     {inline, github} =
       skills

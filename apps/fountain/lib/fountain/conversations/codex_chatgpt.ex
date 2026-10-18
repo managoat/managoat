@@ -10,7 +10,7 @@ defmodule Fountain.Conversations.CodexChatGPT do
     * `env/2` exports `CODEX_CHATGPT_ACCESS_TOKEN` (the placeholder) to the
       codex process. Nothing reads its value; its presence is what
       `CodexTransport` selects the ChatGPT provider on.
-    * `prepare_sandbox/4` writes `~/.codex/auth.json` in `chatgptAuthTokens`
+    * `prepare_sandbox/5` writes `$CODEX_HOME/auth.json` in `chatgptAuthTokens`
       mode ("externally managed tokens": codex never refreshes them and never
       checks `exp`), with the placeholder where the bearer goes, the real
       account id, and an `id_token` synthesised from the stored claims. It
@@ -20,11 +20,9 @@ defmodule Fountain.Conversations.CodexChatGPT do
       would rewrite that file from an `OPENAI_API_KEY` the spawn does not
       have, and fail (measured 2026-09-08, ADR 0047 G0).
 
-  The file names a placeholder, so it is worthless off the box. It is the
-  machine's one shared `~/.codex/auth.json`; the machine's Codex binding
-  (`Fountain.Machines.Binding.bind_inference/2`) keeps every codex
-  conversation on the machine on the same source, so two accounts never
-  share it.
+  The file names a placeholder, so it is worthless off the box. It is in the
+  conversation's own config home (`CODEX_HOME`, ADR 0097), so no other
+  conversation's codex reads it.
   """
 
   alias Fountain.ChatGPT
@@ -57,14 +55,20 @@ defmodule Fountain.Conversations.CodexChatGPT do
   end
 
   @doc """
-  Write the sandbox's `auth.json` for a codex spawn on a subscription.
-  `:skip` for every other spawn, which then takes the library's
-  `prepare_sandbox/3`. `{:error, :chatgpt_reconnect_required}` when the
+  Write the `auth.json` for a codex spawn on a subscription under `home`,
+  the conversation's config home. `:skip` for every other spawn, which then
+  takes the library's `prepare_sandbox/4`. `{:error, :chatgpt_reconnect_required}` when the
   subscription the source names no longer serves.
   """
-  @spec prepare_sandbox(Managoat.Sandbox.Handle.t(), String.t(), Source.t() | nil, term()) ::
+  @spec prepare_sandbox(
+          Managoat.Sandbox.Handle.t(),
+          String.t(),
+          Source.t() | nil,
+          term(),
+          String.t()
+        ) ::
           :skip | :ok | {:error, term()}
-  def prepare_sandbox(handle, "codex", %Source{} = source, user_id) do
+  def prepare_sandbox(handle, "codex", %Source{} = source, user_id, home) do
     case Source.chatgpt_owner(source) do
       nil ->
         :skip
@@ -75,7 +79,7 @@ defmodule Fountain.Conversations.CodexChatGPT do
 
           case Managoat.Sandbox.write_file(
                  handle,
-                 Managoat.Runtimes.Codex.auth_path(),
+                 Managoat.Runtimes.Codex.auth_path(home),
                  body,
                  mode: 0o600
                ) do
@@ -91,7 +95,7 @@ defmodule Fountain.Conversations.CodexChatGPT do
     end
   end
 
-  def prepare_sandbox(_handle, _runtime, _source, _user_id), do: :skip
+  def prepare_sandbox(_handle, _runtime, _source, _user_id, _home), do: :skip
 
   @doc "The `auth.json` body: `chatgptAuthTokens`, the bearer value, the account id, the synthesised id_token."
   @spec auth_json(String.t(), %{account_id: String.t(), id_token: String.t()}) :: String.t()

@@ -280,34 +280,6 @@ defmodule Fountain.Machines.BindingTest do
     end
   end
 
-  # ── the skills record ─────────────────────────────────────────────────────
-
-  describe "record_skills" do
-    test "replaces the machine's record", ctx do
-      assert {:ok, %Sandbox{} = first} = Machine.record_skills(ctx.sandbox.id, [%{"name" => "x"}])
-      assert first.applied_skills == [%{"name" => "x"}]
-
-      assert {:ok, last} = Machine.record_skills(ctx.sandbox.id, [])
-      assert last.applied_skills == []
-    end
-
-    test "a terminal row and a missing one are refused", ctx do
-      stamp(ctx, status: "terminated")
-
-      assert {:error, :sandbox_unavailable} = Machine.record_skills(ctx.sandbox.id, [])
-      assert {:error, :sandbox_unavailable} = Machine.record_skills(Ecto.UUID.generate(), [])
-    end
-
-    test "joins the caller's transaction, so a rollback takes the write with it", ctx do
-      Repo.transaction(fn ->
-        assert {:ok, _} = Machine.record_skills(ctx.sandbox.id, [%{"name" => "x"}])
-        Repo.rollback(:undo)
-      end)
-
-      assert Repo.reload!(ctx.sandbox).applied_skills == nil
-    end
-  end
-
   # ── the Codex auth binding ────────────────────────────────────────────────
 
   # ── the owner ends the turns it operates over ─────────────────────────────

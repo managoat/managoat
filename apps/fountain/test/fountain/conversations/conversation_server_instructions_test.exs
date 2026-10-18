@@ -40,7 +40,13 @@ defmodule Fountain.Conversations.ConversationServerInstructionsTest do
   end
 
   defp assert_instructions_written do
-    path = Managoat.Runtimes.Instructions.path("gemini")
+    # The factory's conversation predates config homes, so it has the legacy one.
+    path =
+      Managoat.Runtimes.Instructions.path(
+        "gemini",
+        Fountain.Conversations.ConfigHome.legacy_home("gemini")
+      )
+
     assert is_binary(path)
 
     assert_receive {:wrote, ^path, data}, 2_000

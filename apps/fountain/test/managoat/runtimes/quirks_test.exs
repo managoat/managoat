@@ -74,14 +74,16 @@ defmodule Managoat.Runtimes.QuirksTest do
   test "for_runtime/1 and upstream_tracked/0 select from the same table" do
     assert Enum.map(Quirks.for_runtime("gemini"), & &1.id) == [
              :gemini_session_store_consolidation,
-             :gemini_usage_in_meta_quota,
-             :home_on_tmp
+             :gemini_usage_in_meta_quota
            ]
 
     assert Enum.map(Quirks.for_runtime("codex"), & &1.id) == [:sprite_node_shim]
     assert Quirks.for_runtime("nope") == []
 
-    assert Quirks.get(:home_on_tmp).runtimes == ["gemini"]
+    assert Quirks.get(:gemini_usage_in_meta_quota).runtimes == ["gemini"]
+    # Gone with config homes (ADR 0097): the rename it dodged fails only in the
+    # image's own ~/.gemini, which no conversation's gemini uses any more.
+    assert Quirks.get(:home_on_tmp) == nil
     assert Quirks.get(:not_a_quirk) == nil
 
     # The two we are waiting on someone else for.

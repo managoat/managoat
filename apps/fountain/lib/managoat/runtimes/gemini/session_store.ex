@@ -63,9 +63,9 @@ defmodule Managoat.Runtimes.Gemini.SessionStore do
   @doc """
   Install the consolidation script into the sandbox.
 
-  Called from `Gemini.prepare_sandbox/3`. Written to `/tmp` because gemini runs
-  with `HOME=/tmp` on the sprite and `/tmp` is writable there without the ACL
-  surprises `/home/sprite` has.
+  Called from `Gemini.prepare_sandbox/4`. Written to `/tmp`, once per
+  machine: the script names no conversation, and is handed the config home
+  whose store it consolidates.
   """
   @spec install(Managoat.Sandbox.Handle.t()) :: :ok | {:error, term()}
   def install(handle) do
@@ -80,15 +80,16 @@ defmodule Managoat.Runtimes.Gemini.SessionStore do
   which is bad, but failing the turn that just succeeded would be worse — so
   this logs and returns `:ok` rather than propagating.
 
-  Runs with `HOME=/tmp` to match `Gemini.default_env/2`; the script resolves the
-  chats directory from `HOME` exactly as gemini does.
+  `home` is the conversation's config home, the `GEMINI_CLI_HOME` its gemini
+  ran under. The script resolves the chats directory as `$HOME/.gemini/tmp`,
+  so it runs with `HOME` set to that home: the same directory gemini read.
   """
-  @spec consolidate(Managoat.Sandbox.Handle.t(), String.t() | nil) :: :ok
-  def consolidate(_handle, session_id) when session_id in [nil, ""], do: :ok
+  @spec consolidate(Managoat.Sandbox.Handle.t(), String.t() | nil, String.t()) :: :ok
+  def consolidate(_handle, session_id, _home) when session_id in [nil, ""], do: :ok
 
-  def consolidate(handle, session_id) do
+  def consolidate(handle, session_id, home) when is_binary(home) do
     case Managoat.Sandbox.exec(handle, "node", [@script_path, session_id],
-           env: [{"HOME", "/tmp"}],
+           env: [{"HOME", home}],
            timeout: 15_000
          ) do
       {:ok, out, 0} ->

@@ -13,7 +13,7 @@ defmodule Managoat.Runtimes.Gemini.SessionStoreTest do
   defp handle, do: %Managoat.Sandbox.Handle{provider: :sprites, name: "test-sprite", private: %{}}
 
   describe "install/1" do
-    test "writes the real script to the path consolidate/2 runs" do
+    test "writes the real script to the path consolidate/3 runs" do
       test = self()
 
       Mimic.expect(Managoat.Sandbox, :write_file, fn _h, path, body ->
@@ -32,8 +32,8 @@ defmodule Managoat.Runtimes.Gemini.SessionStoreTest do
     end
   end
 
-  describe "consolidate/2" do
-    test "runs the script for the session, with gemini's HOME" do
+  describe "consolidate/3" do
+    test "runs the script for the session, with HOME at the conversation's gemini home" do
       test = self()
 
       Mimic.expect(Managoat.Sandbox, :exec, fn _h, cmd, args, opts ->
@@ -41,31 +41,31 @@ defmodule Managoat.Runtimes.Gemini.SessionStoreTest do
         {:ok, ~s({"kept":1,"removed":1}), 0}
       end)
 
-      assert :ok = SessionStore.consolidate(handle(), "sess-abc")
+      assert :ok = SessionStore.consolidate(handle(), "sess-abc", "/home/sprite/.managoat/c/x")
       assert_receive {:exec, "node", [script, "sess-abc"], env}
       assert script == SessionStore.script_path()
 
-      # Must match Gemini.default_env/2 or the script resolves a different
+      # Must be the GEMINI_CLI_HOME gemini ran under, or the script resolves a different
       # chats directory than the one gemini actually wrote to.
-      assert {"HOME", "/tmp"} in env
+      assert {"HOME", "/home/sprite/.managoat/c/x"} in env
     end
 
     test "does nothing without a session id" do
       Mimic.reject(&Managoat.Sandbox.exec/4)
-      assert :ok = SessionStore.consolidate(handle(), nil)
-      assert :ok = SessionStore.consolidate(handle(), "")
+      assert :ok = SessionStore.consolidate(handle(), nil, "/tmp")
+      assert :ok = SessionStore.consolidate(handle(), "", "/tmp")
     end
 
     test "a non-zero exit does not fail the turn that just succeeded" do
       Mimic.expect(Managoat.Sandbox, :exec, fn _h, _c, _a, _o -> {:ok, "boom", 1} end)
-      assert :ok = SessionStore.consolidate(handle(), "sess-abc")
+      assert :ok = SessionStore.consolidate(handle(), "sess-abc", "/home/sprite/.managoat/c/x")
     end
 
     test "an unreachable sandbox does not fail the turn either" do
       # Losing the consolidation costs the *next* turn its history, which is
       # bad; failing this turn on top of that would be worse.
       Mimic.expect(Managoat.Sandbox, :exec, fn _h, _c, _a, _o -> {:error, :unavailable} end)
-      assert :ok = SessionStore.consolidate(handle(), "sess-abc")
+      assert :ok = SessionStore.consolidate(handle(), "sess-abc", "/home/sprite/.managoat/c/x")
     end
   end
 end

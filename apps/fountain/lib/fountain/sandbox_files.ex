@@ -26,7 +26,8 @@ defmodule Fountain.SandboxFiles do
       by the exec: ADR 0039's 2026-10-15 addendum accepts that (#2395).
 
   Every path is confined to the sandbox home (`/home/sprite`) or the
-  runtime's workspace (`Managoat.Runtimes.ACP.cwd/1`) — including the one
+  conversation's working directory (its launch's `cwd`, else the runtime's
+  default, `Fountain.Conversations.ConfigHome.cwd/1`) — including the one
   the caller never names, the repository root `git rev-parse --show-toplevel`
   finds by walking up. A root outside those is `not_a_repository`, not a
   listing of it.
@@ -165,33 +166,40 @@ defmodule Fountain.SandboxFiles do
 
   @doc """
   The directories a path may live under: the sandbox home and the
-  runtime's working directory (the same for claude and codex, `/tmp/…` for
-  gemini).
+  conversation's working directory (by default the same for claude and
+  codex, `/tmp/…` for gemini; a launch may name its own `cwd`).
   """
   @spec roots(Sandbox.t()) :: [String.t()]
   def roots(%Sandbox{} = sandbox), do: Enum.uniq([@home, cwd(sandbox)])
 
   @doc """
-  Where a relative path resolves from — the runtime that shaped this disk:
-  its conversation's (one per machine since #2676), else its agent's.
+  Where a relative path resolves from — the working directory of the
+  conversation on this disk (one per machine since #2676): its launch's
+  `cwd`, else its runtime's default, else its agent's runtime's.
   """
   @spec cwd(Sandbox.t()) :: String.t()
   def cwd(%Sandbox{} = sandbox) do
-    case conversation_runtime(sandbox) || agent_runtime(sandbox) do
-      runtime when is_binary(runtime) -> Fountain.RuntimeDispatch.cwd(runtime)
-      nil -> @home
+    case conversation_layout(sandbox) do
+      %{runtime: _} = conv ->
+        Fountain.Conversations.ConfigHome.cwd(conv)
+
+      nil ->
+        case agent_runtime(sandbox) do
+          runtime when is_binary(runtime) -> Fountain.RuntimeDispatch.cwd(runtime)
+          nil -> @home
+        end
     end
   end
 
   # ownership: the caller fetched `sandbox` tenant-scoped; its conversations
   # are the same tenant's.
-  defp conversation_runtime(%Sandbox{id: id}) do
+  defp conversation_layout(%Sandbox{id: id}) do
     Repo.one(
       from c in Conversation,
         where: c.sandbox_id == ^id and not is_nil(c.runtime),
         order_by: [desc: c.inserted_at, desc: c.id],
         limit: 1,
-        select: c.runtime
+        select: %{runtime: c.runtime, cwd: c.cwd}
     )
   end
 

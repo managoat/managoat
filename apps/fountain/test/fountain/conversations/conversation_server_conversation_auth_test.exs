@@ -141,7 +141,8 @@ defmodule Fountain.Conversations.ConversationServerConversationAuthTest do
         refute data =~ "salon.example", path
       end
 
-      mcp_file = %{"claude" => ".mcp.json", "gemini" => "settings.json"}[unquote(runtime)]
+      mcp_file =
+        %{"claude" => ".mcp.json", "gemini" => "settings.json"}[unquote(runtime)]
 
       if mcp_file do
         assert Enum.any?(written, fn {path, data} ->

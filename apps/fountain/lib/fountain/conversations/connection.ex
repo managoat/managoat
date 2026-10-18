@@ -320,7 +320,11 @@ defmodule Fountain.Conversations.Connection do
     conv = Conversations._unsafe_get_conversation!(conversation_id)
 
     if conv.runtime == "gemini" do
-      Managoat.Runtimes.Gemini.SessionStore.consolidate(handle, conv.runtime_session_id)
+      Managoat.Runtimes.Gemini.SessionStore.consolidate(
+        handle,
+        conv.runtime_session_id,
+        Fountain.Conversations.ConfigHome.home(conv)
+      )
     end
 
     :ok

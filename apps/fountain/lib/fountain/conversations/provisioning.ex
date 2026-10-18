@@ -942,21 +942,18 @@ defmodule Fountain.Conversations.Provisioning do
     end
   end
 
-  def write_runtime_config(handle, runtime_module, agent) do
-    Code.ensure_loaded(runtime_module)
-
-    if function_exported?(runtime_module, :write_config, 2) do
-      runtime_module.write_config(handle, agent)
-    else
-      :ok
-    end
+  # The runtime's own config files, under the conversation's config home
+  # `home` (`Fountain.Conversations.ConfigHome.home/1`).
+  def write_runtime_config(handle, runtime_module, agent, home) do
+    Managoat.Runtimes.write_config(runtime_module, handle, agent, home)
   end
 
   # The agent's `system` prompt, into the runtime's user-level instructions
-  # file (#848). Best-effort: a sandbox that refuses the write still runs,
-  # on the CLI's default persona, and says so in the log.
-  def write_instructions(handle, runtime, agent) do
-    case Managoat.Runtimes.Instructions.write(handle, runtime, agent) do
+  # file under the conversation's config home (#848). Best-effort: a sandbox
+  # that refuses the write still runs, on the CLI's default persona, and says
+  # so in the log.
+  def write_instructions(handle, runtime, agent, home) do
+    case Managoat.Runtimes.Instructions.write(handle, runtime, agent, home) do
       :ok ->
         :ok
 
@@ -971,38 +968,46 @@ defmodule Fountain.Conversations.Provisioning do
 
   @doc """
   The runtime's own sandbox preparation, after its ACP adapter is in place.
-  `source` and `user_id` are the conversation's resolved inference source and
-  its owner: a codex spawn on a ChatGPT subscription gets its `auth.json`
-  from Fountain (`CodexChatGPT.prepare_sandbox/4`, ADR 0070) instead of the
-  library's API-key write.
+  `conv` is the conversation (its owner, config home and working directory)
+  and `source` its resolved inference source: a codex spawn on a ChatGPT
+  subscription gets its `auth.json` from Fountain
+  (`CodexChatGPT.prepare_sandbox/5`, ADR 0070) instead of the library's
+  API-key write.
   """
-  def prepare_runtime_sprite(handle, runtime, runtime_module, agent, sprite_env, source, user_id) do
+  def prepare_runtime_sprite(handle, conv, runtime, runtime_module, agent, sprite_env, source) do
     with :ok <- prepare_acp_adapter(handle, runtime, sprite_env) do
-      prepare_runtime_sandbox(handle, runtime, runtime_module, agent, sprite_env, source, user_id)
+      prepare_runtime_sandbox(handle, conv, runtime, runtime_module, agent, sprite_env, source)
     end
   end
 
   @doc """
   The second half of `prepare_runtime_sprite/7`, for a caller that has
-  already installed the adapter: the runtime's own files (a codex
-  `auth.json`, from the API key or from a ChatGPT grant). A fresh provision
-  installs the adapter early, beside the packages, and runs this once the
-  setup script and the inference reservation are done, so the files Fountain
-  writes for the runtime still land after anything the setup script wrote.
+  already installed the adapter: the conversation's working directory
+  (`ConfigHome.ensure/2`), then the runtime's own files (a codex
+  `auth.json`, from the API key or from a ChatGPT grant) under its config
+  home. A fresh provision installs the adapter early, beside the packages,
+  and runs this once the setup script and the inference reservation are
+  done, so a clone can still land in the working directory and the files
+  Fountain writes for the runtime still land after anything the setup script
+  wrote.
   """
-  def prepare_runtime_sandbox(handle, runtime, runtime_module, agent, sprite_env, source, user_id) do
-    Code.ensure_loaded(runtime_module)
+  def prepare_runtime_sandbox(handle, conv, runtime, runtime_module, agent, sprite_env, source) do
+    home = Fountain.Conversations.ConfigHome.home(conv)
 
-    case Fountain.Conversations.CodexChatGPT.prepare_sandbox(handle, runtime, source, user_id) do
-      :skip ->
-        if function_exported?(runtime_module, :prepare_sandbox, 3) do
-          runtime_module.prepare_sandbox(handle, agent, sprite_env)
-        else
-          :ok
-        end
+    with :ok <- Fountain.Conversations.ConfigHome.ensure(handle, conv) do
+      case Fountain.Conversations.CodexChatGPT.prepare_sandbox(
+             handle,
+             runtime,
+             source,
+             conv.user_id,
+             home
+           ) do
+        :skip ->
+          Managoat.Runtimes.prepare_sandbox(runtime_module, handle, agent, sprite_env, home)
 
-      result ->
-        result
+        result ->
+          result
+      end
     end
   end
 

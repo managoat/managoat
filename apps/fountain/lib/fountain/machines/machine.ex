@@ -24,11 +24,12 @@ defmodule Fountain.Machines.Machine do
   `resume/1`, the turn rows through the context's locked writers, and one
   `sandbox.destroyed`, `sandbox.suspended`, `sandbox.resumed`,
   `sandbox.provisioned` or `sandbox.provision_failed` audit event. `detach/2`
-  and `record_skills/2` are the sixth, `Fountain.Machines.Binding` (stage
-  8b): the detach is decided under the machine's lock and refuses its lease,
-  and the machine's skills record is written there and nowhere else.
-  (`attach/3`, which put a second conversation on a machine, and the Codex
-  auth binding went with persistent homes, #2676.)
+  is the sixth, `Fountain.Machines.Binding` (stage 8b): the detach is decided
+  under the machine's lock and refuses its lease. (`attach/3`, which put a
+  second conversation on a machine, and the Codex auth binding went with
+  persistent homes, #2676. `record_skills/2`, which wrote the machine's
+  skills record, went with config homes, ADR 0097: the record is the
+  conversation's.)
 
   Beside them is one predicate, `busy?/1` (stage 6a): whether an owner holds a
   live lease on a machine, from the row the caller already holds. It is the
@@ -70,12 +71,6 @@ defmodule Fountain.Machines.Machine do
   or adapter-exit path in a `GenServer.call`, and a timeout there leaves the
   turn `running` with nothing left to end it. `Fountain.Machines.Admission`'s
   moduledoc argues it; the fence it applies is the same either way.
-
-  **`record_skills/2` runs inline for the same reason** (stage 8b). It is
-  one row write under the machine's lock; its caller, the skills
-  reconciliation on a wake, has no transaction, and
-  `Binding.record_skills/2` takes the lock itself.
-  `Fountain.Machines.Binding`'s moduledoc argues it.
 
   Asking through a process for an answer available from a pure function looks
   like ceremony, and it is the point: `who_is_here/1` is the door every writer
@@ -730,16 +725,6 @@ defmodule Fountain.Machines.Machine do
       timeout = Keyword.get(opts, :detach_timeout_ms, @detach_timeout)
       sandbox_id |> detach_in_owner(opts, timeout, 1) |> binding_refusal(sandbox_id)
     end
-  end
-
-  @doc """
-  Record the skills the machine's skills root carries:
-  `Fountain.Machines.Binding.record_skills/2`, inline on the caller (see the
-  moduledoc).
-  """
-  @spec record_skills(String.t(), [map()]) :: {:ok, Sandbox.t()} | {:error, term()}
-  def record_skills(sandbox_id, skills) when is_binary(sandbox_id) and is_list(skills) do
-    Binding.record_skills(sandbox_id, skills)
   end
 
   # The binding's translation. The protocol's vocabulary is the callers' with

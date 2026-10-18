@@ -689,7 +689,7 @@ defmodule Fountain.Conversations.ConversationServerTest do
       Mimic.stub(
         Fountain.Conversations.Provisioning,
         :prepare_runtime_sandbox,
-        fn _h, "claude", _m, _a, _se, _s, _u ->
+        fn _h, _conv, "claude", _m, _a, _se, _s ->
           send(test_pid, :runtime_prepare)
           :ok
         end

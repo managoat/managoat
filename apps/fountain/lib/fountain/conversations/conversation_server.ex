@@ -253,6 +253,9 @@ defmodule Fountain.Conversations.ConversationServer do
       sandbox_id: Keyword.fetch!(args, :sandbox_id),
       runtime_module: Keyword.fetch!(args, :runtime_module),
       user_id: nil,
+      # The conversation's config home (`ConfigHome.home/1`, ADR 0097), set
+      # with `user_id` once the row is read; every process env points at it.
+      config_home: nil,
       handle: nil,
       sprite_env: [],
       # ADR 0019 gate 1a. `brokered` holds the catalog secrets the sandbox
@@ -478,6 +481,7 @@ defmodule Fountain.Conversations.ConversationServer do
           %{
             state
             | user_id: conv.user_id,
+              config_home: Fountain.Conversations.ConfigHome.home(conv),
               runtime_session_id: conv.runtime_session_id,
               tenant_key: dek,
               inference_credentials: inference_creds,
@@ -778,6 +782,7 @@ defmodule Fountain.Conversations.ConversationServer do
   def build_sprite_env(state, agent, env, secrets, sandbox_url \\ nil, ca_files \\ nil) do
     SpriteEnv.build(agent, env, secrets,
       runtime_module: state.runtime_module,
+      config_home: state.config_home,
       env_credentials: state.env_credentials,
       callback_token: state.callback_token,
       conversation_id: state.conversation_id,
@@ -1266,6 +1271,7 @@ defmodule Fountain.Conversations.ConversationServer do
   defp terminate_machine(state, opts) do
     state = if state.current_turn, do: interrupt_turn(state), else: state
     state = drop_connection(state, "terminated")
+    :ok = Termination.remove_config_home(state)
     opts = Keyword.put(opts, :terminating_conversation_id, nil)
 
     Termination.destroy_after_terminate(state.sandbox_id, opts)

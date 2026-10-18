@@ -9,7 +9,7 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
   @remote [%{"source" => "owner/repo"}]
 
   defmodule DiskRuntime do
-    def skills_root, do: Process.get(:skills_recovery_root)
+    def skills_root(_home), do: Process.get(:skills_recovery_root)
   end
 
   setup :verify_on_exit!
@@ -44,12 +44,23 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
         else: write_file(path, content)
     end)
 
-    assert {:error, :offline} = SandboxSkills.mount(@handle, DiskRuntime, @remote, env: ctx.env)
+    assert {:error, :offline} =
+             SandboxSkills.mount(@handle, DiskRuntime, @remote,
+               env: ctx.env,
+               config_home: "/unused"
+             )
+
     refute File.exists?(Path.join(ctx.root, "discovered"))
     assert File.ls!(ctx.home) == ["skills"]
 
     stub(Managoat.Sandbox, :write_file, fn _, path, content -> write_file(path, content) end)
-    assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, @remote, nil, env: ctx.env)
+
+    assert {:ok, []} =
+             SandboxSkills.reconcile(@handle, DiskRuntime, @remote, nil,
+               env: ctx.env,
+               config_home: "/unused"
+             )
+
     assert File.exists?(Path.join(ctx.root, "discovered/SKILL.md"))
   end
 
@@ -73,7 +84,7 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
     File.write!(ctx.manifest, pending)
 
     assert {:error, :skill_installation_incomplete} =
-             SandboxSkills.reconcile(@handle, DiskRuntime, [], nil)
+             SandboxSkills.reconcile(@handle, DiskRuntime, [], nil, config_home: "/unused")
 
     assert File.read!(ctx.manifest) == pending
     assert File.read!(Path.join(ctx.root, "discovered/SKILL.md")) == "Late installer output"
@@ -100,20 +111,23 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
       Task.async(fn ->
         Mimic.allow(Managoat.Sandbox, owner, self())
         Process.put(:skills_recovery_root, ctx.root)
-        SandboxSkills.mount(@handle, DiskRuntime, @remote, env: ctx.env)
+        SandboxSkills.mount(@handle, DiskRuntime, @remote, env: ctx.env, config_home: "/unused")
       end)
 
     assert_receive {:installer_started, pid}, 2_000
     before = File.read(ctx.manifest)
 
     assert {:error, :skill_reconciliation_busy} =
-             SandboxSkills.reconcile(@handle, DiskRuntime, @remote, [])
+             SandboxSkills.reconcile(@handle, DiskRuntime, @remote, [], config_home: "/unused")
 
     assert File.read(ctx.manifest) == before
     send(pid, :finish_install)
     assert :ok = Task.await(installer)
     assert File.exists?(Path.join(ctx.root, "discovered/SKILL.md"))
-    assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [], nil)
+
+    assert {:ok, []} =
+             SandboxSkills.reconcile(@handle, DiskRuntime, [], nil, config_home: "/unused")
+
     refute File.exists?(Path.join(ctx.root, "discovered"))
   end
 
@@ -145,7 +159,7 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
       File.write!(ctx.manifest, original)
 
       assert {:error, :invalid_skill_manifest} =
-               SandboxSkills.reconcile(@handle, DiskRuntime, [], nil)
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], nil, config_home: "/unused")
 
       assert File.read!(ctx.manifest) == original
       assert File.read!(Path.join(ctx.root, "personal/SKILL.md")) == "Preserve me"
@@ -165,9 +179,14 @@ defmodule Fountain.SandboxSkillsRecoveryTest do
       end
     end)
 
-    assert {:error, :offline} = SandboxSkills.mount(@handle, DiskRuntime, selection)
+    assert {:error, :offline} =
+             SandboxSkills.mount(@handle, DiskRuntime, selection, config_home: "/unused")
+
     assert File.read!(Path.join(ctx.root, "inline/SKILL.md")) == "Inline skill"
-    assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [], nil)
+
+    assert {:ok, []} =
+             SandboxSkills.reconcile(@handle, DiskRuntime, [], nil, config_home: "/unused")
+
     refute File.exists?(Path.join(ctx.root, "inline"))
   end
 

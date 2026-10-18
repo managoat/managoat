@@ -1,31 +1,37 @@
 defmodule Fountain.Conversations.Skills do
   @moduledoc """
-  The skills a conversation's machine carries, kept in step with its agent.
+  The skills a conversation's config home carries, kept in step with its
+  agent.
 
-  A fresh provision mounts them (`Fountain.SandboxSkills.mount_fresh/3`). A
-  wake reconciles them with `mount/3`, because the agent's skill selection can
-  change while its conversation sleeps: a skill the agent no longer names is
-  removed, and a new one is installed. A GitHub skill already on the disk is
-  left as it is unless its `ref` changed. The record of what the disk carries is
-  the machine's `applied_skills`, written through its owner
-  (`Fountain.Machines.Machine.record_skills/2`).
+  A fresh provision mounts them (`Fountain.SandboxSkills.mount_fresh/4`) and
+  records what it mounted (`record/2`). A wake reconciles them with
+  `mount/4`, because the agent's skill selection can change while its
+  conversation sleeps: a skill the agent no longer names is removed, and a new
+  one is installed. A GitHub skill already on the disk is left as it is unless
+  its `ref` changed.
+
+  The record of what the disk carries is the conversation's `applied_skills`,
+  since the skills live in the conversation's own config home
+  (`Fountain.Conversations.ConfigHome`, ADR 0097). It was the machine's
+  (`sandboxes.applied_skills`) while a machine's skills root was a
+  directory of the machine's; the migration that moved it copied each
+  machine's record onto its conversation, so a conversation from before keeps
+  the record that describes its legacy skills root.
   """
 
   import Ecto.Query
 
-  alias Fountain.Machines.Machine
-  alias Fountain.{Conversations, Repo}
+  alias Fountain.Conversations.{ConfigHome, Conversation}
+  alias Fountain.Repo
 
   @doc """
-  Reconcile the machine's skills with the conversation's current selection,
-  then record what is now on it.
+  Reconcile the config home's skills with the conversation's current
+  selection, then record what is now on it.
 
-  The skills root is the conversation's own runtime's. The record is the
-  machine's one `applied_skills`: a machine carries one conversation, so one
-  runtime (ADR 0073).
+  The skills root is the conversation's own runtime's, under its config home.
 
-  Run on every wake. A machine built before the manifest existed gets one on
-  its first pass. The recorded set is only advanced when the reconciliation
+  Run on every wake. A disk from before the manifest existed gets one on its
+  first pass. The recorded set is only advanced when the reconciliation
   succeeded, so a failed pass leaves the next one the same work rather than a
   wrong picture of the disk. A GitHub skill whose fetch failed in a pass that
   otherwise succeeded is recorded as it was before, so a failed re-pin is
@@ -37,24 +43,48 @@ defmodule Fountain.Conversations.Skills do
   @spec mount(Managoat.Sandbox.Handle.t(), map(), map() | nil, [{String.t(), String.t()}]) ::
           :ok | {:error, term()}
   def mount(handle, conv, agent, sprite_env \\ []) do
-    # ownership: conv came from the tenant-scoped API fetch or its own server.
-    sandbox = Conversations._unsafe_get_sandbox!(conv.sandbox_id)
     skills = (agent && agent.skills) || []
     runtime = runtime(conv, agent)
+    applied = recorded(conv)
 
     with {:ok, failed} <-
            Fountain.SandboxSkills.reconcile(
              handle,
              runtime,
              skills,
-             sandbox.applied_skills || previous_skills(conv),
+             applied || previous_skills(conv),
+             config_home: ConfigHome.home(conv),
              env: Fountain.Broker.egress_env(sprite_env),
-             refresh: repinned(skills, sandbox.applied_skills)
-           ),
-         {:ok, _} <-
-           Machine.record_skills(sandbox.id, installed(skills, failed, sandbox.applied_skills)) do
-      :ok
+             refresh: repinned(skills, applied)
+           ) do
+      record(conv, installed(skills, failed, applied))
     end
+  end
+
+  @doc """
+  Record `skills` as what the conversation's config home now carries.
+  `{:error, :not_found}` when the conversation is gone.
+  """
+  @spec record(map(), [map()]) :: :ok | {:error, :not_found}
+  def record(%{id: id, user_id: user_id}, skills) when is_list(skills) do
+    # ownership: the conversation's own server, which established it at init.
+    case Repo.update_all(
+           from(c in Conversation, where: c.id == ^id and c.user_id == ^user_id),
+           set: [applied_skills: skills]
+         ) do
+      {1, _} -> :ok
+      {0, _} -> {:error, :not_found}
+    end
+  end
+
+  # The record as it is now, not as the caller's copy of the row had it: a
+  # fresh provision earlier in this server's life may have written it.
+  defp recorded(%{id: id, user_id: user_id}) do
+    Repo.one(
+      from c in Conversation,
+        where: c.id == ^id and c.user_id == ^user_id,
+        select: c.applied_skills
+    )
   end
 
   # What to record: the selection, except that a remote skill whose fetch
@@ -99,9 +129,9 @@ defmodule Fountain.Conversations.Skills do
     end
   end
 
-  # The selected GitHub skills whose ref is not the one the machine recorded
-  # installing. Without a record there is nothing to compare: what is on the
-  # disk stays, and only a missing directory is installed again.
+  # The selected GitHub skills whose ref is not the one the conversation
+  # recorded installing. Without a record there is nothing to compare: what
+  # is on the disk stays, and only a missing directory is installed again.
   defp repinned(_skills, nil), do: []
 
   defp repinned(skills, applied) do

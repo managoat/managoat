@@ -113,19 +113,39 @@ render the current set, and it does not hard-code one.
 
 ## Where skills and prompts land
 
-Each runtime has its own layout on disk. That is why one skill list produces
-different paths.
+Every conversation has a config home of its own on its sandbox,
+`/home/sprite/.managoat/c/<conversation id>`. The runtime keeps its
+configuration there: the skills, the system prompt, the MCP servers, its
+session store and its credential files. Managoat points the runtime at it
+with one environment variable, which the agent's process carries. Two
+conversations on one machine therefore share no runtime state. The shared
+`~/.claude`, `~/.codex` and `~/.gemini` of the image are not read, so a
+setup script that writes into one of them no longer reaches the agent;
+write to the variable's directory instead.
 
-| Runtime | Skills root | System prompt |
-|---|---|---|
-| `claude` | `/home/sprite/.claude/skills` | `~/.claude/CLAUDE.md` |
-| `codex` | `/home/sprite/.codex/skills` | `~/.codex/AGENTS.md` |
-| `gemini` | `/tmp/.gemini/skills` | `~/.gemini/GEMINI.md` |
-| `acp` | `/home/sprite/.claude/skills` | None |
+Each runtime has its own layout under that home. That is why one skill list
+produces different paths. Below, `<home>` is the config home.
+
+| Runtime | Variable | Skills root | System prompt |
+|---|---|---|---|
+| `claude` | `CLAUDE_CONFIG_DIR` | `<home>/skills` | `<home>/CLAUDE.md` |
+| `codex` | `CODEX_HOME` | `<home>/skills` | `<home>/AGENTS.md` |
+| `gemini` | `GEMINI_CLI_HOME` | `<home>/.gemini/skills` | `<home>/.gemini/GEMINI.md` |
+| `acp` | `MANAGOAT_SKILLS_DIR` names the skills root | `<home>/skills` | None |
 
 The `acp` runtime has no CLI of its own, so it borrows claude-code's layout
 for skills and gets the path as `MANAGOAT_SKILLS_DIR` in its environment. It
 reads no system prompt file, because the command owns its own configuration.
+
+Ending a conversation removes its config home. A conversation started before
+config homes existed keeps the shared directory its runtime used then
+(`/home/sprite/.claude`, `/home/sprite/.codex`, and `/tmp` for gemini) for
+the rest of its life, where its session already is.
+
+The agent runs in its conversation's working directory: the `cwd` it was
+launched with, or the runtime's default, `/home/sprite` for `claude`, `codex`
+and `acp` and `/tmp/gemini-workspace` for `gemini`. Read
+[Choose the working directory](../../api.md#choose-the-working-directory).
 
 ## Related
 

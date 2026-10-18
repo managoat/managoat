@@ -2217,4 +2217,117 @@ defmodule FountainWeb.ConversationControllerTest do
       end
     end
   end
+
+  # ADR 0097 step 1: a launch may name the working directory its agent runs
+  # in, and every conversation launched now gets a config home of its own.
+  describe "POST /api/conversations with cwd (ADR 0097)" do
+    setup %{user: user} do
+      stub_server_start(fn _s, _spec -> {:ok, spawn(fn -> :ok end)} end)
+      %{agent: insert_agent(user_id: user.id, runtime: "claude")}
+    end
+
+    defp create_with(conn, raw_key, body) do
+      conn
+      |> authed_with_key(raw_key)
+      |> post_json("/api/conversations", body)
+    end
+
+    test "is stored normalised, fixed with a config home of the conversation's own, and served",
+         %{conn: conn, raw_key: raw_key, agent: agent} do
+      data =
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => "/home/sprite/work/app/"})
+        |> json_response(201)
+        |> Map.fetch!("data")
+
+      assert data["cwd"] == "/home/sprite/work/app"
+
+      conv = Fountain.Conversations._unsafe_get_conversation!(data["id"])
+      assert conv.cwd == "/home/sprite/work/app"
+      assert conv.config_home == "/home/sprite/.managoat/c/#{conv.id}"
+    end
+
+    test "omitted, the runtime's default is served and nil stored", %{
+      conn: conn,
+      raw_key: raw_key,
+      agent: agent
+    } do
+      data =
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id})
+        |> json_response(201)
+        |> Map.fetch!("data")
+
+      assert data["cwd"] == "/home/sprite"
+      conv = Fountain.Conversations._unsafe_get_conversation!(data["id"])
+      assert conv.cwd == nil
+      assert conv.config_home == "/home/sprite/.managoat/c/#{conv.id}"
+    end
+
+    test "a path outside the sandbox home is a 422 naming the field, before anything launches",
+         %{conn: conn, raw_key: raw_key, agent: agent} do
+      reject(&Fountain.Machines.Provision.reserve/1)
+
+      for cwd <- ["/etc", "relative", "/home/sprite/.managoat/c/x", "/tmp/x"] do
+        resp =
+          conn
+          |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => cwd})
+          |> json_response(422)
+
+        assert resp["error"] == "validation_failed", cwd
+        assert [message] = resp["errors"]["cwd"], cwd
+        assert is_binary(message)
+      end
+    end
+
+    test "a cwd that is not a string is refused at the cast, naming the field", %{
+      conn: conn,
+      raw_key: raw_key,
+      agent: agent
+    } do
+      resp =
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => 42})
+        |> json_response(422)
+
+      assert resp["error"] == "validation_failed"
+      assert Map.has_key?(resp["errors"], "cwd")
+    end
+
+    test "a gemini agent may also run under /tmp", %{conn: conn, raw_key: raw_key, user: user} do
+      agent = insert_agent(user_id: user.id, runtime: "gemini", model: "google/gemini-2.5-pro")
+
+      data =
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => "/tmp/project"})
+        |> json_response(201)
+        |> Map.fetch!("data")
+
+      assert data["cwd"] == "/tmp/project"
+    end
+
+    test "a channel resume must name the same cwd, or none", %{
+      conn: conn,
+      raw_key: raw_key,
+      agent: agent
+    } do
+      body = %{"agent_id" => agent.id, "channel_id" => "chan-0097", "cwd" => "/home/sprite/a"}
+      first = conn |> create_with(raw_key, body) |> json_response(201) |> Map.fetch!("data")
+
+      again = conn |> create_with(raw_key, body) |> json_response(200) |> Map.fetch!("data")
+      assert again["id"] == first["id"]
+
+      bare = conn |> create_with(raw_key, Map.delete(body, "cwd")) |> json_response(200)
+      assert bare["data"]["id"] == first["id"]
+
+      resp =
+        conn
+        |> create_with(raw_key, Map.put(body, "cwd", "/home/sprite/b"))
+        |> json_response(422)
+
+      assert resp["error"] == "validation_failed"
+      assert [message] = resp["errors"]["cwd"]
+      assert message =~ "/home/sprite/a"
+    end
+  end
 end

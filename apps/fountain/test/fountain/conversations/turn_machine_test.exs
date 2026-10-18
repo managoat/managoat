@@ -969,6 +969,10 @@ defmodule Fountain.Conversations.TurnMachineTest do
       assert {cmd, args, dir} = TurnMachine.command(conv, agent, handle)
       assert {cmd, args} == Fountain.RuntimeDispatch.command(conv.runtime, agent)
       assert dir == Managoat.Sandbox.host_path(handle, Managoat.Runtimes.ACP.cwd("claude"))
+
+      # A launch's own cwd is the adapter's, and so the session's (ADR 0097).
+      assert {_cmd, _args, "/home/sprite/work"} =
+               TurnMachine.command(%{conv | cwd: "/home/sprite/work"}, agent, handle)
     end
 
     test "store_images/2 keeps a rejected image from taking the turn down", %{row: row} do

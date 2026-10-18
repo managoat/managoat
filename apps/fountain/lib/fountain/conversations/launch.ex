@@ -23,6 +23,7 @@ defmodule Fountain.Conversations.Launch do
   alias Fountain.Conversations.InferenceResolution
 
   alias Fountain.Conversations.{
+    ConfigHome,
     Conversation,
     ConversationServer,
     InferenceBinding,
@@ -57,6 +58,10 @@ defmodule Fountain.Conversations.Launch do
                                 narrow the agent's own policy, never widen it
     - `model`                 — optional model override (ADR 0061), checked as the agent's
                                 own model is; nil runs the agent's model
+    - `cwd`                   — optional absolute working directory for the agent, under
+                                `/home/sprite` (or `/tmp` for gemini), created if missing and
+                                fixed for the conversation's life; nil runs the runtime's
+                                default (`Fountain.Conversations.ConfigHome.validate_cwd/2`)
     - `session_config`        — refused unless nil or `{}`: a conversation requests its
                                 agent's ACP session config options, copied here and not
                                 read again (ADR 0062, addendum of 2026-10-15, agent only)
@@ -116,6 +121,7 @@ defmodule Fountain.Conversations.Launch do
          {:ok, perm_policy} <-
            Conversations.resolve_permission_policy(attrs["permission_policy"], agent),
          {:ok, model} <- Conversations.resolve_model(attrs["model"], agent),
+         {:ok, cwd} <- ConfigHome.validate_cwd(attrs["cwd"], agent.runtime),
          sandbox_key_id = Keyword.get(opts, :sandbox_key_id),
          {:ok, parent} <- resolve_parent(attrs["parent_conversation_id"], user_id, sandbox_key_id),
          {:ok, depth} <- resolve_depth(parent, user_id, sandbox_key_id),
@@ -125,6 +131,7 @@ defmodule Fountain.Conversations.Launch do
          {:ok, provider} <- Conversations.resolve_sandbox_provider(agent),
          {:ok, machine_name} <-
            Conversations.mint_machine_name(provider, user_id, requested_name),
+         conv_id = Ecto.UUID.generate(),
          {:ok, {sandbox, conv}} <-
            reserve_initial_conversation(
              %{
@@ -137,6 +144,12 @@ defmodule Fountain.Conversations.Launch do
                user_id: user_id
              },
              %{
+               id: conv_id,
+               # Its own config home, named for it, and the working directory
+               # the launch asked for (nil: the runtime's default). Both are
+               # fixed for the conversation's life (ADR 0097).
+               config_home: ConfigHome.for_launch(conv_id),
+               cwd: cwd,
                agent_id: agent.id,
                # Ownership: agent came from the scoped get_agent above.
                agent_version_id: Agents._unsafe_current_version_id(agent.id),
@@ -184,6 +197,7 @@ defmodule Fountain.Conversations.Launch do
           "parent_conversation_id" => parent_id,
           "depth" => depth,
           "model" => model,
+          "cwd" => cwd,
           "agent_session_config" => conv.agent_session_config
         }
       })
@@ -731,6 +745,7 @@ defmodule Fountain.Conversations.Launch do
                  ),
                :ok <- check_sandbox_api_resume(current, attrs["sandbox_api_access"]),
                :ok <- check_model_resume(current, agent, attrs["model"]),
+               :ok <- ConfigHome.check_resume(current, attrs["cwd"]),
                {:ok, source} <- Conversations.resolve_saved_inference(current, agent),
                {:ok, current, audit} <-
                  Conversations.resume_labels(current, attrs["labels"], opts),

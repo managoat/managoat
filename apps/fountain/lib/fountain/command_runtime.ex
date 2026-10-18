@@ -34,27 +34,26 @@ defmodule Fountain.CommandRuntime do
   run and no credential to export. The command owns its own configuration,
   which is the point of naming a command rather than a runtime.
 
-    * `write_config/2` and `prepare_sandbox/3` are not implemented at all, so
+    * `write_config/3` and `prepare_sandbox/4` are not implemented at all, so
       `Fountain.Conversations.Provisioning`'s `function_exported?` guards skip
       them.
-    * `default_env/2` ignores the credentials it is handed. It exports one
-      variable, `MANAGOAT_SKILLS_DIR`, so the command can read the agent's
-      skills without knowing the layout convention below.
+    * `default_env/2` ignores the credentials it is handed and exports
+      nothing. `config_env/1` exports one variable, `MANAGOAT_SKILLS_DIR`, so
+      the command can read the agent's skills without knowing the layout
+      convention below.
 
   ## Skills still mount
 
   A deterministic agent may read a skill the same way a model does, so the
   ordinary skills pipeline runs. There is no CLI here with a directory of its
-  own, so the layout borrows claude-code's: inline skills are written under
-  `/home/sprite/.claude/skills`, and a github-source skill is copied into the
-  same tree. The path is exported so the command need not know which one was
-  chosen.
+  own, so the layout borrows claude-code's: skills go under
+  `<config_home>/skills`, the conversation's config home being
+  `/home/sprite/.managoat/c/<id>` (ADR 0097), or `/home/sprite/.claude` for
+  a conversation from before config homes. The path is exported so the
+  command need not know which one was chosen.
   """
 
   @behaviour Managoat.Runtimes
-
-  # claude-code's tree, borrowed: the layout the others copy.
-  @skills_root "/home/sprite/.claude/skills"
 
   @doc """
   Where the command's argv comes from.
@@ -83,12 +82,17 @@ defmodule Fountain.CommandRuntime do
 
   def argv(_agent), do: :error
 
+  # claude-code's tree under the config home, borrowed: the layout the others copy.
   @impl true
-  def skills_root, do: @skills_root
+  def skills_root(home), do: Path.join(home, "skills")
+
+  # The skills path is exported because the command has no convention to
+  # fall back on.
+  @impl true
+  def config_env(home), do: [{"MANAGOAT_SKILLS_DIR", skills_root(home)}]
 
   # No inference credential, on purpose: a turn on this runtime resolves
-  # none, so an account that holds no key at all runs one. The skills path is
-  # here because the command has no convention to fall back on.
+  # none, so an account that holds no key at all runs one.
   @impl true
-  def default_env(_agent, _inference_credentials), do: [{"MANAGOAT_SKILLS_DIR", @skills_root}]
+  def default_env(_agent, _inference_credentials), do: []
 end

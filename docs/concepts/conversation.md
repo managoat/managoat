@@ -59,6 +59,11 @@ the machine on the next prompt.
 A Conversation runs its Agent's model unless it names one of its own. Name one
 when you create it. See [Choose the model](../api.md#choose-the-model).
 
+A Conversation's agent runs in a working directory inside the sandbox, which
+the launch may name with `cwd`, and keeps its runtime configuration in a
+config home of its own. See
+[Choose the working directory](../api.md#choose-the-working-directory).
+
 Reasoning effort, fast mode and the runtime's other session options belong
 to the Agent, in its `session_config`. A Conversation copies its Agent's
 options when it's created and requests them on every turn, so an edit to them

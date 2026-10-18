@@ -618,6 +618,37 @@ a conversation through `channel_id` and names another model returns
 `409 conversation_model_differs` before Managoat sends its prompt. Set
 `fresh: true` to start a new conversation on it.
 
+### Choose the working directory
+
+A conversation's agent runs in its runtime's default directory unless the
+launch names one: `/home/sprite` for `claude`, `codex` and `acp`, and
+`/tmp/gemini-workspace` for `gemini`. Name another at creation with `cwd`, an
+absolute path inside the sandbox. Managoat creates it if it is missing, after
+the environment's repositories are cloned and its setup script has run, and
+the agent's session starts there.
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $MANAGOAT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"YOUR_AGENT_ID","prompt":"Run the tests","cwd":"/home/sprite/app"}' \
+  "$MANAGOAT_URL/api/conversations"
+```
+
+The path must be `/home/sprite` or a directory under it, or for a `gemini`
+agent, also under `/tmp`. It may not be inside `/home/sprite/.managoat`, where
+Managoat keeps each conversation's config home. Anything else returns
+`422 validation_failed` with the reason under `errors.cwd`. Managoat
+normalises the path (`/home/sprite/a/../b/` is `/home/sprite/b`).
+
+The directory is fixed for the conversation's life. The conversation object
+reports it as `cwd`, the default included. A create request that resumes a
+conversation through `channel_id` may omit `cwd` or name the one it runs in;
+another returns `422 validation_failed` too. Codex's own sandbox lets the
+agent write to this directory, and the [file routes](#files-git-status-and-git-diff)
+resolve a relative path from it. The CLI takes it as `--cwd` on `managoat run`
+and `managoat acp`.
+
 ### Set reasoning effort and fast mode
 
 Runtimes that speak ACP offer session config options beyond the model. The two

@@ -64,6 +64,9 @@ defmodule FountainWeb.ConversationJSON do
       vault_id: c.vault_id,
       environment_id: c.environment_id,
       model: c.model,
+      # The working directory the agent runs in: the launch's, or the
+      # runtime's default (ADR 0097).
+      cwd: Fountain.Conversations.ConfigHome.cwd(c),
       sandbox_api_access: c.sandbox_api_access,
       permission_policy: c.permission_policy,
       # The options every turn requests: the agent's, copied at launch

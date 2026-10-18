@@ -125,17 +125,32 @@ defmodule Fountain.LiveAdapter do
     name = LiveAdapterSandbox.name(mode, prefix(mode), runtime)
     handle = create!(mode, name)
 
+    # A conversation's own config home, as every launch gets one (ADR 0097).
+    conv = %{
+      id: Ecto.UUID.generate(),
+      user_id: nil,
+      runtime: runtime,
+      cwd: nil,
+      config_home: nil
+    }
+
+    conv = %{conv | config_home: Managoat.Runtimes.Layout.config_home(conv.id)}
+
     sprite_env =
       Managoat.Runtimes.default_env(mod, nil, Map.new(credentials, fn {k, v} -> {k, env!(v)} end)) ++
+        Managoat.Runtimes.config_env(mod, conv.config_home) ++
         gateway_env(runtime)
 
     # The real pinned bundles, as a release carries them: `mix acp.bundles`
     # fetches and verifies them into the umbrella's _build/acp-bundles/ (the
     # workflow runs it first), where the test config would read a stub's.
     Application.put_env(:fountain, :acp_bundle_dir, bundle_dir!())
-    :ok = Provisioning.write_runtime_config(handle, mod, nil)
-    :ok = Provisioning.prepare_runtime_sprite(handle, runtime, mod, nil, sprite_env, nil, nil)
-    :ok = gateway_config!(handle, runtime)
+    :ok = Provisioning.write_runtime_config(handle, mod, nil, conv.config_home)
+
+    :ok =
+      Provisioning.prepare_runtime_sprite(handle, conv, runtime, mod, nil, sprite_env, nil)
+
+    :ok = gateway_config!(handle, runtime, conv.config_home)
 
     %{handle: handle, runtime: runtime, module: mod, sprite_env: sprite_env, broker: nil}
   end
@@ -197,7 +212,7 @@ defmodule Fountain.LiveAdapter do
   gateway rather than the vendor, from the runner's env, or `[]`.
 
   codex: `OPENAI_BASE_URL` (with `/v1`) and `OPENAI_MODEL`, the model the
-  gateway serves. `gateway_config!/2` writes codex's side; here,
+  gateway serves. `gateway_config!/3` writes codex's side; here,
   `MODEL_PROVIDER` holds a resumed thread on the gateway's provider, as it
   does for `CodexTransport`'s in production.
 
@@ -208,7 +223,7 @@ defmodule Fountain.LiveAdapter do
   which a key limited to one model would refuse, go to the same model.
 
   gemini: `GOOGLE_GEMINI_BASE_URL` (without `/v1beta`) and `GEMINI_MODEL`;
-  `gateway_config!/2` points its helper models at the same one.
+  `gateway_config!/3` points its helper models at the same one.
   """
   @gateway_provider "live_gateway"
 
@@ -255,9 +270,9 @@ defmodule Fountain.LiveAdapter do
       (`auto_review_model_override`), which is otherwise a GPT model the
       gateway's key may not call.
   """
-  def gateway_config!(handle, "codex") do
+  def gateway_config!(handle, "codex", home) do
     with {base, model} <- gateway("codex") do
-      root = Managoat.Runtimes.Layout.config_root("codex")
+      root = Managoat.Runtimes.Layout.config_dir("codex", home)
       catalog = Path.join(root, "live-gateway-models.json")
 
       :ok =
@@ -301,18 +316,18 @@ defmodule Fountain.LiveAdapter do
     chat-compression-2.5-flash chat-compression-2.5-flash-lite
   )
 
-  def gateway_config!(handle, "gemini") do
+  def gateway_config!(handle, "gemini", home) do
     with {_base, model} <- gateway("gemini") do
       aliases = Map.new(@gemini_helper_aliases, &{&1, %{modelConfig: %{model: model}}})
       settings = %{model: %{name: model}, modelConfigs: %{customAliases: aliases}}
-      path = Path.join(Managoat.Runtimes.Layout.config_root("gemini"), "settings.json")
+      path = Managoat.Runtimes.Gemini.settings_path(home)
       :ok = Managoat.Sandbox.write_file(handle, path, Jason.encode!(settings))
     end
 
     :ok
   end
 
-  def gateway_config!(_handle, _runtime), do: :ok
+  def gateway_config!(_handle, _runtime, _home), do: :ok
 
   # The fields codex 0.160's catalog entries carry, for a text-only model
   # with a 32K window. Checked against the catalog that binary embeds.

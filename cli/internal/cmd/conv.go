@@ -94,6 +94,7 @@ func init() {
 	runCmd.Flags().String("client-request-id", "", "caller-provided prompt correlation ID (not an idempotency key)")
 	runCmd.Flags().String("vault", "", "vault name or id")
 	runCmd.Flags().String("environment", "", "environment name or id to provision from, instead of the agent's own")
+	runCmd.Flags().String("cwd", "", "working directory inside the sandbox for the agent (absolute, under /home/sprite; created if missing)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -313,6 +314,9 @@ func runAgent(cmd *cobra.Command, target string) error {
 	}
 	if environment != "" {
 		body["environment_id"] = resolveEnvironmentID(environment)
+	}
+	if cwd, _ := cmd.Flags().GetString("cwd"); cwd != "" {
+		body["cwd"] = cwd
 	}
 
 	c := activeClient()

@@ -1,14 +1,13 @@
 defmodule Fountain.Conversations.SkillsTest do
   # The wake's skills reconciliation (`Fountain.Conversations.Skills.mount/4`):
-  # it reconciles the conversation's runtime's skills root against the
-  # machine's one record, and advances the record only on success.
+  # it reconciles the skills root under the conversation's config home against
+  # the conversation's record, and advances the record only on success.
   use Fountain.DataCase, async: true
   use Mimic
 
   alias Fountain.Agents
   alias Fountain.Conversations
   alias Fountain.Conversations.Skills
-  alias Fountain.Machines.Machine
 
   @handle %Managoat.Sandbox.Handle{provider: :sprites, name: "conversation-skills-test"}
 
@@ -54,7 +53,7 @@ defmodule Fountain.Conversations.SkillsTest do
   end
 
   test "a failed reconciliation leaves the record as it was", ctx do
-    {:ok, _} = Machine.record_skills(ctx.sandbox.id, ctx.skills)
+    :ok = Skills.record(ctx.conv, ctx.skills)
 
     stub(Fountain.SandboxSkills, :reconcile, fn _, _, _, _, _ -> {:error, :offline} end)
     {:ok, agent} = Agents.update_agent(ctx.agent, %{skills: []})
@@ -88,8 +87,8 @@ defmodule Fountain.Conversations.SkillsTest do
     moved = %{"source" => "anthropics/skills", "name" => "internal-comms", "ref" => "v2"}
     added = %{"source" => "owner/new"}
 
-    {:ok, _} =
-      Machine.record_skills(ctx.sandbox.id, [
+    :ok =
+      Skills.record(ctx.conv, [
         kept,
         %{"source" => "anthropics/skills", "name" => "internal-comms", "ref" => "v1"}
       ])
@@ -110,7 +109,7 @@ defmodule Fountain.Conversations.SkillsTest do
     old = %{"source" => "anthropics/skills", "name" => "internal-comms", "ref" => "v1"}
     moved = %{old | "ref" => "v2"}
     added = %{"source" => "owner/new", "name" => "fresh"}
-    {:ok, _} = Machine.record_skills(ctx.sandbox.id, [kept, old])
+    :ok = Skills.record(ctx.conv, [kept, old])
 
     # The real reconciliation, against a disk that holds every recorded skill.
     stub(Fountain.SandboxSkills, :reconcile, fn handle, runtime, skills, previous, opts ->
@@ -154,12 +153,38 @@ defmodule Fountain.Conversations.SkillsTest do
     assert record(ctx) == [kept, moved, added]
   end
 
-  test "record_skills/2 refuses a terminal machine", ctx do
-    Repo.update!(Ecto.Changeset.change(sandbox(ctx), status: "terminated"))
+  test "the skills root is under the conversation's own config home", ctx do
+    home = "/home/sprite/.managoat/c/#{ctx.conv.id}"
 
-    assert {:error, :sandbox_unavailable} = Machine.record_skills(ctx.sandbox.id, ctx.skills)
+    conv =
+      ctx.conv
+      |> Ecto.Changeset.change(config_home: home)
+      |> Repo.update!()
+
+    assert :ok = Skills.mount(:handle, conv, ctx.agent)
+    assert_received {:reconcile_opts, opts}
+    assert opts[:config_home] == home
   end
 
-  defp sandbox(ctx), do: Conversations._unsafe_get_sandbox!(ctx.sandbox.id)
-  defp record(ctx), do: sandbox(ctx).applied_skills
+  test "a conversation from before config homes reconciles its runtime's legacy tree", ctx do
+    assert ctx.conv.config_home == nil
+    assert :ok = Skills.mount(:handle, ctx.conv, ctx.agent)
+    assert_received {:reconcile_opts, opts}
+    assert opts[:config_home] == "/home/sprite/.codex"
+  end
+
+  test "record/2 answers not_found for a conversation that is gone", ctx do
+    assert :ok = Skills.record(ctx.conv, ctx.skills)
+    assert {:error, :not_found} = Skills.record(%{ctx.conv | id: Ecto.UUID.generate()}, [])
+    # Scoped by its owner, too.
+    assert {:error, :not_found} = Skills.record(%{ctx.conv | user_id: Ecto.UUID.generate()}, [])
+  end
+
+  test "the record lives on the conversation, not on the machine", ctx do
+    assert :ok = Skills.record(ctx.conv, ctx.skills)
+    assert record(ctx) == ctx.skills
+    refute Map.has_key?(Conversations._unsafe_get_sandbox!(ctx.sandbox.id), :applied_skills)
+  end
+
+  defp record(ctx), do: Conversations._unsafe_get_conversation!(ctx.conv.id).applied_skills
 end

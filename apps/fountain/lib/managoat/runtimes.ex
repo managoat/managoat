@@ -19,10 +19,12 @@ defmodule Managoat.Runtimes do
   What varies between runtimes here falls into three kinds, and only the last
   needs code:
 
-    * **Layout** — where files go. Perfectly regular (`<home>/<config_dir>/…`)
-      and now stated once, in `Managoat.Runtimes.Layout`. `skills_root/0`,
-      the instructions path and every workspace directory
-      are derived from that table rather than restated per module.
+    * **Layout** — where files go. Perfectly regular
+      (`<config_home>/<config_dir>/…`, one config home per conversation, ADR
+      0097) and stated once, in `Managoat.Runtimes.Layout`. `skills_root/1`,
+      the instructions path, the variable that points the runtime at its
+      config home and the default working directory are derived from that
+      table rather than restated per module.
     * **Workarounds** — a defect each runtime carries, with a deletion
       condition. Registered in `Managoat.Runtimes.Quirks`, which names the
       function implementing each one and is guarded by a test, so a workaround
@@ -30,7 +32,7 @@ defmodule Managoat.Runtimes do
     * **Credential delivery** — genuinely irreducible, and two shapes rather
       than three: an env var (claude, gemini) or a login exec that consumes
       the key on stdin (codex, whose CLI ignores the process env). See
-      `c:default_env/2` and `c:prepare_sandbox/3`.
+      `c:default_env/2` and `c:prepare_sandbox/4`.
 
   ## Calling the optional callbacks
 
@@ -52,10 +54,15 @@ defmodule Managoat.Runtimes do
   and fall back to the documented no-op:
 
       env = Managoat.Runtimes.default_env(mod, agent, credentials)   # or []
-      :ok = Managoat.Runtimes.write_config(mod, handle, agent)       # or :ok
-      :ok = Managoat.Runtimes.prepare_sandbox(mod, handle, agent, env)
+      env = env ++ Managoat.Runtimes.config_env(mod, home)            # or []
+      :ok = Managoat.Runtimes.write_config(mod, handle, agent, home) # or :ok
+      :ok = Managoat.Runtimes.prepare_sandbox(mod, handle, agent, env, home)
       env = env ++ Managoat.Runtimes.model_env(mod, model)            # or []
       caps = Managoat.Runtimes.client_capabilities(mod, policy)      # or the ACP default
+
+  `home` is the conversation's config home (`Managoat.Runtimes.Layout`):
+  every callback that writes a file or names a path takes it, so nothing in a
+  runtime module is a compile-time path.
 
   When the default is not what you need, ask `implements?/3` and decide.
   """
@@ -71,7 +78,7 @@ defmodule Managoat.Runtimes do
     * `model` — the canonical `provider/model_id` (`Managoat.Runtimes.Model`).
     * `mcp_servers` — the agent's MCP servers in Claude's own config shape
       (`%{name => %{"command" | "args" | "env" | "type" | "url" | "headers"}}`),
-      read by `write_config/2` and `Managoat.Runtimes.ACP.mcp_servers/1`.
+      read by `write_config/3` and `Managoat.Runtimes.ACP.mcp_servers/1`.
     * `system` and `name` — the instructions file
       (`Managoat.Runtimes.Instructions`).
     * `runtime` — `Managoat.Runtimes.ACP.enabled?/1` accepts the agent as well
@@ -111,9 +118,9 @@ defmodule Managoat.Runtimes do
       mid-conversation fall back to the API key when an org refuses the OAuth
       token (#655), are provider policy with no analogue on the others.
     * **Whether an env var works at all.** codex 0.118+ does not read
-      `OPENAI_API_KEY` at exec time. It reads `~/.codex/auth.json`, the file
+      `OPENAI_API_KEY` at exec time. It reads `$CODEX_HOME/auth.json`, the file
       `codex login --with-api-key` writes, so its credential is delivered by
-      `prepare_sandbox/3` writing that file instead — see there.
+      `prepare_sandbox/4` writing that file instead — see there.
 
   So the shape is two-of-three, not three-of-three: an env var, or a file.
   Worth restating whenever another runtime arrives, because "just add a column
@@ -130,21 +137,39 @@ defmodule Managoat.Runtimes do
             ) :: [{String.t(), String.t()}]
 
   @doc """
-  Optionally write runtime-specific config files into the sprite at
-  provision time (e.g. claude's `~/.claude.json` for MCP servers).
-  No-op by default.
+  Optionally name the env pairs that point the runtime at `config_home`, the
+  conversation's config home: `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or
+  `GEMINI_CLI_HOME`, from `Managoat.Runtimes.Layout.config_env/2`. `[]` by
+  default.
 
-  Optional, so call it through `write_config/3` — see
+  A host adds these to every process it runs the runtime in, so the path a
+  runtime module writes under and the path the CLI reads from are one value.
+
+  Optional, so call it through `config_env/2` — see
   ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
   """
-  @callback write_config(handle :: Managoat.Sandbox.Handle.t(), agent :: agent() | nil) ::
+  @callback config_env(config_home :: String.t()) :: [{String.t(), String.t()}]
+
+  @doc """
+  Optionally write runtime-specific config files into the conversation's
+  config home at provision and wake (e.g. claude's `.claude.json` for MCP
+  servers). No-op by default.
+
+  Optional, so call it through `write_config/4` — see
+  ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
+  """
+  @callback write_config(
+              handle :: Managoat.Sandbox.Handle.t(),
+              agent :: agent() | nil,
+              config_home :: String.t()
+            ) ::
               :ok | {:error, term()}
 
   @doc """
   Optionally run any sprite-side bootstrap that has to happen *before*
   the first turn — e.g. codex needs its credentials in
-  `~/.codex/auth.json` since it doesn't read `OPENAI_API_KEY` from the live
-  process env.
+  `<config_home>/auth.json` since it doesn't read `OPENAI_API_KEY` from the
+  live process env.
 
   Receives the same `sprite_env` pairs the spawn will use. Implementers
   pull whichever keys they need out of that list. No-op by default.
@@ -165,13 +190,14 @@ defmodule Managoat.Runtimes do
   to the sandbox, an install here needs its registry on the allowlist of any
   restricted one.
 
-  Optional, so call it through `prepare_sandbox/4` — see
+  Optional, so call it through `prepare_sandbox/5` — see
   ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
   """
   @callback prepare_sandbox(
               handle :: Managoat.Sandbox.Handle.t(),
               agent :: agent() | nil,
-              sprite_env :: [{String.t(), String.t()}]
+              sprite_env :: [{String.t(), String.t()}],
+              config_home :: String.t()
             ) :: :ok | {:error, term()}
 
   @doc """
@@ -210,18 +236,21 @@ defmodule Managoat.Runtimes do
 
   @doc """
   Absolute path on the sprite where skills are written as
-  `<skills_root>/<name>/SKILL.md`, inline and github alike. Each runtime
-  points this at whatever directory its CLI scans for skills.
+  `<skills_root>/<name>/SKILL.md`, inline and github alike, under the
+  conversation's `config_home`. Each runtime points this at whatever
+  directory its CLI scans for skills.
 
-  Answered from `Managoat.Runtimes.Layout` by every implementation — it stays
-  a callback because `Managoat.Runtimes.Skills` reaches it through the module,
-  not because any runtime has ever needed to depart from the table.
+  Answered from `Managoat.Runtimes.Layout` by every packaged implementation —
+  it stays a callback because `Managoat.Runtimes.Skills` reaches it through
+  the module, not because any runtime has ever needed to depart from the
+  table.
   """
-  @callback skills_root() :: String.t()
+  @callback skills_root(config_home :: String.t()) :: String.t()
 
   @optional_callbacks default_env: 2,
-                      write_config: 2,
-                      prepare_sandbox: 3,
+                      config_env: 1,
+                      write_config: 3,
+                      prepare_sandbox: 4,
                       model_env: 1,
                       client_capabilities: 1
 
@@ -250,28 +279,42 @@ defmodule Managoat.Runtimes do
     do: dispatch(mod, :default_env, [agent, inference_credentials], [])
 
   @doc """
-  Dispatch `c:write_config/2`, or `:ok` when the runtime does not implement it.
+  Dispatch `c:config_env/1`, or `[]` when the runtime does not implement it.
 
   Use this rather than guarding the call yourself — see
   ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
   """
-  @spec write_config(module(), Managoat.Sandbox.Handle.t(), agent() | nil) ::
-          :ok | {:error, term()}
-  def write_config(mod, handle, agent) when is_atom(mod),
-    do: dispatch(mod, :write_config, [handle, agent], :ok)
+  @spec config_env(module(), String.t()) :: [{String.t(), String.t()}]
+  def config_env(mod, config_home) when is_atom(mod) and is_binary(config_home),
+    do: dispatch(mod, :config_env, [config_home], [])
 
   @doc """
-  Dispatch `c:prepare_sandbox/3`, or `:ok` when the runtime does not
+  Dispatch `c:write_config/3`, or `:ok` when the runtime does not implement it.
+
+  Use this rather than guarding the call yourself — see
+  ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
+  """
+  @spec write_config(module(), Managoat.Sandbox.Handle.t(), agent() | nil, String.t()) ::
+          :ok | {:error, term()}
+  def write_config(mod, handle, agent, config_home) when is_atom(mod),
+    do: dispatch(mod, :write_config, [handle, agent, config_home], :ok)
+
+  @doc """
+  Dispatch `c:prepare_sandbox/4`, or `:ok` when the runtime does not
   implement it.
 
   Use this rather than guarding the call yourself — see
   ["Calling the optional callbacks"](#module-calling-the-optional-callbacks).
   """
-  @spec prepare_sandbox(module(), Managoat.Sandbox.Handle.t(), agent() | nil, [
-          {String.t(), String.t()}
-        ]) :: :ok | {:error, term()}
-  def prepare_sandbox(mod, handle, agent, sprite_env) when is_atom(mod),
-    do: dispatch(mod, :prepare_sandbox, [handle, agent, sprite_env], :ok)
+  @spec prepare_sandbox(
+          module(),
+          Managoat.Sandbox.Handle.t(),
+          agent() | nil,
+          [{String.t(), String.t()}],
+          String.t()
+        ) :: :ok | {:error, term()}
+  def prepare_sandbox(mod, handle, agent, sprite_env, config_home) when is_atom(mod),
+    do: dispatch(mod, :prepare_sandbox, [handle, agent, sprite_env, config_home], :ok)
 
   @doc """
   Dispatch `c:model_env/1`, or `[]` when the runtime does not implement it.

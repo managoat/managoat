@@ -14,14 +14,27 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
   alias Managoat.Sandbox.Handle
 
   defmodule ConfigRuntime do
-    def write_config(_handle, agent), do: {:wrote, agent}
-    def prepare_sandbox(_handle, agent, sprite_env), do: {:prepared, agent, sprite_env}
+    def write_config(_handle, agent, home), do: {:wrote, agent, home}
+
+    def prepare_sandbox(_handle, agent, sprite_env, home),
+      do: {:prepared, agent, sprite_env, home}
   end
 
   defmodule BareRuntime do
   end
 
   defp handle(name \\ "s"), do: %Handle{provider: :sprites, name: name}
+
+  @home "/home/sprite/.managoat/c/9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+
+  # The conversation a runtime step prepares for: its owner, its config home
+  # and no cwd of its own.
+  defp conv(attrs \\ %{}) do
+    Map.merge(
+      %{id: Ecto.UUID.generate(), user_id: nil, runtime: "gemini", config_home: @home, cwd: nil},
+      attrs
+    )
+  end
 
   # The lease a provision would be holding while its pipeline runs.
   defp claim(sandbox) do
@@ -425,61 +438,71 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
     )
   end
 
-  describe "write_runtime_config/3" do
+  describe "write_runtime_config/4" do
     test "delegates to a runtime that writes config, and is :ok for one that does not" do
-      assert {:wrote, %{mcp_servers: %{}}} =
-               Provisioning.write_runtime_config(handle(), ConfigRuntime, %{mcp_servers: %{}})
+      assert {:wrote, %{mcp_servers: %{}}, @home} =
+               Provisioning.write_runtime_config(
+                 handle(),
+                 ConfigRuntime,
+                 %{mcp_servers: %{}},
+                 @home
+               )
 
-      assert :ok = Provisioning.write_runtime_config(handle(), BareRuntime, %{})
+      assert :ok = Provisioning.write_runtime_config(handle(), BareRuntime, %{}, @home)
     end
   end
 
-  describe "write_instructions/3" do
+  describe "write_instructions/4" do
     test "writes the agent's system prompt into the runtime's instructions file" do
       agent = %{name: "Desk", system: "Be brief."}
 
       # `Instructions.write/3` calls the facade's arity-3 `write_file`, and
       # Mimic intercepts a function by arity, so that is the one to stub.
       stub(Managoat.Sandbox, :write_file, fn _handle, path, body ->
-        assert String.ends_with?(path, "GEMINI.md")
+        assert path == @home <> "/.gemini/GEMINI.md"
         assert body =~ "Be brief."
         :ok
       end)
 
-      assert :ok = Provisioning.write_instructions(handle(), "gemini", agent)
+      assert :ok = Provisioning.write_instructions(handle(), "gemini", agent, @home)
     end
 
     test "is best effort: a refused write is still :ok, and no agent is nothing to write" do
       stub(Managoat.Sandbox, :write_file, fn _handle, _path, _body -> {:error, :nope} end)
 
       assert :ok =
-               Provisioning.write_instructions(handle(), "gemini", %{name: "Desk", system: "x"})
+               Provisioning.write_instructions(
+                 handle(),
+                 "gemini",
+                 %{name: "Desk", system: "x"},
+                 @home
+               )
 
-      assert :ok = Provisioning.write_instructions(handle(), "gemini", nil)
+      assert :ok = Provisioning.write_instructions(handle(), "gemini", nil, @home)
     end
   end
 
   describe "prepare_runtime_sprite/7 and prepare_acp_adapter/3" do
     test "a native ACP runtime installs nothing, then the runtime prepares the sandbox" do
-      assert {:prepared, :agent, [{"A", "1"}]} =
+      assert {:prepared, :agent, [{"A", "1"}], @home} =
                Provisioning.prepare_runtime_sprite(
                  handle(),
+                 conv(),
                  "gemini",
                  ConfigRuntime,
                  :agent,
                  [{"A", "1"}],
-                 nil,
                  nil
                )
 
       assert :ok =
                Provisioning.prepare_runtime_sprite(
                  handle(),
+                 conv(%{runtime: "acp"}),
                  "acp",
                  BareRuntime,
                  nil,
                  [],
-                 nil,
                  nil
                )
     end
@@ -495,11 +518,11 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
       assert :ok =
                Provisioning.prepare_runtime_sprite(
                  handle(),
+                 conv(%{runtime: "claude"}),
                  "claude",
                  BareRuntime,
                  nil,
                  [],
-                 nil,
                  nil
                )
 
@@ -508,11 +531,64 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
       assert {:error, _} =
                Provisioning.prepare_runtime_sprite(
                  handle(),
+                 conv(%{runtime: "claude"}),
                  "claude",
                  ConfigRuntime,
                  nil,
                  [],
+                 nil
+               )
+    end
+
+    test "a launch's own cwd is created, with the config home, before the runtime prepares" do
+      test = self()
+
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", ["-c", script], _opts ->
+        send(test, {:exec, script})
+        {:ok, "", 0}
+      end)
+
+      assert {:prepared, nil, [], @home} =
+               Provisioning.prepare_runtime_sandbox(
+                 handle(),
+                 conv(%{cwd: "/home/sprite/work/app"}),
+                 "gemini",
+                 ConfigRuntime,
                  nil,
+                 [],
+                 nil
+               )
+
+      assert_received {:exec, script}
+      assert script == "mkdir -p -- '#{@home}' '/home/sprite/work/app'"
+    end
+
+    test "the runtime's default cwd always exists, so it costs no exec" do
+      reject(&Managoat.Sandbox.exec/4)
+
+      assert {:prepared, nil, [], @home} =
+               Provisioning.prepare_runtime_sandbox(
+                 handle(),
+                 conv(),
+                 "gemini",
+                 ConfigRuntime,
+                 nil,
+                 [],
+                 nil
+               )
+    end
+
+    test "a cwd that cannot be created fails the step before the runtime prepares" do
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "denied", 1} end)
+
+      assert {:error, {:conversation_directories, {:exit, 1}}} =
+               Provisioning.prepare_runtime_sandbox(
+                 handle(),
+                 conv(%{cwd: "/home/sprite/x"}),
+                 "gemini",
+                 ConfigRuntime,
+                 nil,
+                 [],
                  nil
                )
     end

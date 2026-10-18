@@ -279,6 +279,68 @@ defmodule Fountain.Conversations.SpriteEnvTest do
       refute "the-unused-credential" in registered
     end
 
+    # ADR 0097: the variable that points the runtime at the conversation's
+    # config home is in the process env, right after the runtime's defaults,
+    # is no secret, and stays off the machine-wide env file; a tenant's own
+    # value for the same variable still reaches both.
+    test "points the runtime at the config home, unregistered and off the disk" do
+      conv_id = Ecto.UUID.generate()
+      on_exit(fn -> Redaction.delete(conv_id) end)
+      home = "/home/sprite/.managoat/c/#{conv_id}"
+
+      env =
+        SpriteEnv.build(nil, nil, %{},
+          runtime_module: Managoat.Runtimes.Claude,
+          config_home: home,
+          env_credentials: %{anthropic_api_key: "sk-ant-the-real-key"},
+          callback_token: nil,
+          conversation_id: conv_id,
+          sandbox_id: nil
+        )
+
+      assert [
+               {"ANTHROPIC_API_KEY", _},
+               {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"},
+               {"CLAUDE_CONFIG_DIR", ^home} | _
+             ] = env
+
+      refute home in Redaction.lookup(conv_id)
+
+      disk = Fountain.Conversations.Identity.disk_env(env)
+      refute List.keymember?(disk, "CLAUDE_CONFIG_DIR", 0)
+
+      # The acp runtime's skills directory is the conversation's too, under
+      # both of its names.
+      acp =
+        SpriteEnv.build(nil, nil, %{},
+          runtime_module: Fountain.CommandRuntime,
+          config_home: home,
+          env_credentials: %{},
+          callback_token: nil,
+          conversation_id: conv_id,
+          sandbox_id: nil
+        )
+
+      assert {"MANAGOAT_SKILLS_DIR", home <> "/skills"} in acp
+      assert {"FOUNTAIN_SKILLS_DIR", home <> "/skills"} in acp
+
+      assert Fountain.Conversations.Identity.disk_env(acp)
+             |> List.keyfind("MANAGOAT_SKILLS_DIR", 0) == nil
+
+      # A legacy home is the runtime's default directory: harmless on disk.
+      legacy =
+        SpriteEnv.build(nil, nil, %{},
+          runtime_module: Managoat.Runtimes.Codex,
+          config_home: "/home/sprite/.codex",
+          env_credentials: %{},
+          callback_token: nil,
+          conversation_id: conv_id,
+          sandbox_id: nil
+        )
+
+      assert {"CODEX_HOME", "/home/sprite/.codex"} in legacy
+    end
+
     # `Broker.proxy_env/1` puts the session token in a URL's userinfo. The URL
     # is not a secret — its host is on the `broker` stage event — and holding
     # every chunk that ends in `h` against it is the #2366 cost in miniature.

@@ -1,6 +1,6 @@
 defmodule Managoat.Runtimes.ProvisioningTest do
   @moduledoc """
-  The imperative half of each runtime — `prepare_sandbox/3`, `write_config/2`
+  The imperative half of each runtime — `prepare_sandbox/4`, `write_config/3`
   and the adapter install — driven against a stubbed sandbox.
 
   In Fountain these paths were covered by the conversation server's
@@ -18,6 +18,7 @@ defmodule Managoat.Runtimes.ProvisioningTest do
   setup :verify_on_exit!
 
   @handle %Sandbox.Handle{provider: :sprites, name: "prov-test"}
+  @home "/home/sprite/.managoat/c/5a0c9d3e-2b1f-4e6a-8c7d-9e0f1a2b3c4d"
 
   describe "Codex" do
     test "default_env/2 exports OPENAI_API_KEY, or nothing" do
@@ -26,8 +27,10 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       assert Codex.default_env(nil, %{}) == []
     end
 
-    test "prepare_sandbox/3 writes auth.json as `codex login --with-api-key` does" do
-      expect(Sandbox, :write_file, fn @handle, "/home/sprite/.codex/auth.json", body, opts ->
+    test "prepare_sandbox/4 writes auth.json, in the config home, as `codex login --with-api-key` does" do
+      path = "#{@home}/auth.json"
+
+      expect(Sandbox, :write_file, fn @handle, ^path, body, opts ->
         assert opts[:mode] == 0o600
         assert Jason.decode!(body) == %{"auth_mode" => "apikey", "OPENAI_API_KEY" => "sk-1"}
         :ok
@@ -37,22 +40,40 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       # runner) logs in the same way.
       reject(&Sandbox.spawn/4)
 
-      assert :ok = Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", "sk-1"}])
+      assert :ok = Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", "sk-1"}], @home)
+    end
+
+    test "a legacy home writes the auth.json codex read before config homes" do
+      expect(Sandbox, :write_file, fn @handle, "/home/sprite/.codex/auth.json", _body, _opts ->
+        :ok
+      end)
+
+      assert :ok =
+               Codex.prepare_sandbox(
+                 @handle,
+                 nil,
+                 [{"OPENAI_API_KEY", "sk-1"}],
+                 "/home/sprite/.codex"
+               )
+    end
+
+    test "config_env points codex at the conversation's config home" do
+      assert Codex.config_env(@home) == [{"CODEX_HOME", @home}]
     end
 
     test "a refused write is a tagged error" do
       expect(Sandbox, :write_file, fn _h, _p, _b, _o -> {:error, {:unavailable, :closed}} end)
 
       assert {:error, {:codex_auth_write, {:unavailable, :closed}}} =
-               Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", "sk"}])
+               Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", "sk"}], @home)
     end
 
     test "no key in the env is named, rather than left for the first turn to 401 on" do
       reject(&Sandbox.write_file/4)
-      assert {:error, :missing_openai_api_key} = Codex.prepare_sandbox(@handle, nil, [])
+      assert {:error, :missing_openai_api_key} = Codex.prepare_sandbox(@handle, nil, [], @home)
 
       assert {:error, :missing_openai_api_key} =
-               Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", ""}])
+               Codex.prepare_sandbox(@handle, nil, [{"OPENAI_API_KEY", ""}], @home)
     end
   end
 
@@ -60,12 +81,16 @@ defmodule Managoat.Runtimes.ProvisioningTest do
     test "has no sandbox bootstrap: the pinned CLI lists its models itself" do
       reject(&Sandbox.exec/4)
 
-      refute Managoat.Runtimes.implements?(Claude, :prepare_sandbox, 3)
+      refute Managoat.Runtimes.implements?(Claude, :prepare_sandbox, 4)
 
       assert :ok =
-               Managoat.Runtimes.prepare_sandbox(Claude, @handle, nil, [
-                 {"ANTHROPIC_API_KEY", "sk"}
-               ])
+               Managoat.Runtimes.prepare_sandbox(
+                 Claude,
+                 @handle,
+                 nil,
+                 [{"ANTHROPIC_API_KEY", "sk"}],
+                 @home
+               )
     end
 
     test "model_env/2 dispatches to claude, and is empty for a runtime without it" do
@@ -96,22 +121,24 @@ defmodule Managoat.Runtimes.ProvisioningTest do
 
   describe "configuration no-ops" do
     test "an agent without runtime-specific config writes nothing" do
-      assert :ok = Managoat.Runtimes.Instructions.write(@handle, "claude", %{})
+      assert :ok = Managoat.Runtimes.Instructions.write(@handle, "claude", %{}, @home)
     end
   end
 
   describe "Gemini" do
-    test "default_env/2 exports the key, workspace trust and HOME=/tmp, and the last two without a key" do
+    test "default_env/2 exports the key and workspace trust, the last without a key, and no HOME" do
       trust = {"GEMINI_CLI_TRUST_WORKSPACE", "true"}
 
-      assert Gemini.default_env(nil, %{gemini_api_key: "g"}) ==
-               [{"GEMINI_API_KEY", "g"}, trust, {"HOME", "/tmp"}]
-
-      assert Gemini.default_env(nil, %{gemini_api_key: ""}) == [trust, {"HOME", "/tmp"}]
-      assert Gemini.default_env(nil, %{}) == [trust, {"HOME", "/tmp"}]
+      assert Gemini.default_env(nil, %{gemini_api_key: "g"}) == [{"GEMINI_API_KEY", "g"}, trust]
+      assert Gemini.default_env(nil, %{gemini_api_key: ""}) == [trust]
+      assert Gemini.default_env(nil, %{}) == [trust]
     end
 
-    test "write_config/2 writes user-scope MCP servers under gemini's own HOME" do
+    test "config_env points gemini's home at the conversation's config home" do
+      assert Gemini.config_env(@home) == [{"GEMINI_CLI_HOME", @home}]
+    end
+
+    test "write_config/3 writes user-scope MCP servers under gemini's own .gemini" do
       test = self()
 
       expect(Sandbox, :write_file, fn @handle, path, body ->
@@ -120,16 +147,26 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       end)
 
       servers = %{"fs" => %{"command" => "mcp-fs"}}
-      assert :ok = Gemini.write_config(@handle, %{mcp_servers: servers})
+      assert :ok = Gemini.write_config(@handle, %{mcp_servers: servers}, @home)
 
-      assert_receive {:wrote, "/tmp/.gemini/settings.json", body}
+      path = "#{@home}/.gemini/settings.json"
+      assert_receive {:wrote, ^path, body}
       assert Jason.decode!(body) == %{"mcpServers" => servers}
     end
 
-    test "write_config/2 writes nothing without servers" do
-      assert :ok = Gemini.write_config(@handle, nil)
-      assert :ok = Gemini.write_config(@handle, %{mcp_servers: %{}})
-      assert :ok = Gemini.write_config(@handle, %{mcp_servers: nil})
+    test "write_config/3 without servers writes an empty list, so a dropped server goes" do
+      test = self()
+
+      stub(Sandbox, :write_file, fn @handle, path, body ->
+        send(test, {:wrote, path, body})
+        :ok
+      end)
+
+      for agent <- [nil, %{mcp_servers: %{}}, %{mcp_servers: nil}] do
+        assert :ok = Gemini.write_config(@handle, agent, "/tmp")
+        assert_receive {:wrote, "/tmp/.gemini/settings.json", body}
+        assert Jason.decode!(body) == %{"mcpServers" => %{}}
+      end
     end
 
     test "a refused config write is reported, not swallowed" do
@@ -137,11 +174,13 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       # spend its attempts on it and the error comes straight back.
       expect(Sandbox, :write_file, fn _h, _p, _b -> {:error, :not_found} end)
 
-      assert {:error, {:runtime_config, "/tmp/.gemini/settings.json", :not_found}} =
-               Gemini.write_config(@handle, %{mcp_servers: %{"a" => %{}}})
+      path = "#{@home}/.gemini/settings.json"
+
+      assert {:error, {:runtime_config, ^path, :not_found}} =
+               Gemini.write_config(@handle, %{mcp_servers: %{"a" => %{}}}, @home)
     end
 
-    test "prepare_sandbox/3 installs the session-store workaround, then git-inits the workspace" do
+    test "prepare_sandbox/4 installs the session-store workaround, then git-inits the workspace" do
       test = self()
 
       expect(Sandbox, :write_file, fn @handle, path, _body ->
@@ -154,8 +193,8 @@ defmodule Managoat.Runtimes.ProvisioningTest do
         {:ok, "", 0}
       end)
 
-      env = [{"HOME", "/tmp"}]
-      assert :ok = Gemini.prepare_sandbox(@handle, nil, env)
+      env = [{"GEMINI_CLI_HOME", @home}]
+      assert :ok = Gemini.prepare_sandbox(@handle, nil, env, @home)
 
       assert_receive {:wrote, "/tmp/gemini-session-consolidate.js"}
       assert_receive {:exec, script, ^env}
@@ -172,12 +211,12 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       expect(Sandbox, :exec, fn _h, _c, _a, _o -> {:ok, "fatal", 128} end)
 
       assert {:error, {:gemini_workspace_init_exit, 128}} =
-               Gemini.prepare_sandbox(@handle, nil, [])
+               Gemini.prepare_sandbox(@handle, nil, [], @home)
 
       expect(Sandbox, :exec, fn _h, _c, _a, _o -> {:error, :unavailable} end)
 
       assert {:error, {:gemini_workspace_init, :unavailable}} =
-               Gemini.prepare_sandbox(@handle, nil, [])
+               Gemini.prepare_sandbox(@handle, nil, [], @home)
     end
   end
 
