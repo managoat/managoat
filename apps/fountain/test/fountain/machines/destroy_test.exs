@@ -309,7 +309,7 @@ defmodule Fountain.Machines.DestroyTest do
       refute_receive {:cotenant, _}, 100
     end
 
-    test "with no notice, nobody is told", ctx do
+    test "with no notice, every bound conversation is told in the destroy's words", ctx do
       other =
         insert_conversation(
           user_id: ctx.user.id,
@@ -324,7 +324,14 @@ defmodule Fountain.Machines.DestroyTest do
       assert {:ok, :destroyed} =
                Destroy.run(ctx.sandbox.id, actor: "self", reason: :reclaimed)
 
-      refute_receive {:cotenant, _}, 200
+      # ADR 0097: `machine_gone` tells every conversation bound to the
+      # machine, whoever asked for the destroy.
+      sandbox_id = ctx.sandbox.id
+
+      assert_receive {:cotenant,
+                      {:"$gen_cast",
+                       {:machine_gone, ^sandbox_id, "reclaimed", "reclaimed", "The sandbox" <> _}}},
+                     2_000
     end
   end
 

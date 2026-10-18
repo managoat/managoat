@@ -93,16 +93,27 @@ defmodule Fountain.Conversations.Termination do
   end
 
   @doc """
+  What a live server's terminate does to its machine once the detach has
+  answered (ADR 0097): an explicit workspace's machine (`:detached`) stays for
+  the conversations still on it, so nothing more is done to it; any other is
+  destroyed (`destroy_after_terminate/2`). The conversation's own adapter has
+  stopped and its config home is being removed either way.
+  """
+  @spec end_machine(String.t() | nil, :detached | :fenced | :already_terminal, keyword()) :: :ok
+  def end_machine(_sandbox_id, :detached, _opts), do: :ok
+  def end_machine(sandbox_id, _outcome, opts), do: destroy_after_terminate(sandbox_id, opts)
+
+  @doc """
   Remove an ending conversation's config home from its machine, once its
   adapter has stopped (ADR 0097): `Fountain.Conversations.ConfigHome.remove/2`,
   best effort, from the live server's terminate path.
 
   Only on a machine that is awake (`ready`): an exec on a parked one would
-  resume it to delete a directory, and the machine goes with the conversation
-  anyway. That is also why the dead-server path does not do this. Until a
-  machine can outlive a conversation (ADR 0097's later steps) the destroy that
-  follows removes the directory regardless; this is the path that keeps it
-  from being left behind once it does.
+  resume it to delete a directory. On an implicit workspace the destroy that
+  follows removes the directory regardless; on an explicit one, whose machine
+  stays, this is what keeps it from being left behind. A conversation ended
+  while its explicit workspace's machine is parked leaves its home on the
+  disk (the dead-server path, `release_kept/2`, has the same rule).
 
   `state` is the server's: its `handle`, `sandbox_id` and `conversation_id`.
 
@@ -133,7 +144,8 @@ defmodule Fountain.Conversations.Termination do
   def remove_config_home_now(%{handle: handle, sandbox_id: sandbox_id, conversation_id: conv_id}) do
     # ownership: the conversation's own server, which established both rows
     # at init.
-    with %Sandbox{status: "ready"} <- Conversations._unsafe_get_sandbox(sandbox_id),
+    with %Sandbox{status: "ready"} = sandbox <- Conversations._unsafe_get_sandbox(sandbox_id),
+         true <- at_rest?(sandbox),
          # ownership: as above.
          %Conversation{} = conv <- Conversations._unsafe_get_conversation(conv_id) do
       Fountain.Conversations.ConfigHome.remove(handle, conv)
@@ -252,14 +264,19 @@ defmodule Fountain.Conversations.Termination do
            metadata: Keyword.get(opts, :metadata),
            audit: Keyword.get(opts, :audit_destroy, true)
          ) do
-      {:ok, :detached} when background? ->
+      {:ok, :fenced} when background? ->
         destroy_after_terminate(
           conv.sandbox_id,
           Keyword.put(opts, :terminating_conversation_id, nil)
         )
 
+      # An explicit workspace keeps its machine (ADR 0097); what is left is
+      # this conversation's own: its adapter and its config home.
+      {:ok, :detached} ->
+        release_kept(conv, conv.sandbox_id)
+
       {:ok, _outcome} ->
-        :ok
+        Fountain.Workspaces.release_ended(conv.sandbox_id)
 
       {:error, _} = error ->
         error
@@ -287,7 +304,10 @@ defmodule Fountain.Conversations.Termination do
   def destroy_after_terminate(sandbox_id, opts) do
     destroy = fn ->
       case _unsafe_destroy_machine(sandbox_id, opts) do
-        {:ok, _outcome} -> :ok
+        # The machine is gone, so an implicit workspace whose conversation
+        # has ended goes with it (ADR 0097). If the conversation's own
+        # terminal write has not landed yet, that write releases it instead.
+        {:ok, _outcome} -> Fountain.Workspaces.release_ended(sandbox_id)
         {:error, reason} -> Logger.warning("sandbox #{sandbox_id}: destroy: #{inspect(reason)}")
       end
     end
@@ -300,6 +320,63 @@ defmodule Fountain.Conversations.Termination do
 
     :ok
   end
+
+  @doc """
+  What ending a conversation leaves to do on an explicit workspace's machine,
+  which stays (ADR 0097), when no server of the conversation is alive to do
+  it: stop the conversation's own adapter sessions (a detachable adapter
+  outlives the server that started it; matched by its tag,
+  `Fountain.Conversations.Identity.owned_sessions/3`) and remove its config
+  home. In a supervised task, best effort, and only on an awake machine, for
+  `remove_config_home/1`'s reason. Never another conversation's session: one
+  that is untagged or tagged for someone else is left alone.
+  """
+  @spec release_kept(Conversation.t(), String.t() | nil) :: :ok
+  def release_kept(_conv, nil), do: :ok
+
+  def release_kept(%Conversation{} = conv, sandbox_id) do
+    _ =
+      Task.Supervisor.start_child(Fountain.TaskSupervisor, fn ->
+        release_kept_now(conv, sandbox_id)
+      end)
+
+    :ok
+  end
+
+  @doc false
+  @spec release_kept_now(Conversation.t(), String.t()) :: :ok
+  def release_kept_now(%Conversation{} = conv, sandbox_id) do
+    # ownership: the conversation the caller established; its own machine.
+    with %Sandbox{status: "ready"} = sandbox <- Conversations._unsafe_get_sandbox(sandbox_id),
+         true <- at_rest?(sandbox) do
+      handle =
+        Managoat.Sandbox.build_handle(
+          Conversations.sandbox_provider_atom(sandbox),
+          sandbox.machine_name
+        )
+
+      with {:ok, sessions} <- Managoat.Sandbox.list_sessions(handle) do
+        handle
+        |> Fountain.Conversations.Identity.owned_sessions(sessions, conv.id)
+        |> Enum.each(&Fountain.Conversations.Connection.reap_session(handle, &1.id))
+      end
+
+      Fountain.Conversations.ConfigHome.remove(handle, conv)
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.info("conv #{conv.id}: kept machine not tidied: #{Exception.message(error)}")
+      :ok
+  end
+
+  # Awake and nobody operating on it: an exec under a co-tenant's park could
+  # bring a paused machine back up behind a row that says `suspended` (E2B),
+  # and under a destroy it has nothing to tidy (review of step 4a). Best
+  # effort: a check, not a lock, and a home left behind is only disk.
+  defp at_rest?(%Sandbox{} = sandbox),
+    do: is_nil(sandbox.transition) and not Machine.busy?(sandbox)
 
   @doc """
   Support teardown of any tenant's sandbox, from the admin panel. Moved from
@@ -444,6 +521,10 @@ defmodule Fountain.Conversations.Termination do
     case Repo.update_all(query, set: [status: "terminated", updated_at: now]) do
       {1, [conv]} ->
         Conversations.broadcast_sidebar_update(conv.user_id)
+        # An implicit workspace ends with its conversation (ADR 0097), once
+        # its machine has gone too; a destroy still running releases it when
+        # it finishes (`destroy_after_terminate/2`).
+        Fountain.Workspaces.release_ended(sandbox_id)
         {:ok, conv}
 
       {0, _} ->

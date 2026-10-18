@@ -283,13 +283,14 @@ defmodule Fountain.Machines.AdmissionTest do
       assert Repo.reload!(ctx.sandbox).status == "suspended"
     end
 
-    test "and a caller still waiting when the park finishes is admitted (the positive control)",
+    test "and a caller still waiting when the park finishes is refused by the parked machine",
          ctx do
       # The same shape with a deadline the park finishes inside: the queued
-      # admission runs. It lands on a `suspended` machine, which is admissible
-      # here as on `main` — the caller's wake is what resumes it (see the
-      # moduledoc); what this pins is that the deadline, and nothing else, is
-      # what refused the case above.
+      # admission runs, and finds the machine `suspended`. Since ADR 0097 a
+      # park is the workspace's, so it can land under another conversation's
+      # prompt, and a turn admitted onto a parked row would run where no sweep
+      # looks; it is refused, promptly, by the row and not by the deadline
+      # (see the moduledoc).
       test = self()
 
       stub(Managoat.Sandbox, :suspend, fn _ ->
@@ -313,14 +314,28 @@ defmodule Fountain.Machines.AdmissionTest do
         end)
 
       assert_receive :suspending, 2_000
+      started = System.monotonic_time(:millisecond)
 
-      assert {:ok, %Turn{status: "running"}} =
-               Machine.admit_turn(ctx.sandbox.id, attrs(ctx.conv), admit_timeout_ms: 5_000)
+      quietly(fn ->
+        assert {:error, :sandbox_unavailable} =
+                 Machine.admit_turn(ctx.sandbox.id, attrs(ctx.conv), admit_timeout_ms: 5_000)
+      end)
+
+      assert System.monotonic_time(:millisecond) - started < 4_000,
+             "refused by the deadline rather than by the parked machine"
 
       assert_receive {:park, {:ok, :parked}}, 5_000
       Task.await(park)
 
-      assert [%Turn{status: "running"}] = turns(ctx.conv)
+      assert turns(ctx.conv) == []
+      assert Repo.reload!(ctx.sandbox).status == "suspended"
+    end
+
+    test "a ready machine with an idle lease admits as before (the positive control)", ctx do
+      # What the case above leaves unpinned: the refusal is the parked row's,
+      # and a machine at rest that is not parked still admits.
+      assert {:ok, %Turn{status: "running"}} =
+               Machine.admit_turn(ctx.sandbox.id, attrs(ctx.conv), admit_timeout_ms: 5_000)
     end
 
     test "an expired message under a live cotenant lease is refused from one clock read", ctx do

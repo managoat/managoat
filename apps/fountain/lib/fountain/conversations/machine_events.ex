@@ -33,7 +33,9 @@ defmodule Fountain.Conversations.MachineEvents do
         Output.publish_stage(state.conversation_id, "sandbox", "done", %{
           event: event,
           reason: reason,
-          by: "another_conversation",
+          # The machine's owner sent it, for whoever asked (a co-tenant's
+          # park, a reclaim, an admin reap): ADR 0097.
+          by: "machine_owner",
           message: message
         })
 

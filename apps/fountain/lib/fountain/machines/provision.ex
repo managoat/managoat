@@ -1082,6 +1082,25 @@ defmodule Fountain.Machines.Provision do
   # path. `main` recorded nothing, so a machine that came back this way was
   # missing from its tenant's trail exactly as a wake was before 7a.
   defp confirm(%Sandbox{status: "suspended"} = sandbox, epoch, opts) do
+    # An explicit workspace's machine parked under this reattach is a
+    # co-tenant's park (ADR 0097), not a wake that already resumed it: the
+    # provider was not asked to resume it, so writing it `ready` would put a
+    # paused machine (E2B) behind a row that says it is up. Refused under the
+    # lease; the server stops and the next prompt's wake resumes it (review of
+    # step 4a). An implicit one is confirmed as it always was.
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> {:error, :sandbox_unavailable}
+      :implicit -> confirm_parked(sandbox, epoch, opts)
+    end
+  end
+
+  defp confirm(%Sandbox{} = sandbox, epoch, _opts) do
+    with {:ok, %Sandbox{}} <-
+           settle_confirm(Lease.cas_update(sandbox.id, epoch, [status: "ready"], [])),
+         do: {:ok, :confirmed}
+  end
+
+  defp confirm_parked(%Sandbox{} = sandbox, epoch, opts) do
     attrs = [
       status: "ready",
       last_resumed_at: DateTime.utc_now() |> DateTime.truncate(:second)
@@ -1091,12 +1110,6 @@ defmodule Fountain.Machines.Provision do
       audit(up, "sandbox.resumed", %{}, opts)
       {:ok, :confirmed}
     end
-  end
-
-  defp confirm(%Sandbox{} = sandbox, epoch, _opts) do
-    with {:ok, %Sandbox{}} <-
-           settle_confirm(Lease.cas_update(sandbox.id, epoch, [status: "ready"], [])),
-         do: {:ok, :confirmed}
   end
 
   defp settle_confirm({:ok, %Sandbox{}} = ok), do: ok

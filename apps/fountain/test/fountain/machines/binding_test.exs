@@ -106,7 +106,7 @@ defmodule Fountain.Machines.BindingTest do
          ctx do
       reject(&Managoat.Sandbox.destroy/1)
 
-      assert {:ok, :detached} = Machine.detach(ctx.sandbox.id, detach_opts(ctx, destroy: false))
+      assert {:ok, :fenced} = Machine.detach(ctx.sandbox.id, detach_opts(ctx, destroy: false))
 
       assert Repo.reload!(ctx.sandbox).transition == "destroying"
       assert Repo.reload!(ctx.sandbox).status == "ready"
@@ -132,7 +132,7 @@ defmodule Fountain.Machines.BindingTest do
 
       reject(&Managoat.Sandbox.destroy/1)
 
-      assert {:ok, :detached} =
+      assert {:ok, :fenced} =
                Machine.detach(
                  ctx.sandbox.id,
                  detach_opts(ctx, destroy: false, destroy_reason: :replaced)
@@ -175,7 +175,7 @@ defmodule Fountain.Machines.BindingTest do
       # The positive control: the same detach inside its deadline decides.
       future = DateTime.add(DateTime.utc_now(), 60, :second)
 
-      assert {:ok, :detached} =
+      assert {:ok, :fenced} =
                Binding.detach(ctx.sandbox.id, conversation_id: ctx.conv.id, deadline: future)
 
       assert Repo.reload!(ctx.sandbox).transition == "destroying"
@@ -384,6 +384,8 @@ defmodule Fountain.Machines.BindingTest do
       # different veto (`busy_elsewhere?`), and not the one under test.
       Repo.delete_all(from t in Turn, where: t.conversation_id == ^ctx.cotenant.id)
       Repo.delete!(ctx.cotenant)
+      # The ceiling parks only an explicit workspace's machine (ADR 0097).
+      explicit_workspace!(ctx.sandbox)
       opts = [actor: "system:conversation_server", requesting_conversation_id: ctx.conv.id]
       turn_id = ctx.turn.id
 
@@ -429,6 +431,7 @@ defmodule Fountain.Machines.BindingTest do
       stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
       Repo.delete_all(from t in Turn, where: t.conversation_id == ^ctx.cotenant.id)
       Repo.delete!(ctx.cotenant)
+      explicit_workspace!(ctx.sandbox)
       opts = [actor: "system:conversation_server", requesting_conversation_id: ctx.conv.id]
 
       orphaned = fn ->

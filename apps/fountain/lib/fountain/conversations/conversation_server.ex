@@ -549,10 +549,12 @@ defmodule Fountain.Conversations.ConversationServer do
         case sandbox.status do
           s when s in ["ready", "suspended"] ->
             # Provisioned in a previous BEAM lifetime: reattach, never recreate.
-            # `suspended` here means the reaper parked the row mid-wake; the
-            # catch-all would provision a second sprite over a live one, and
-            # do_reattach flips the row back to ready.
-            reattach(state, conv, sandbox, agent, env, secrets)
+            # `suspended` here is a park that landed mid-wake (the reaper's, or
+            # a co-tenant's, ADR 0097), resumed through its owner first.
+            case Reattachment.awake(sandbox, conv.id) do
+              {:ok, sandbox} -> reattach(state, conv, sandbox, agent, env, secrets)
+              {:error, _} -> {:stop, :normal, state}
+            end
 
           s when s in ["pending", "starting"] ->
             FreshProvision.run(state, conv, sandbox, agent, env, secrets)
@@ -856,13 +858,14 @@ defmodule Fountain.Conversations.ConversationServer do
     end
   end
 
-  # The last-detach decision is the owner's (ADR 0058 stage 8b): kept, or
-  # fenced and this server's to finish once its adapter is closed. A machine
-  # somebody else already finished reads as fenced too, as a terminal row did.
+  # The last-detach decision is the owner's (ADR 0058 stage 8b, keyed by the
+  # workspace's kind by ADR 0097): kept (`:detached`), or fenced and this
+  # server's to finish once its adapter is closed. A machine somebody else
+  # already finished reads as fenced too, as a terminal row did.
   def handle_call({:terminate_conv, opts}, _from, state) when is_list(opts) do
     case detach_machine(state, opts) do
-      {:ok, outcome} when outcome in [:detached, :already_terminal] ->
-        terminate_machine(state, opts)
+      {:ok, outcome} when outcome in [:detached, :fenced, :already_terminal] ->
+        terminate_machine(state, opts, outcome)
 
       {:error, _} = error ->
         {:reply, error, state}
@@ -1268,13 +1271,13 @@ defmodule Fountain.Conversations.ConversationServer do
   #
   # ownership: init/1 established this actor's conversation and sandbox, and
   # the detach above has just re-checked the binding under the sandbox lock.
-  defp terminate_machine(state, opts) do
+  defp terminate_machine(state, opts, outcome) do
     state = if state.current_turn, do: interrupt_turn(state), else: state
     state = drop_connection(state, "terminated")
     :ok = Termination.remove_config_home(state)
     opts = Keyword.put(opts, :terminating_conversation_id, nil)
 
-    Termination.destroy_after_terminate(state.sandbox_id, opts)
+    Termination.end_machine(state.sandbox_id, outcome, opts)
     Egress.release(state.conversation_id)
     finish_termination(state, %{})
   end
@@ -1328,9 +1331,14 @@ defmodule Fountain.Conversations.ConversationServer do
     end
   end
 
-  # Max lifetime: destroyed, whatever the provider (`Machines.Policy`). A
-  # persistent home was parked here until homes were removed (#2676).
-  defp reclaim_sandbox(state, :max_lifetime), do: destroy_sandbox(state, :max_lifetime)
+  # Max lifetime: destroyed on an implicit workspace, parked on an explicit
+  # one after every turn on it is cut (`Lifecycle.ceiling_action/2`, ADR 0097).
+  defp reclaim_sandbox(state, :max_lifetime) do
+    case Lifecycle.ceiling_action(state.sandbox_id, state.handle) do
+      :park -> park_sandbox(state, :max_lifetime)
+      :destroy -> destroy_sandbox(state, :max_lifetime)
+    end
+  end
 
   # ownership: the conversation this actor was started for; no id here came
   # from a request.

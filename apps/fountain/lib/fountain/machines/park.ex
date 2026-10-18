@@ -370,6 +370,14 @@ defmodule Fountain.Machines.Park do
       Lifecycle.idle_action(Conversations.sandbox_provider_atom(sandbox)) == :destroy ->
         {:error, :cannot_park}
 
+      # The ceiling parks only an explicit workspace's machine (ADR 0097,
+      # `Machines.Policy.reclaim_action/3`); an implicit one is destroyed
+      # there, and a caller that asks to park one is told so in the word it
+      # already degrades to a destroy on. The kind is fixed at create.
+      Keyword.fetch!(opts, :reason) == :max_lifetime and
+          Fountain.Workspaces.machine_kind(sandbox) == :implicit ->
+        {:error, :cannot_park}
+
       true ->
         occupancy_and_clock(sandbox, opts)
     end
@@ -408,7 +416,7 @@ defmodule Fountain.Machines.Park do
       running_turn_veto?(occupancy, opts) ->
         {:error, :machine_occupied}
 
-      held_by_somebody_else?(occupancy, Keyword.get(opts, :requesting_conversation_id)) ->
+      held_by_somebody_else?(occupancy, Keyword.get(opts, :requesting_conversation_id), opts) ->
         {:error, :machine_occupied}
 
       still_expired?(sandbox, occupancy, Keyword.get(opts, :verdict)) ->
@@ -464,25 +472,41 @@ defmodule Fountain.Machines.Park do
   # The requester is the exception to the exception: it *is* the thing driving
   # its own turn, so its own counts whether or not the registry agrees (and in
   # a test there is no registered server at all).
+  #
+  # **Since ADR 0097 the ceiling cuts every turn, not only the requester's.**
+  # Only an explicit workspace's machine is parked there (the clause in
+  # `admissible/2`), and its ceiling interrupts every running turn on it and
+  # then parks, without waiting for them: the ceiling exists for the machine
+  # that never stops being busy, and in a workspace that can be any of its
+  # conversations. So at the ceiling no running turn vetoes, and
+  # `end_cut_turn/2` ends them all.
   defp running_turn_veto?(%Occupancy{} = occupancy, opts) do
     requester = Keyword.get(opts, :requesting_conversation_id)
     ceiling? = Keyword.fetch!(opts, :reason) == :max_lifetime
     live = MapSet.new(Occupancy.live_ids(occupancy))
 
-    occupancy
-    |> Occupancy.running_turn_ids()
-    |> Enum.any?(fn conv_id ->
-      if conv_id == requester,
-        do: not ceiling?,
-        else: MapSet.member?(live, conv_id)
-    end)
+    not ceiling? and
+      occupancy
+      |> Occupancy.running_turn_ids()
+      |> Enum.any?(fn conv_id -> conv_id == requester or MapSet.member?(live, conv_id) end)
   end
 
-  defp held_by_somebody_else?(%Occupancy{} = occupancy, nil),
+  defp held_by_somebody_else?(%Occupancy{} = occupancy, nil, _opts),
     do: Occupancy.any_live?(occupancy)
 
-  defp held_by_somebody_else?(%Occupancy{} = occupancy, requester),
-    do: Occupancy.busy_elsewhere?(occupancy, requester, Lifecycle.idle_timeout_seconds())
+  # A server at the ceiling parks over its co-tenants' activity: the ceiling
+  # is the workspace's continuous run, not one conversation's idleness.
+  #
+  # A co-tenant mid-wake (its server setting up, its prompt not yet a turn
+  # row) is activity too, or an idle co-tenant's park lands under its prompt
+  # (review of step 4a).
+  defp held_by_somebody_else?(%Occupancy{} = occupancy, requester, opts) do
+    Keyword.fetch!(opts, :reason) != :max_lifetime and
+      (Occupancy.busy_elsewhere?(occupancy, requester, Lifecycle.idle_timeout_seconds()) or
+         occupancy
+         |> Occupancy.live_ids()
+         |> Enum.any?(&(&1 != requester and Fountain.Conversations.ServerPhase.setting_up?(&1))))
+  end
 
   @doc """
   Is the machine still past a lifetime bound, given the verdict its caller
@@ -545,7 +569,7 @@ defmodule Fountain.Machines.Park do
     # over either way. Between the two committed writes a second connection sees
     # an interrupted turn on an unstamped row under a live lease, which is a
     # state nothing refuses.
-    end_cut_turn(sandbox, opts)
+    opts = end_cut_turn(sandbox, opts)
 
     case Lease.cas_update(sandbox.id, epoch,
            transition: "parking",
@@ -788,15 +812,30 @@ defmodule Fountain.Machines.Park do
   # either order: `end_turn/3` on a turn already terminal is `:noop` and
   # records nothing, whichever side got there first. `binding_test.exs` drives
   # both orders.
+  #
+  # **At the ceiling every running turn is cut** (ADR 0097): the requester's,
+  # every co-tenant's, and one nothing is driving, each marked interrupted
+  # with its transcript kept. Then, still before the stamp and the suspend,
+  # the co-tenants' servers are told (`notify_cotenants/2`), so each cancels
+  # its adapter and stops rather than leaving it running on a machine about to
+  # be parked; the park does not wait for them. They are told once: the
+  # finalize does not tell them again. Answers `opts`, marked when they have
+  # been told. A stamp then refused (`:stale`, `:retired`) has cut the turns
+  # and stopped the servers for a park that did not happen, the trade the
+  # requester's own turn already made above; each conversation's next prompt
+  # wakes it, and the ceiling was reclaiming the machine either way.
   defp end_cut_turn(%Sandbox{} = sandbox, opts) do
-    with :max_lifetime <- Keyword.fetch!(opts, :reason),
-         requester when is_binary(requester) <- Keyword.get(opts, :requesting_conversation_id) do
-      Admission.end_turns_on(sandbox.id, "machine_parked",
-        only: requester,
-        actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
-      )
-    else
-      _ -> :ok
+    case Keyword.fetch!(opts, :reason) do
+      :max_lifetime ->
+        Admission.end_turns_on(sandbox.id, "machine_parked",
+          actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
+        )
+
+        notify_cotenants(sandbox, opts)
+        Keyword.put(opts, :cotenants_told, true)
+
+      :idle ->
+        opts
     end
   end
 
@@ -837,15 +876,27 @@ defmodule Fountain.Machines.Park do
   # handle. Only a caller that knows what to say says it — the wording is the
   # caller's — and the reaper, which has no conversation of its own and never
   # notified before ADR 0058, still does not.
+  #
+  # `machine_gone` tells every conversation bound to the machine (ADR 0097),
+  # **the requester's own included**: a requester whose park returns stops
+  # straight after, so its own notice is never read, but one whose call to the
+  # owner timed out while the park went on is still running, bound to a machine
+  # that is now parked, and the notice is what stops it (review of step 4a). A
+  # caller with no wording of its own gets the park's own. The reaper's park,
+  # the one such caller, reaches only machines with no live server.
   defp notify_cotenants(%Sandbox{} = sandbox, opts) do
-    case Keyword.get(opts, :notify) do
-      nil ->
-        :ok
+    if Keyword.get(opts, :cotenants_told, false) do
+      :ok
+    else
+      reason = Keyword.fetch!(opts, :reason)
 
-      {conversation_id, event, reason, message} ->
-        sandbox.id
-        |> Conversations._unsafe_list_cotenant_ids(conversation_id)
-        |> MachineEvents.tell_cotenants(sandbox.id, event, reason, message)
+      {_requester, event, why, message} =
+        Keyword.get(opts, :notify) ||
+          {nil, "suspended", to_string(reason), Lifecycle.explain(reason, :suspend)}
+
+      sandbox.id
+      |> Conversations._unsafe_list_cotenant_ids(nil)
+      |> MachineEvents.tell_cotenants(sandbox.id, event, why, message)
     end
   end
 end

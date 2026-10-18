@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "One sandbox per conversation"
-description: "Every conversation runs on a sandbox of its own, destroyed when the conversation ends; parking stays."
+description: "Every conversation without a workspace runs on a sandbox of its own (an implicit workspace, ADR 0097), destroyed when the conversation ends; parking stays."
 tags: [sandbox, lifecycle, conversations, product]
 status: stable
 adr: "0073"
@@ -15,6 +15,11 @@ date: 2026-10-14
 tracked on #2676. Supersedes [0023](0023-persistent-agent-sandbox.md); amends
 [0058](0058-the-machine-has-one-owner.md) and
 [0017](0017-suspend-idle-sandboxes.md), as described under Consequences.
+Amended by [0097](0097-workspaces.md) on 2026-10-18: what this ADR decides
+holds for a conversation launched without a `workspace_id`, which gets an
+implicit workspace of its own; a conversation in an explicit workspace shares
+its machine, which outlives the conversation and is parked, not destroyed, at
+the ceiling (see Amendments).
 
 ## Context
 
@@ -96,6 +101,26 @@ and the next reconciliation falls back to the conversation's Agent version);
 `20261016150001_drop_sandbox_applied_skills_by_runtime` drops the map a
 release later.
 
+## Amendments
+
+By [0097](0097-workspaces.md), 2026-10-18 (its Amendments section; built in
+its step 4, explicit workspaces reachable from step 5):
+
+- "Every conversation gets a sandbox of its own and keeps it for its life"
+  becomes "every conversation without a `workspace_id` gets an implicit
+  workspace of its own"; that case is unchanged.
+- "The sandbox is destroyed when the conversation ends" holds for implicit
+  workspaces only, and the implicit workspace goes with it. Ending a
+  conversation in an explicit workspace stops its adapter and removes its
+  config home; the machine stays (`detach` answers `:detached`).
+- The 422s for `sandbox_mode: "persistent"` and `sandbox_id` stay.
+- "No conversation sees another's files" becomes "no conversation sees
+  another's files unless the caller put both in one workspace".
+- "The max-lifetime ceiling destroys every machine; it used to park a home" is
+  reversed for explicit workspaces: the ceiling parks an explicit workspace's
+  machine, after interrupting every running turn on it, and destroys an
+  implicit one's.
+
 ## Consequences
 
 - **What a home bought is gone.** No conversation sees another's files, so
@@ -136,3 +161,6 @@ release later.
   one list again, `sandboxes.applied_skills`.
 - 2026-10-17 — Reusable environment layers ([0090](0090-portable-environment-layers.md))
   were removed; portable environment state is the sandbox provider's to offer.
+- 2026-10-18 — Amended by [0097](0097-workspaces.md): this ADR's machine per
+  conversation is the implicit workspace; an explicit workspace keeps its
+  machine when a conversation ends and parks it at the ceiling (0097 step 4).

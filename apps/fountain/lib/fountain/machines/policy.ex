@@ -5,10 +5,12 @@ defmodule Fountain.Machines.Policy do
 
   Until #2676 this module also held what the two sandbox modes meant: the
   default mode a launch got, whether the last detach kept a persistent home,
-  and whether the max-lifetime ceiling parked one. Persistent homes are gone,
-  so every machine is one conversation's, destroyed when that conversation
-  ends (`Fountain.Machines.Binding.detach/2`), and what is left here is the
-  provider's half: whether an idle machine can be parked (ADR 0017).
+  and whether the max-lifetime ceiling parked one. Persistent homes are gone;
+  what is left here is the provider's half, whether an idle machine can be
+  parked (ADR 0017), and since ADR 0097 step 4 the workspace's half of the
+  ceiling: an explicit workspace's machine is parked there, an implicit one's
+  destroyed. Whether a detach keeps the machine is the same split, decided in
+  `Fountain.Machines.Binding.detach/2`.
 
   ## What deliberately did not move
 
@@ -40,24 +42,32 @@ defmodule Fountain.Machines.Policy do
   end
 
   @doc """
-  What a reclaim does to this machine: `:park` it, or `:destroy` it.
+  What a reclaim does to this machine: `:park` it, or `:destroy` it, by the
+  bound it crossed, its provider, and the kind of workspace that owns it
+  (ADR 0097, which amends 0017's ceiling table).
 
-  | Bound | Provider can park | Provider cannot park |
-  |---|---|---|
-  | `:idle` | `:park` | `:destroy` |
-  | `:max_lifetime` | `:destroy` | `:destroy` |
+  | Bound | Workspace | Provider can park | Provider cannot park |
+  |---|---|---|---|
+  | `:idle` | either | `:park` | `:destroy` |
+  | `:max_lifetime` | implicit | `:destroy` | `:destroy` |
+  | `:max_lifetime` | explicit | `:park` | `:destroy` |
 
   An idle machine is parked because the disk is the agent's memory (#649 proved
   it cannot be rebuilt on a fresh one). The ceiling exists for the
   conversation that never stops being busy, so it fires with work in flight
-  and reclaims the machine whatever the activity. Until #2676 a persistent
-  home was parked at the ceiling instead; with homes gone every machine is
-  destroyed there.
+  and reclaims the machine whatever the activity. On an implicit workspace,
+  the machine of one conversation, it is destroyed, as it has been since
+  persistent homes went (#2676). On an explicit one, a disk the caller kept on
+  purpose, it is parked instead, after every running turn on it is
+  interrupted (`Fountain.Machines.Park`'s ceiling cut), so the park leaves
+  nothing running unattended; a provider that cannot park still destroys.
   """
-  @spec reclaim_action(:idle | :max_lifetime, atom()) :: :park | :destroy
-  def reclaim_action(:max_lifetime, provider) when is_atom(provider), do: :destroy
+  @spec reclaim_action(:idle | :max_lifetime, atom(), :implicit | :explicit) :: :park | :destroy
+  def reclaim_action(:max_lifetime, provider, :implicit) when is_atom(provider), do: :destroy
 
-  def reclaim_action(:idle, provider) when is_atom(provider) do
+  def reclaim_action(bound, provider, kind)
+      when bound in [:idle, :max_lifetime] and is_atom(provider) and
+             kind in [:implicit, :explicit] do
     case idle_action(provider) do
       :suspend -> :park
       :destroy -> :destroy

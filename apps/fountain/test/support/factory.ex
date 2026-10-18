@@ -243,6 +243,23 @@ defmodule Fountain.Factory do
     end
   end
 
+  @doc """
+  Make the workspace of `sandbox` explicit (ADR 0097): one a caller created,
+  which keeps its machine when a conversation ends and parks it at the
+  ceiling. Explicit workspaces have no API before step 5, so a test makes
+  one by flipping the flag. Returns the sandbox.
+  """
+  def explicit_workspace!(%Sandbox{workspace_id: workspace_id} = sandbox)
+      when is_binary(workspace_id) do
+    {1, _} =
+      Repo.update_all(
+        from(w in Fountain.Workspaces.Workspace, where: w.id == ^workspace_id),
+        set: [implicit: false, name: "workspace-#{uniq()}"]
+      )
+
+    sandbox
+  end
+
   def insert_sandbox(overrides \\ %{}) do
     overrides_map = to_atom_map(overrides)
     user_id = Map.get(overrides_map, :user_id) || insert_verified_user().id
@@ -389,6 +406,8 @@ defmodule Fountain.Factory do
       runtime: (agent && agent.runtime) || "claude",
       # Copied from the agent at launch in production (#2664), likewise.
       agent_session_config: Fountain.Agents.SessionConfig.for_launch(agent),
+      # In its sandbox's workspace, as a launch puts it (ADR 0097).
+      workspace_id: conversation_workspace(overrides_map, sandbox),
       status: "pending"
     }
 
@@ -399,6 +418,15 @@ defmodule Fountain.Factory do
     |> Repo.insert!()
     |> Repo.preload([:sandbox, :agent])
   end
+
+  defp conversation_workspace(%{sandbox: %Sandbox{workspace_id: id}}, _sandbox), do: id
+  defp conversation_workspace(%{sandbox_id: nil}, _sandbox), do: nil
+
+  defp conversation_workspace(%{sandbox_id: id}, _sandbox) when is_binary(id),
+    do: Repo.one(from(s in Sandbox, where: s.id == ^id, select: s.workspace_id))
+
+  defp conversation_workspace(_overrides, %Sandbox{workspace_id: id}), do: id
+  defp conversation_workspace(_overrides, _sandbox), do: nil
 
   def insert_turn(conv, overrides \\ %{}) do
     attrs =

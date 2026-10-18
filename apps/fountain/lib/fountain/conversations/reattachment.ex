@@ -14,6 +14,52 @@ defmodule Fountain.Conversations.Reattachment do
   # likely moved on, and it bounds a turn that keeps landing on dying servers.
   @relaunch_window_s 600
 
+  @doc """
+  Bring a parked machine up before a server reattaches to it: a `suspended`
+  row is resumed through its owner (`Machine.ensure_up/2`), with the fleet
+  gate and the provider call a wake makes, and read again. Any other row is
+  answered as it is.
+
+  A server meets a `suspended` row when a park landed between the wake's own
+  resume and the server's start. On an implicit workspace that is only the
+  reaper's park, and rare, and the reattach still confirms such a row `ready`
+  as it always has (`Provision.confirm_up/2`). On an explicit one a
+  co-tenant's idle park makes it ordinary, and confirming it without a
+  provider call would leave a paused machine (E2B) behind a row that says it
+  is up (review of step 4a), so it is resumed. A refusal is reported on the
+  reattach stage, retryable, and the server stops; the next prompt wakes it.
+  """
+  @spec awake(map(), String.t()) :: {:ok, map()} | {:error, term()}
+  def awake(%{status: "suspended"} = sandbox, conv_id) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> resume_before_reattach(sandbox.id, conv_id)
+      :implicit -> {:ok, sandbox}
+    end
+  end
+
+  def awake(sandbox, _conv_id), do: {:ok, sandbox}
+
+  defp resume_before_reattach(sandbox_id, conv_id) do
+    case Machine.ensure_up(sandbox_id,
+           actor: "system:wake",
+           requesting_conversation_id: conv_id
+         ) do
+      # ownership: the server's own machine, established at its init.
+      {:ok, _outcome} ->
+        {:ok, Conversations._unsafe_get_sandbox(sandbox_id)}
+
+      {:error, reason} = error ->
+        Output.publish_stage(conv_id, "reattach", "failed", %{
+          reason: inspect(reason),
+          retryable: true
+        })
+
+        # The prompt this server was started for will not run.
+        Fountain.Conversations.Wake.report_unrun_prompt(conv_id, reason)
+        error
+    end
+  end
+
   @doc false
   def prepare_source(handle, state, conv, agent, sprite_env) do
     with :ok <-

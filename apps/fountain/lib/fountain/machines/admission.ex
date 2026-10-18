@@ -34,13 +34,16 @@ defmodule Fountain.Machines.Admission do
       it refuses, polling the write, because the common holder is a resume
       that finishes in a second or two and the prompt wants the machine it is
       bringing up, not a 503. The holder can also be a *park*
-      that finishes inside the wait, and then the turn is admitted onto a
-      `suspended` machine: a `suspended` row with no lease is admissible here
-      exactly as it was on `main`, and it is the caller's wake — which runs
-      before every prompt and resumes a parked machine through `ensure_up/2`
-      — that is expected to bring it back, not this write. Refusing on status
-      here would refuse the reattach path's own first turn; left as `main`
-      had it, and named rather than hidden.
+      that finishes inside the wait, and then the machine is `suspended`
+      under the caller: since ADR 0097 a park is the workspace's, over all of
+      its conversations, so one server's idle park can land under another's
+      prompt. **A `suspended` machine refuses the turn** (`:sandbox_unavailable`):
+      its server is being told `machine_gone` and stops, and the prompt's
+      retry wakes the machine through the ordinary wake. Admitted, the turn
+      would run on a row no sweep examines (decisions/0017). No server holds a
+      `suspended` machine otherwise: a wake resumes it (`ensure_up/2`) and a
+      reattach confirms it `ready` (`Provision.confirm_up/2`) before any turn
+      is opened on it.
     * **Either fence refuses the turn.** `main` refused a reset fence; a
       teardown fence let the turn through, and the machine was destroyed
       underneath it by whatever finished the fence. Both are durable statements

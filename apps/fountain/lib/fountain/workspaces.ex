@@ -1,24 +1,28 @@
 defmodule Fountain.Workspaces do
   @moduledoc """
-  Workspaces (ADR 0097). At step 3 of the ADR's sequence this is only the
-  writes that keep a workspace beside every live sandbox: the implicit
-  workspace a sandbox is born with, its status following that sandbox's
-  provision, and `_unsafe_reconcile_live/0`, which repairs the pairing at every boot.
-  The machine's owner and lease are the workspace's (step 3b), and
-  `Fountain.Machines.Lease` reads and writes them; nothing a caller sees reads
-  a workspace yet.
+  Workspaces (ADR 0097). The writes that keep a workspace beside every live
+  sandbox: the implicit workspace a sandbox is born with, its status following
+  that sandbox's provision, and `_unsafe_reconcile_live/0`, which repairs the
+  pairing at every boot. The machine's owner and lease are the workspace's
+  (step 3b), and `Fountain.Machines.Lease` reads and writes them. Since step 4
+  the lifecycle reads the workspace's kind (`machine_kind/1`): a detach keeps
+  an explicit workspace's machine, and the ceiling parks it. Nothing a caller
+  sees reads a workspace yet (step 5).
 
   Every query a caller can reach is scoped by `user_id`. `_unsafe_reconcile_live/0`
-  is a boot-time sweep over every account and says so.
+  and `_unsafe_sweep_ended/0` are sweeps over every account and say so.
 
-  **Nothing deletes an implicit workspace yet**, except account deletion
-  (`delete_for_account/1`, which keeps one whose machine survived it, and
-  nothing removes that ownerless row afterwards; nor the ones a rollback to
-  v0.36.x leaves, whose account deletion nilifies every workspace): the
-  ADR ends one with its conversation, and that is step 4's lifecycle work. Until
-  then a row is left per launch and per fresh-sandbox wake, as a sandbox row
-  is, including the `provisioning` ones a lost wake race leaves, which nothing
-  points at.
+  **An implicit workspace ends with its conversation** (step 4): once the
+  conversation is terminal and its machine is gone, the row is deleted
+  (`release_ended/1`, from the termination path; `_unsafe_sweep_ended/0`,
+  hourly from `SandboxReaper`, for whatever that path missed). Deleted rather
+  than kept with an ended status: once its machine is terminal nothing reads
+  it, its lease guards nothing, and a kept row per launch would accumulate
+  for ever. While its conversation lives it is kept, machine or no machine,
+  because the conversation's next prompt builds its next machine in it. The
+  same sweep deletes an ownerless workspace (account deletion keeps one beside
+  a machine whose destroy failed, #2329) once that machine is terminal, and
+  the `provisioning` rows a lost wake race left before step 4.
 
   **Nothing here is audited, deliberately.** An implicit workspace is made in
   the launch's transaction, where an audit event cannot be recorded (ADR 0013),
@@ -182,12 +186,22 @@ defmodule Fountain.Workspaces do
     # reproduced).
     _ =
       Repo.all(
-        from(c in Conversation, where: c.user_id == ^user_id, select: c.id, lock: "FOR UPDATE")
+        from(c in Conversation,
+          where: c.user_id == ^user_id,
+          order_by: c.id,
+          select: c.id,
+          lock: "FOR UPDATE"
+        )
       )
 
     _ =
       Repo.all(
-        from(w in Workspace, where: w.user_id == ^user_id, select: w.id, lock: "FOR UPDATE")
+        from(w in Workspace,
+          where: w.user_id == ^user_id,
+          order_by: w.id,
+          select: w.id,
+          lock: "FOR UPDATE"
+        )
       )
 
     case Repo.all(from(w in without_live_sandbox(), where: w.user_id == ^user_id, select: w.id)) do
@@ -222,6 +236,149 @@ defmodule Fountain.Workspaces do
           )
         )
     )
+  end
+
+  @doc """
+  The kind of workspace that owns the machine behind `sandbox`: `:implicit`,
+  ended with its one conversation, or `:explicit`, which a caller made and
+  which keeps its machine until it is deleted (ADR 0097, Lifecycle).
+
+  A sandbox with no workspace (a row from before ADR 0097) or whose workspace
+  has gone reads as `:implicit`: that is how every machine behaved before
+  workspaces, and an explicit workspace is never deleted while it has a live
+  sandbox. The flag is fixed at create, so an unlocked read is exact.
+  """
+  @spec machine_kind(Sandbox.t() | %{workspace_id: Ecto.UUID.t() | nil}) ::
+          :implicit | :explicit
+  def machine_kind(%{workspace_id: nil}), do: :implicit
+
+  def machine_kind(%{workspace_id: workspace_id}) when is_binary(workspace_id) do
+    case Repo.one(from(w in Workspace, where: w.id == ^workspace_id, select: w.implicit)) do
+      false -> :explicit
+      _implicit_or_gone -> :implicit
+    end
+  end
+
+  @doc """
+  Delete the workspace behind `sandbox_id` if it has ended: an implicit one
+  (or one whose account was deleted) with no live sandbox and no live
+  conversation (ADR 0097: an implicit workspace "is destroyed with the
+  conversation").
+
+  Called once a conversation's termination and its machine's destroy have
+  both happened, from whichever of the two finishes last
+  (`Fountain.Conversations.Termination`); whichever runs first finds the
+  other still live and leaves the row, so one of them deletes it.
+  `SandboxReaper` collects whatever neither reached (`_unsafe_sweep_ended/0`).
+  Best effort and outside every transaction; nothing is audited, as nothing
+  is for an implicit workspace (see the moduledoc).
+  """
+  @spec release_ended(Ecto.UUID.t() | nil) :: :ok
+  def release_ended(nil), do: :ok
+
+  def release_ended(sandbox_id) when is_binary(sandbox_id) do
+    case Repo.one(from(s in Sandbox, where: s.id == ^sandbox_id, select: s.workspace_id)) do
+      nil -> :ok
+      workspace_id -> delete_ended([workspace_id])
+    end
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning(
+        "sandbox #{sandbox_id}: ended workspace not released: " <> Exception.message(error)
+      )
+
+      :ok
+  end
+
+  @doc """
+  Delete every ended workspace (see `release_ended/1`): the backstop
+  `SandboxReaper` runs hourly over every account. It collects what the
+  termination path did not reach: a destroy that finished after its
+  conversation was already gone, the `provisioning` rows a lost wake race left
+  before step 4, and the ownerless rows account deletion keeps beside a
+  machine whose destroy failed (#2329), once that machine is terminal.
+  Returns how many were deleted.
+  """
+  @spec _unsafe_sweep_ended() :: non_neg_integer()
+  def _unsafe_sweep_ended do
+    ids = Repo.all(from(w in ended(), select: w.id, limit: 500))
+    if ids == [], do: 0, else: delete_ended(ids, :count)
+  end
+
+  # Ended: an implicit workspace, or one with no account left to own it, with
+  # no live sandbox and no conversation that could still be prompted into it.
+  # An explicit workspace with an owner lives until it is deleted (step 5).
+  # A row whose lease is still held is not ended yet: a destroy writes its
+  # machine terminal before it releases the lease, and deleting the row in
+  # between would leave the release nothing to write and change the advisory
+  # lock's key under an operation (review of step 4a). The sweep takes it
+  # once the lease is released.
+  defp ended do
+    from(w in without_live_sandbox(),
+      where:
+        is_nil(w.lease_node) and (w.implicit or is_nil(w.user_id)) and
+          not exists(
+            from(c in Conversation,
+              where:
+                c.workspace_id == parent_as(:workspace).id and
+                  c.status not in ^@terminal_statuses
+            )
+          )
+    )
+  end
+
+  # In the machine layer's lock order, as `delete_for_account/1` takes it:
+  # the conversations, then the workspaces, then the pointers cleared and the
+  # rows deleted, each re-checked under those locks. A conversation can only
+  # leave a workspace (a terminal one is never prompted again) and a live
+  # sandbox only enters one through a live conversation's wake, so a row that
+  # is ended under the locks stays ended.
+  defp delete_ended(ids, answer \\ :ok) do
+    {:ok, count} =
+      Repo.transaction(fn ->
+        Repo.query!("SET LOCAL lock_timeout = '5s'")
+
+        _ =
+          Repo.all(
+            from(c in Conversation,
+              where: c.workspace_id in ^ids,
+              order_by: c.id,
+              select: c.id,
+              lock: "FOR UPDATE"
+            )
+          )
+
+        _ =
+          Repo.all(
+            from(w in Workspace,
+              where: w.id in ^ids,
+              order_by: w.id,
+              select: w.id,
+              lock: "FOR UPDATE"
+            )
+          )
+
+        case Repo.all(from(w in ended(), where: w.id in ^ids, select: w.id)) do
+          [] ->
+            0
+
+          ended_ids ->
+            _ =
+              Repo.update_all(from(c in Conversation, where: c.workspace_id in ^ended_ids),
+                set: [workspace_id: nil]
+              )
+
+            _ =
+              Repo.update_all(from(s in Sandbox, where: s.workspace_id in ^ended_ids),
+                set: [workspace_id: nil]
+              )
+
+            {count, _} = Repo.delete_all(from(w in Workspace, where: w.id in ^ended_ids))
+            count
+        end
+      end)
+
+    if answer == :count, do: count, else: :ok
   end
 
   @doc """
