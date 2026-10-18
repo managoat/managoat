@@ -554,7 +554,7 @@ A PR sequence, each releasable alone:
   `workspace.status` event, a prompt into a failed one retrying the
   provision; a rebuild after a loss stays lazy, and implicit workspaces are
   unchanged.
-- 2026-10-18 — Step 2 built (#PR): the `workspaces` table without the
+- 2026-10-18 — Step 2 built (#2985): the `workspaces` table without the
   lease columns, which move in step 3 with the migration that carries
   them; an implicit workspace made with every new sandbox in its
   reservation's transaction, its status taking the provision's outcome; and
