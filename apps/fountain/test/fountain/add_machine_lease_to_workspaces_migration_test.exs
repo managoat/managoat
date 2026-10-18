@@ -56,13 +56,13 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
     # Made by a release before ADR 0097: live, no workspace, and a destroy
     # fenced on it there.
     bare =
-      insert_sandbox(user_id: user.id, status: "ready")
+      insert_sandbox(user_id: user.id, workspace_id: nil, status: "ready")
       |> stamp(transition: "destroying", transition_reason: "terminated", lease_epoch: 5)
 
     conv = insert_conversation(user_id: user.id, sandbox: bare)
 
     # Ownerless: account deletion nilified it after its destroy raised.
-    orphan = insert_sandbox(user_id: user.id, status: "suspended")
+    orphan = insert_sandbox(user_id: user.id, workspace_id: nil, status: "suspended")
     Repo.update_all(from(s in Sandbox, where: s.id == ^orphan.id), set: [user_id: nil])
 
     # Has a workspace, and a resume an earlier boot left unfinished.
@@ -72,7 +72,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
       insert_sandbox(user_id: user.id, workspace_id: ws.id, status: "suspended")
       |> stamp(transition: "resuming", lease_epoch: 2, lease_node: "0000/<0.1.0>")
 
-    terminal = insert_sandbox(user_id: user.id, status: "terminated")
+    terminal = insert_sandbox(user_id: user.id, workspace_id: nil, status: "terminated")
 
     migrate()
 
@@ -100,7 +100,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
 
   test "is idempotent" do
     user = insert_verified_user()
-    sandbox = insert_sandbox(user_id: user.id, status: "ready")
+    sandbox = insert_sandbox(user_id: user.id, workspace_id: nil, status: "ready")
 
     migrate()
     first = Repo.reload!(sandbox).workspace_id

@@ -33,6 +33,7 @@ defmodule Fountain.Conversations.LiveMachineNameTest do
              Fountain.Machines.Provision.reserve(%{
                machine_name: first.machine_name,
                user_id: first.user_id,
+               workspace_id: insert_workspace(user_id: first.user_id).id,
                provider: "e2b",
                status: "ready"
              })
@@ -48,6 +49,7 @@ defmodule Fountain.Conversations.LiveMachineNameTest do
                Fountain.Machines.Provision.reserve(%{
                  machine_name: history.machine_name,
                  user_id: history.user_id,
+                 workspace_id: insert_workspace(user_id: history.user_id).id,
                  status: "pending"
                })
 
@@ -74,6 +76,7 @@ defmodule Fountain.Conversations.LiveMachineNameTest do
     |> Sandbox.changeset(%{
       machine_name: first.machine_name,
       user_id: user_id,
+      workspace_id: Fountain.Factory.insert_workspace(user_id: user_id).id,
       status: "ready"
     })
     |> Repo.insert(mode: :savepoint)

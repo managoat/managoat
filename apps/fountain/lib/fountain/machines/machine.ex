@@ -1,12 +1,23 @@
 defmodule Fountain.Machines.Machine do
   @moduledoc """
-  The owner of one machine (ADR 0058).
+  The owner of one workspace's machine (ADR 0058, keyed by workspace by
+  ADR 0097).
 
-  One process per *active* sandbox, registered in `Fountain.MachineRegistry`
-  under the sandbox id and supervised by `Fountain.MachineSupervisor`, both
+  One process per *active* workspace, registered in `Fountain.MachineRegistry`
+  under the workspace id and supervised by `Fountain.MachineSupervisor`, both
   local to the one node Fountain runs as (ADR 0072). It idle-stops after
   a minute with nothing asked of it, and `ensure_started/1` brings it back:
-  there is a process per active machine, not one per row.
+  there is a process per active workspace, not one per row.
+
+  Every verb still names the machine by its sandbox id, because every caller
+  is about one machine, and the owner it reaches is that sandbox's
+  workspace's (`owner_key/1`): the message carries the sandbox id and the
+  protocol runs on it. Today a workspace has one sandbox, so this is still one
+  owner per machine and per conversation; it is what lets a later step
+  rebuild a lost machine without a second owner. A sandbox with no workspace,
+  which only a row retired before ADR 0097 is, is served by a process of its
+  own under its sandbox id, which the protocols answer as the terminal row it
+  is (`Fountain.Machines.Lease.unowned/1`).
 
   Fourteen verbs so far. `who_is_here/1` returns the
   `Fountain.Machines.Occupancy` struct and reads nothing else. `destroy/2`,
@@ -118,6 +129,8 @@ defmodule Fountain.Machines.Machine do
   # it is merely harmless now, when it holds nothing.
   use GenServer, restart: :transient
 
+  import Ecto.Query, only: [from: 2]
+
   require Logger
 
   alias Fountain.Conversations.Sandbox
@@ -225,8 +238,8 @@ defmodule Fountain.Machines.Machine do
 
   @doc false
   def start_link(args) do
-    sandbox_id = Keyword.fetch!(args, :sandbox_id)
-    GenServer.start_link(__MODULE__, args, name: via(sandbox_id))
+    key = Keyword.fetch!(args, :key)
+    GenServer.start_link(__MODULE__, args, name: via(key))
   end
 
   @doc """
@@ -273,23 +286,45 @@ defmodule Fountain.Machines.Machine do
   @spec detach_timeout_ms() :: pos_integer()
   def detach_timeout_ms, do: @detach_timeout
 
-  @doc "The registered name of the owner of `sandbox_id`."
+  @doc "The registered name of the owner registered under `key` (see `owner_key/1`)."
   @spec via(String.t()) :: {:via, module(), {module(), String.t()}}
-  def via(sandbox_id), do: {:via, Registry, {Fountain.MachineRegistry, sandbox_id}}
+  def via(key), do: {:via, Registry, {Fountain.MachineRegistry, key}}
 
   @doc """
-  The owner's pid, or `nil` when no owner is registered.
+  The registry key of the owner of the machine behind `sandbox_id`: its
+  workspace's id (ADR 0097, step 3b), or the sandbox's own for a sandbox
+  with no workspace or no row. One indexed read, without a lock: a live
+  sandbox's workspace does not change (see `Fountain.Machines.Lease`).
+  """
+  @spec owner_key(String.t()) :: String.t()
+  def owner_key(sandbox_id) when is_binary(sandbox_id) do
+    case Ecto.UUID.cast(sandbox_id) do
+      {:ok, _} ->
+        Repo.one(from s in Sandbox, where: s.id == ^sandbox_id, select: s.workspace_id) ||
+          sandbox_id
+
+      :error ->
+        sandbox_id
+    end
+  end
+
+  @doc """
+  The pid of the owner of the machine behind `sandbox_id`, or `nil` when none
+  is registered.
   """
   @spec whereis(String.t()) :: pid() | nil
-  def whereis(sandbox_id) when is_binary(sandbox_id) do
-    case Registry.lookup(Fountain.MachineRegistry, sandbox_id) do
+  def whereis(sandbox_id) when is_binary(sandbox_id),
+    do: sandbox_id |> owner_key() |> whereis_key()
+
+  defp whereis_key(key) do
+    case Registry.lookup(Fountain.MachineRegistry, key) do
       [{pid, _}] -> pid
       [] -> nil
     end
   end
 
   @doc """
-  The owner of `sandbox_id`, started if it is not running anywhere.
+  The owner of the machine behind `sandbox_id`, started if it is not running.
 
   Tolerates the start race: a concurrent start returns
   `{:error, {:already_started, pid}}`, and the winner is the owner.
@@ -297,9 +332,11 @@ defmodule Fountain.Machines.Machine do
   """
   @spec ensure_started(String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(sandbox_id, opts \\ []) when is_binary(sandbox_id) do
-    case whereis(sandbox_id) do
+    key = owner_key(sandbox_id)
+
+    case whereis_key(key) do
       pid when is_pid(pid) -> {:ok, pid}
-      nil -> start_child(sandbox_id, opts)
+      nil -> start_child(key, opts)
     end
   end
 
@@ -425,7 +462,7 @@ defmodule Fountain.Machines.Machine do
       # process-local, and it runs in the owner — which is never inside this
       # caller's transaction — so it cannot fire. Worse than
       # useless there: the owner's `Lease.claim` would block on the
-      # per-sandbox advisory lock this open transaction holds, while the
+      # machine advisory lock this open transaction holds, while the
       # caller blocks in `GenServer.call` until `@destroy_timeout`.
       Repo.in_transaction?() ->
         {:error, :provider_transaction_open}
@@ -932,11 +969,11 @@ defmodule Fountain.Machines.Machine do
   # then a refusal. A `:timeout` is not retried — the owner is alive and busy,
   # and asking it twice only doubles the wait.
   defp destroy_in_owner(sandbox_id, opts, retries_left) do
-    in_owner(sandbox_id, {:destroy, opts}, @destroy_timeout, :destroy, retries_left)
+    in_owner(sandbox_id, {:destroy, sandbox_id, opts}, @destroy_timeout, :destroy, retries_left)
   end
 
   defp park_in_owner(sandbox_id, opts, retries_left) do
-    in_owner(sandbox_id, {:park, opts}, @park_timeout, :park, retries_left)
+    in_owner(sandbox_id, {:park, sandbox_id, opts}, @park_timeout, :park, retries_left)
   end
 
   # Deadline-carrying since stage 8b (the 8a round-2 residual): a resume that
@@ -946,12 +983,19 @@ defmodule Fountain.Machines.Machine do
   defp resume_in_owner(sandbox_id, opts, retries_left) do
     timeout = Keyword.get(opts, :resume_timeout_ms, @resume_timeout)
     deadline = DateTime.add(db_now(), timeout, :millisecond)
-    in_owner(sandbox_id, {:ensure_up, opts, deadline}, timeout, :ensure_up, retries_left)
+
+    in_owner(
+      sandbox_id,
+      {:ensure_up, sandbox_id, opts, deadline},
+      timeout,
+      :ensure_up,
+      retries_left
+    )
   end
 
   defp detach_in_owner(sandbox_id, opts, timeout, retries_left) do
     deadline = DateTime.add(db_now(), timeout, :millisecond)
-    in_owner(sandbox_id, {:detach, opts, deadline}, timeout, :detach, retries_left)
+    in_owner(sandbox_id, {:detach, sandbox_id, opts, deadline}, timeout, :detach, retries_left)
   end
 
   # The deadline is dated on the database's clock, `timeout` from now: the one
@@ -963,7 +1007,7 @@ defmodule Fountain.Machines.Machine do
 
     in_owner(
       sandbox_id,
-      {:admit_turn, attrs, opts, deadline},
+      {:admit_turn, sandbox_id, attrs, opts, deadline},
       timeout,
       :admit_turn,
       retries_left
@@ -1007,7 +1051,7 @@ defmodule Fountain.Machines.Machine do
     case ensure_started(sandbox_id) do
       {:ok, pid} ->
         try do
-          GenServer.call(pid, :who_is_here, @call_timeout)
+          GenServer.call(pid, {:who_is_here, sandbox_id}, @call_timeout)
         catch
           :exit, reason
           when retries_left > 0 and elem(reason, 0) in [:noproc, :normal, :shutdown] ->
@@ -1037,7 +1081,7 @@ defmodule Fountain.Machines.Machine do
   @impl true
   def init(args) do
     state = %{
-      sandbox_id: Keyword.fetch!(args, :sandbox_id),
+      key: Keyword.fetch!(args, :key),
       idle_ms: Keyword.get(args, :idle_ms, @idle_ms),
       idle_token: nil
     }
@@ -1084,8 +1128,8 @@ defmodule Fountain.Machines.Machine do
 
   defp adopt_callers(_caller), do: Process.delete(:"$callers")
 
-  defp serve(:who_is_here, _from, state) do
-    {:reply, Occupancy.load(state.sandbox_id), arm_idle(state)}
+  defp serve({:who_is_here, sandbox_id}, _from, state) do
+    {:reply, Occupancy.load(sandbox_id), arm_idle(state)}
   end
 
   # Serialization, not safety: `Destroy.run/2`'s lease is what makes two
@@ -1096,16 +1140,16 @@ defmodule Fountain.Machines.Machine do
   # caller's *wait* for it — a message whose caller has given up still runs
   # when the owner reaches it, and for this verb that late run is idempotent
   # (a destroy of a destroyed machine is `{:ok, :already_terminal}` to nobody).
-  defp serve({:destroy, opts}, _from, state) do
-    {:reply, Destroy.run(state.sandbox_id, opts), arm_idle(state)}
+  defp serve({:destroy, sandbox_id, opts}, _from, state) do
+    {:reply, Destroy.run(sandbox_id, opts), arm_idle(state)}
   end
 
   # Same shape, same reason. A park occupies the owner for a checkpoint and a
   # suspend, which is longer than a destroy takes — `@park_timeout` on the
   # client side is the ceiling on the caller's wait, and a late park is a park
   # of a machine the recheck under the lease still has to find idle.
-  defp serve({:park, opts}, _from, state) do
-    {:reply, Park.run(state.sandbox_id, opts), arm_idle(state)}
+  defp serve({:park, sandbox_id, opts}, _from, state) do
+    {:reply, Park.run(sandbox_id, opts), arm_idle(state)}
   end
 
   # Same shape, same reason, and here the serialization is the *feature* rather
@@ -1126,21 +1170,17 @@ defmodule Fountain.Machines.Machine do
   # deadline, because it had none — and it runs as it always did; the
   # three-tuple (stage 8b) is refused past its deadline. `:resume_expired`
   # reads as `:sandbox_unavailable` at the door, to nobody.
-  defp serve({:ensure_up, opts}, _from, state) do
-    {:reply, Resume.run(state.sandbox_id, opts), arm_idle(state)}
-  end
-
-  defp serve({:ensure_up, opts, %DateTime{} = deadline}, _from, state) do
+  defp serve({:ensure_up, sandbox_id, opts, %DateTime{} = deadline}, _from, state) do
     reply =
       if DateTime.compare(db_now(), deadline) == :gt do
         Logger.warning(
-          "machine #{state.sandbox_id}: a resume reached the owner after its caller's " <>
+          "machine #{sandbox_id}: a resume reached the owner after its caller's " <>
             "deadline; refusing without running it"
         )
 
         {:error, :resume_expired}
       else
-        Resume.run(state.sandbox_id, opts)
+        Resume.run(sandbox_id, opts)
       end
 
     {:reply, reply, arm_idle(state)}
@@ -1177,26 +1217,17 @@ defmodule Fountain.Machines.Machine do
   # no deadline, because it had none. An owner that crashed on it would cost a
   # cotenant's queued park (the mixed-version note in the PR); refusing is the
   # safe side, in the one word every version of the door translates.
-  defp serve({:admit_turn, _attrs, _opts}, _from, state) do
-    Logger.warning(
-      "machine #{state.sandbox_id}: an admission arrived without a deadline (a caller on " <>
-        "the previous release); refusing without running it"
-    )
-
-    {:reply, {:error, :machine_busy}, arm_idle(state)}
-  end
-
-  defp serve({:admit_turn, attrs, opts, %DateTime{} = deadline}, _from, state) do
+  defp serve({:admit_turn, sandbox_id, attrs, opts, %DateTime{} = deadline}, _from, state) do
     reply =
       if DateTime.compare(db_now(), deadline) == :gt do
         Logger.warning(
-          "machine #{state.sandbox_id}: an admission reached the owner after its caller's " <>
+          "machine #{sandbox_id}: an admission reached the owner after its caller's " <>
             "deadline; refusing without running it"
         )
 
         {:error, :admission_expired}
       else
-        Admission.run(state.sandbox_id, attrs, Keyword.put(opts, :deadline, deadline))
+        Admission.run(sandbox_id, attrs, Keyword.put(opts, :deadline, deadline))
       end
 
     {:reply, reply, arm_idle(state)}
@@ -1207,17 +1238,17 @@ defmodule Fountain.Machines.Machine do
   # fence, and either done late is done for a caller that was told 503. The
   # pre-check refuses from one clock read; the protocol refuses again against
   # the `statement_timestamp()` it read the machine's row with.
-  defp serve({:detach, opts, %DateTime{} = deadline}, _from, state) do
+  defp serve({:detach, sandbox_id, opts, %DateTime{} = deadline}, _from, state) do
     reply =
       if DateTime.compare(db_now(), deadline) == :gt do
         Logger.warning(
-          "machine #{state.sandbox_id}: a detach reached the owner after its caller's " <>
+          "machine #{sandbox_id}: a detach reached the owner after its caller's " <>
             "deadline; refusing without running it"
         )
 
         {:error, :detach_expired}
       else
-        Binding.detach(state.sandbox_id, Keyword.put(opts, :deadline, deadline))
+        Binding.detach(sandbox_id, Keyword.put(opts, :deadline, deadline))
       end
 
     {:reply, reply, arm_idle(state)}
@@ -1241,7 +1272,7 @@ defmodule Fountain.Machines.Machine do
   # this clause is only ever reached by a mistake, and it must be loud.
   defp serve(message, _from, state) do
     Logger.error(
-      "machine #{state.sandbox_id}: no handle_call clause for #{shape(message)}; refusing. " <>
+      "machine owner #{state.key}: no handle_call clause for #{shape(message)}; refusing. " <>
         "A caller on a later release, or a message shape that was never added here."
     )
 
@@ -1268,7 +1299,7 @@ defmodule Fountain.Machines.Machine do
   # thing the info clause is careful not to do (round 3, behaviour review).
   def handle_cast(message, state) do
     Logger.error(
-      "machine #{state.sandbox_id}: no handle_cast clause for #{shape(message)}; ignoring. " <>
+      "machine owner #{state.key}: no handle_cast clause for #{shape(message)}; ignoring. " <>
         "A caller on a later release, or a message shape that was never added here."
     )
 
@@ -1338,7 +1369,7 @@ defmodule Fountain.Machines.Machine do
   # underneath a live operation, because a GenServer handles one message at a
   # time and the operation's own re-arm makes the fired idle stale.
   def handle_info(message, state) do
-    Logger.warning("machine #{state.sandbox_id}: unexpected message #{shape(message)}; ignoring")
+    Logger.warning("machine owner #{state.key}: unexpected message #{shape(message)}; ignoring")
 
     {:noreply, state}
   end
@@ -1351,8 +1382,8 @@ defmodule Fountain.Machines.Machine do
 
   # ── starting ──────────────────────────────────────────────────────────────
 
-  defp start_child(sandbox_id, opts) do
-    child = {__MODULE__, Keyword.put(opts, :sandbox_id, sandbox_id)}
+  defp start_child(key, opts) do
+    child = {__MODULE__, Keyword.put(opts, :key, key)}
 
     case DynamicSupervisor.start_child(Fountain.MachineSupervisor, child) do
       {:ok, pid} -> {:ok, pid}

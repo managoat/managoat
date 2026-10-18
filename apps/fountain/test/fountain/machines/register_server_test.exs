@@ -85,12 +85,11 @@ defmodule Fountain.Machines.RegisterServerTest do
 
   test "boot registration cannot clear interrupted readiness", ctx do
     ctx.sandbox
-    |> Ecto.Changeset.change(
+    |> put_lease(
       transition: "resuming",
       lease_node: dead_lease_holder(),
       lease_epoch: 1
     )
-    |> Repo.update!()
 
     Lease.sweep_boot()
 
@@ -189,8 +188,7 @@ defmodule Fountain.Machines.RegisterServerTest do
       {:ok, 1} = Lease.claim(ctx.sandbox.id)
 
       ctx.sandbox
-      |> Ecto.Changeset.change(lease_node: dead_lease_holder())
-      |> Repo.update!()
+      |> put_lease(lease_node: dead_lease_holder())
 
       assert {:ok, pid} = Conversations.register_server(ctx.sandbox.id, probe_spec([]))
       assert_receive {:started, ^pid}, 5_000
@@ -209,7 +207,7 @@ defmodule Fountain.Machines.RegisterServerTest do
             Repo.transaction(fn ->
               Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
                 @sandbox_lock_namespace,
-                :erlang.phash2(tenant.sandbox.id)
+                Fountain.Conversations.sandbox_lock_key(tenant.sandbox.id)
               ])
 
               send(owner, :locked)
@@ -298,7 +296,11 @@ defmodule Fountain.Machines.RegisterServerTest do
               WHERE locktype = 'advisory' AND granted AND pid = $1
                 AND classid = $2 AND objid = $3 AND objsubid = 2
               """,
-              [registering_backend, @sandbox_lock_namespace, :erlang.phash2(tenant.sandbox.id)]
+              [
+                registering_backend,
+                @sandbox_lock_namespace,
+                Fountain.Conversations.sandbox_lock_key(tenant.sandbox.id)
+              ]
             )
 
           assert held == 1, "the child started after the door released the sandbox lock"
@@ -331,7 +333,7 @@ defmodule Fountain.Machines.RegisterServerTest do
             Repo.transaction(fn ->
               Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
                 @sandbox_lock_namespace,
-                :erlang.phash2(tenant.sandbox.id)
+                Fountain.Conversations.sandbox_lock_key(tenant.sandbox.id)
               ])
 
               send(owner, :locked)
@@ -346,10 +348,8 @@ defmodule Fountain.Machines.RegisterServerTest do
               # which refuses to run inside this open transaction — the same
               # columns it would write, naming the test process, which outlives
               # this task, as the holder.
-              Repo.update_all(
-                from(s in Sandbox, where: s.id == ^tenant.sandbox.id),
-                set: [lease_epoch: 1, lease_node: holder]
-              )
+              put_lease(tenant.sandbox.id, lease_epoch: 1, lease_node: holder)
+              {1, nil}
             end)
           end)
 
@@ -474,7 +474,8 @@ defmodule Fountain.Machines.RegisterServerTest do
       |> Sandbox.changeset(%{
         machine_name: "register-#{Ecto.UUID.generate()}",
         status: "ready",
-        user_id: user.id
+        user_id: user.id,
+        workspace_id: Fountain.Factory.insert_workspace(user_id: user.id).id
       })
       |> Repo.insert!()
 
@@ -484,6 +485,7 @@ defmodule Fountain.Machines.RegisterServerTest do
   defp discard(%{user: user, sandbox: sandbox}) do
     Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
     Repo.delete!(sandbox)
+    Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
     Repo.delete!(user)
   end
 
@@ -519,13 +521,11 @@ defmodule Fountain.Machines.RegisterServerTest do
       # machines with no server. So an abandoned park on a machine that is then
       # woken kept its stamp for ever, and the next owner to claim that machine
       # read it as its own interrupted operation.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          lease_epoch: 1,
-          lease_node: dead_lease_holder(),
-          transition: "parking",
-          transition_reason: "idle"
-        ]
+      put_lease(ctx.sandbox.id,
+        lease_epoch: 1,
+        lease_node: dead_lease_holder(),
+        transition: "parking",
+        transition_reason: "idle"
       )
 
       assert {:ok, pid} = Conversations.register_server(ctx.sandbox.id, probe_spec([]))
@@ -539,13 +539,11 @@ defmodule Fountain.Machines.RegisterServerTest do
     test "is left alone while an owner still holds the lease", ctx do
       # The other half: a live lease is an operation in flight, and this door
       # refuses rather than tidying up after it.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          lease_epoch: 1,
-          lease_node: live_lease_holder(),
-          transition: "parking",
-          transition_reason: "idle"
-        ]
+      put_lease(ctx.sandbox.id,
+        lease_epoch: 1,
+        lease_node: live_lease_holder(),
+        transition: "parking",
+        transition_reason: "idle"
       )
 
       assert {:error, :sandbox_unavailable} =

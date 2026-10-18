@@ -107,9 +107,7 @@ defmodule Fountain.Machines.LeaseTest do
       mine = insert_sandbox(status: "ready")
       bare = insert_sandbox(status: "suspended")
 
-      stamp = fn sandbox, set ->
-        Repo.update_all(from(x in Sandbox, where: x.id == ^sandbox.id), set: set)
-      end
+      stamp = fn sandbox, set -> put_lease(sandbox, set) end
 
       stamp.(old,
         lease_epoch: 3,
@@ -128,7 +126,9 @@ defmodule Fountain.Machines.LeaseTest do
       stamp.(mine, lease_epoch: 1, lease_node: Lease.holder(self()), transition: "parking")
       stamp.(bare, transition: "resuming", transition_reason: "wake")
 
-      assert Lease.sweep_boot() == 2
+      # At least these two: the sweep is over every workspace, and rows other
+      # suites committed and left behind are swept too.
+      assert Lease.sweep_boot() >= 2
 
       cleared = Repo.get!(Sandbox, old.id)
       assert {cleared.lease_node, cleared.transition} == {nil, nil}
@@ -534,7 +534,7 @@ defmodule Fountain.Machines.LeaseTest do
             Repo.transaction(fn ->
               Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
                 @sandbox_lock_namespace,
-                :erlang.phash2(tenant.sandbox.id)
+                Fountain.Conversations.sandbox_lock_key(tenant.sandbox.id)
               ])
 
               send(owner, :locked)
@@ -629,12 +629,16 @@ defmodule Fountain.Machines.LeaseTest do
         email: "machine-lease-#{Ecto.UUID.generate()}@example.test"
       })
 
+    {:ok, workspace} =
+      Fountain.Workspaces.insert_implicit(%{user_id: user.id, provider: "sprites"})
+
     sandbox =
       %Sandbox{}
       |> Sandbox.changeset(%{
         machine_name: "lease-#{Ecto.UUID.generate()}",
         status: "pending",
-        user_id: user.id
+        user_id: user.id,
+        workspace_id: workspace.id
       })
       |> Repo.insert!()
 
@@ -644,6 +648,7 @@ defmodule Fountain.Machines.LeaseTest do
   defp discard(%{user: user, sandbox: sandbox}) do
     Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
     Repo.delete!(sandbox)
+    Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
     Repo.delete!(user)
   end
 

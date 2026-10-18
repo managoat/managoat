@@ -56,7 +56,7 @@ defmodule Fountain.Machines.DurableDestroyingTest do
     %{user: user, agent: agent, sandbox: sandbox, conv: conv}
   end
 
-  defp stamp(sandbox, changes), do: sandbox |> Ecto.Changeset.change(changes) |> Repo.update!()
+  defp stamp(sandbox, changes), do: put_lease(sandbox, changes)
 
   # The intent, and nothing else. The lease is spent and released, which is what
   # makes every refusal below a statement about the stamp rather than about an

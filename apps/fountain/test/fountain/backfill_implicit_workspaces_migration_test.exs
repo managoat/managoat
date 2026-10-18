@@ -46,7 +46,7 @@ defmodule Fountain.BackfillImplicitWorkspacesMigrationTest do
   defp conv_workspace_id(conv), do: Repo.get!(Conversation, conv.id).workspace_id
 
   defp live(user, status, extra \\ []) do
-    insert_sandbox([user_id: user.id, status: status] ++ extra)
+    insert_sandbox([user_id: user.id, status: status, workspace_id: nil] ++ extra)
   end
 
   test "a live sandbox gets an implicit workspace from its own environment and vault" do

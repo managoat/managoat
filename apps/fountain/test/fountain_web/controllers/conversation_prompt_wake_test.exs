@@ -95,8 +95,7 @@ defmodule FountainWeb.ConversationPromptWakeTest do
     # A machine being torn down: refused at the door, as before.
     fenced =
       ctx.sandbox
-      |> Ecto.Changeset.change(transition: "destroying")
-      |> Fountain.Repo.update!()
+      |> put_lease(transition: "destroying")
 
     assert json_response(prompt(ctx.raw_key, ctx.conv), 409)["error"] == "sandbox_reset_pending"
 
@@ -104,8 +103,7 @@ defmodule FountainWeb.ConversationPromptWakeTest do
     stub(Fountain.Quotas, :check_fleet_ceiling, fn _opts -> {:error, :fleet_full} end)
 
     fenced
-    |> Ecto.Changeset.change(transition: nil)
-    |> Fountain.Repo.update!()
+    |> put_lease(transition: nil)
 
     assert json_response(prompt(ctx.raw_key, ctx.conv), 503)["error"] == "fleet_full"
     assert wake_stages(ctx.conv.id) == []

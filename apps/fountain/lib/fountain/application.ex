@@ -107,7 +107,7 @@ defmodule Fountain.Application do
         # `start_child` returns, and a lookup that finds nothing means there is
         # nothing.
         #
-        # The per-sandbox owner (ADR 0058) comes before the conversation pair,
+        # The per-workspace machine owner (ADR 0058, 0097) comes before the conversation pair,
         # and that is the draining end again: reverse termination stops it
         # *after* the conversation supervisor, so a server shutting down can
         # still ask its machine who is here.

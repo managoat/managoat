@@ -46,8 +46,6 @@ defmodule Fountain.Machines.Binding do
   left) and `:transaction_open` (the caller's bug), which the door translates.
   """
 
-  import Ecto.Query
-
   alias Fountain.Conversations
   alias Fountain.Conversations.{Lifecycle, Sandbox}
   alias Fountain.Machines.Destroy
@@ -216,7 +214,7 @@ defmodule Fountain.Machines.Binding do
   the write `Conversations.register_server/2` makes, moved here in stage 9b so
   that the owner's namespace is the only code that writes the `sandboxes` row.
 
-  The registration door decides under the per-sandbox advisory lock, on a row
+  The registration door decides under the machine's advisory lock, on a row
   it read `FOR UPDATE`, whether the machine may be woken at all — a live lease
   refuses, a `destroying` stamp refuses — and calls this inside that
   transaction. It is the door's decision and this is its write.
@@ -225,16 +223,9 @@ defmodule Fountain.Machines.Binding do
   """
   @spec clear_abandoned_transition(Ecto.UUID.t()) :: non_neg_integer()
   def clear_abandoned_transition(sandbox_id) when is_binary(sandbox_id) do
-    {count, _} =
-      Repo.update_all(
-        from(s in Sandbox, where: s.id == ^sandbox_id),
-        set: [transition: nil, transition_reason: nil]
-      )
-
-    # Written twice until the workspace's columns are the owner's (ADR 0097,
-    # step 3a), in the registration's transaction.
-    :ok = Lease.copy_to_workspace(sandbox_id)
-    count
+    # On the machine's workspace, and copied onto the sandbox (ADR 0097, step
+    # 3b), in the registration's transaction.
+    Lease.put_transition!(sandbox_id, nil, nil)
   end
 
   @doc """

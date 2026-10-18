@@ -148,7 +148,12 @@ defmodule Fountain.Conversations.Rehydrator do
   # Skipping, not failing: the next boot sweep or the conversation's own next
   # prompt comes back, and by then the operation has finished or its lease has
   # expired. `{:skip, _}` is the sweep's own "not now" shape.
-  defp check_machine_free(%{sandbox: %Sandbox{} = sandbox}) do
+  defp check_machine_free(%{sandbox: %Sandbox{} = preloaded}) do
+    # The preload is the sandbox row; its lease and transition are its
+    # workspace's (ADR 0097, step 3b), so the row is read again through
+    # `Machines.Lease`.
+    sandbox = Fountain.Machines.Lease.get(preloaded.id) || preloaded
+
     cond do
       sandbox.transition == "destroying" and sandbox.status not in @terminal_statuses ->
         {:skip, :machine_destroying}

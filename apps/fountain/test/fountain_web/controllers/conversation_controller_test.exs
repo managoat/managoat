@@ -775,8 +775,7 @@ defmodule FountainWeb.ConversationControllerTest do
         insert_conversation(user_id: user.id, agent: agent, sandbox: sandbox, status: "idle")
 
       sandbox
-      |> Ecto.Changeset.change(transition: "destroying", transition_reason: "teardown")
-      |> Fountain.Repo.update!()
+      |> put_lease(transition: "destroying", transition_reason: "teardown")
 
       stub(Managoat.Sandbox.Sprites, :get, fn _handle -> {:ok, %{status: :running, raw: %{}}} end)
       reject(&Managoat.Sandbox.Sprites.resume/1)

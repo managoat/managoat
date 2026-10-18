@@ -36,10 +36,7 @@ defmodule FountainWeb.AdminSandboxesLiveTest do
   defp stamp(sandbox, sets) do
     import Ecto.Query
 
-    Fountain.Repo.update_all(
-      from(s in Fountain.Conversations.Sandbox, where: s.id == ^sandbox.id),
-      set: sets
-    )
+    put_lease(sandbox.id, sets)
   end
 
   defp insert_admin(overrides \\ %{}) do

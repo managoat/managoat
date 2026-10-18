@@ -61,7 +61,7 @@ defmodule Fountain.Machines.BindingTest do
   end
 
   defp stamp(ctx, sets) do
-    Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id), set: sets)
+    put_lease(ctx.sandbox.id, sets)
   end
 
   defp quietly(fun), do: capture_log(fun)
@@ -551,27 +551,30 @@ defmodule Fountain.Machines.BindingTest do
       # `Process.alive?` here; the barrier calls below are the same proof for
       # the two asynchronous cases.
       assert call_log =~ "no handle_call clause for :a_verb_from_a_later_release/3"
-      assert call_log =~ sandbox_id
+      assert call_log =~ Machine.owner_key(sandbox_id)
 
       cast_log =
         capture_log(fn ->
           GenServer.cast(owner, {:a_cast_from_a_later_release, %{token: secret}})
           # The cast is asynchronous; this call is the barrier that forces
           # the owner to have handled it.
-          assert %Fountain.Machines.Occupancy{} = GenServer.call(owner, :who_is_here)
+          assert %Fountain.Machines.Occupancy{} =
+                   GenServer.call(owner, {:who_is_here, ctx.sandbox.id})
         end)
 
       assert cast_log =~ "no handle_cast clause for :a_cast_from_a_later_release/2"
-      assert cast_log =~ sandbox_id
+      assert cast_log =~ Machine.owner_key(sandbox_id)
 
       info_log =
         capture_log(fn ->
           send(owner, {:DOWN, make_ref(), :process, self(), :normal})
-          assert %Fountain.Machines.Occupancy{} = GenServer.call(owner, :who_is_here)
+
+          assert %Fountain.Machines.Occupancy{} =
+                   GenServer.call(owner, {:who_is_here, ctx.sandbox.id})
         end)
 
       assert info_log =~ "unexpected message :DOWN/5"
-      assert info_log =~ sandbox_id
+      assert info_log =~ Machine.owner_key(sandbox_id)
 
       # **And a message that is not a tuple**, which is where the redaction
       # claim used to be false: the fallback inspected the whole term, so a
@@ -579,7 +582,9 @@ defmodule Fountain.Machines.BindingTest do
       map_log =
         capture_log(fn ->
           send(owner, %{token: secret})
-          assert %Fountain.Machines.Occupancy{} = GenServer.call(owner, :who_is_here)
+
+          assert %Fountain.Machines.Occupancy{} =
+                   GenServer.call(owner, {:who_is_here, ctx.sandbox.id})
         end)
 
       assert map_log =~ "unexpected message a map"
@@ -591,7 +596,8 @@ defmodule Fountain.Machines.BindingTest do
       end
 
       # And it still answers the verbs it does know.
-      assert %Fountain.Machines.Occupancy{} = GenServer.call(owner, :who_is_here)
+      assert %Fountain.Machines.Occupancy{} =
+               GenServer.call(owner, {:who_is_here, ctx.sandbox.id})
     end
   end
 
@@ -729,7 +735,12 @@ defmodule Fountain.Machines.BindingTest do
       assert Repo.reload!(ctx.sandbox).status == "ready"
     end
 
-    test "a message from a caller on the previous release still runs", ctx do
+    test "a message in a shape an earlier release sent is refused, not run", ctx do
+      # Since ADR 0097 step 3b every message names its sandbox, because the
+      # owner is the workspace's. One without (the two- and three-tuples every
+      # caller before sent) is refused by the rollout clause rather than run
+      # against a machine the owner cannot name; with one node and a Recreate
+      # deploy (ADR 0072) no such caller exists.
       stamp(ctx, status: "suspended")
       stub(Managoat.Sandbox, :resume, fn handle -> {:ok, handle} end)
 
@@ -737,10 +748,11 @@ defmodule Fountain.Machines.BindingTest do
       Mimic.allow(Managoat.Sandbox, self(), owner)
 
       quietly(fn ->
-        assert {:ok, :resumed} = GenServer.call(owner, {:ensure_up, [actor: "system:wake"]})
+        assert {:error, :sandbox_unavailable} =
+                 GenServer.call(owner, {:ensure_up, [actor: "system:wake"]})
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Repo.reload!(ctx.sandbox).status == "suspended"
     end
   end
 

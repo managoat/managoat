@@ -91,21 +91,14 @@ defmodule Fountain.QuotasFleetCeilingTest do
       other = insert_active_user()
       going = insert_sandbox(user_id: other.id, status: "ready")
 
-      going
-      |> Ecto.Changeset.change(
-        transition: "destroying",
-        transition_reason: "terminated"
-      )
-      |> Fountain.Repo.update!()
+      put_lease(going, transition: "destroying", transition_reason: "terminated")
 
       assert {:error, :fleet_full} =
                Quotas.check_fleet_ceiling(provider: "sprites", exclude: going.id)
 
       # And the symmetric case: a machine nobody is destroying really is
       # excludable, which is what the option is for.
-      Fountain.Repo.update_all(Fountain.Conversations.Sandbox,
-        set: [transition: nil, transition_reason: nil]
-      )
+      put_lease(going.id, transition: nil, transition_reason: nil)
 
       assert :ok = Quotas.check_fleet_ceiling(provider: "sprites", exclude: going.id)
     end

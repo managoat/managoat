@@ -203,7 +203,7 @@ defmodule Fountain.Conversations.Launch do
       })
 
       # Through the one registration door (ADR 0058 stage 6a), like every other
-      # starter: it starts the server under the per-sandbox lock. The
+      # starter: it starts the server under the machine's lock. The
       # supervisor's answer comes back verbatim, so the `{:error, reason}` arm
       # below still catches `{:already_started, _}` and fails the launch
       # exactly as it did.

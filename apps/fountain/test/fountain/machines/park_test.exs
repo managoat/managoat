@@ -102,18 +102,17 @@ defmodule Fountain.Machines.ParkTest do
   # process mid-provider-call and the thing under test is what the *next* owner
   # does with what is left.
   defp abandon_mid_park(ctx, overrides \\ []) do
-    Repo.update_all(
-      from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-      set:
-        Keyword.merge(
-          [
-            lease_epoch: 1,
-            lease_node: dead_lease_holder(),
-            transition: "parking",
-            transition_reason: "idle"
-          ],
-          overrides
-        )
+    put_lease(
+      ctx.sandbox.id,
+      Keyword.merge(
+        [
+          lease_epoch: 1,
+          lease_node: dead_lease_holder(),
+          transition: "parking",
+          transition_reason: "idle"
+        ],
+        overrides
+      )
     )
 
     :ok
@@ -158,7 +157,7 @@ defmodule Fountain.Machines.ParkTest do
     do: stamp(ctx, transition: "destroying", transition_reason: "reset")
 
   defp stamp(ctx, sets) do
-    Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id), set: sets)
+    put_lease(ctx.sandbox.id, sets)
   end
 
   # A plain process standing in for a co-tenant's server: `whereis/1` only asks
@@ -365,9 +364,7 @@ defmodule Fountain.Machines.ParkTest do
       reject(&Managoat.Sandbox.suspend/1)
       # `main`'s `park_row/1` checked this one, and it is the reason it did:
       # the disk is meant to be gone, and parking would re-reserve it.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [transition: "destroying", transition_reason: "reset"]
-      )
+      put_lease(ctx.sandbox.id, transition: "destroying", transition_reason: "reset")
 
       assert {:error, :fenced} = Park.run(ctx.sandbox.id, opts())
       assert row(ctx).status == "ready"
@@ -380,9 +377,7 @@ defmodule Fountain.Machines.ParkTest do
       # a machine somebody had asked to be destroyed — writing a live status
       # over a row `sweep_fenced_teardowns/0` is about to finish, and
       # re-reserving the machine at the provider.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [transition: "destroying", transition_reason: "teardown"]
-      )
+      put_lease(ctx.sandbox.id, transition: "destroying", transition_reason: "teardown")
 
       assert {:error, :fenced} = Park.run(ctx.sandbox.id, opts())
       assert row(ctx).status == "ready"
@@ -930,7 +925,7 @@ defmodule Fountain.Machines.ParkTest do
           fn conn ->
             Postgrex.query!(conn, "SELECT pg_advisory_xact_lock($1, $2)", [
               4316,
-              :erlang.phash2(ctx.sandbox.id)
+              Fountain.Conversations.sandbox_lock_key(ctx.sandbox.id)
             ])
 
             with_lock_timeout(200, fn ->

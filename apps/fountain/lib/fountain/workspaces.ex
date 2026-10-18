@@ -1,11 +1,12 @@
 defmodule Fountain.Workspaces do
   @moduledoc """
-  Workspaces (ADR 0097). At step 3a of the ADR's sequence this is only the
+  Workspaces (ADR 0097). At step 3 of the ADR's sequence this is only the
   writes that keep a workspace beside every live sandbox: the implicit
   workspace a sandbox is born with, its status following that sandbox's
   provision, and `_unsafe_reconcile_live/0`, which repairs the pairing at every boot.
-  Nothing reads a workspace yet, so nothing here changes what a caller sees.
-  The machine's lease columns are written onto it by `Fountain.Machines.Lease`.
+  The machine's owner and lease are the workspace's (step 3b), and
+  `Fountain.Machines.Lease` reads and writes them; nothing a caller sees reads
+  a workspace yet.
 
   Every query a caller can reach is scoped by `user_id`. `_unsafe_reconcile_live/0`
   is a boot-time sweep over every account and says so.
@@ -169,14 +170,15 @@ defmodule Fountain.Workspaces do
   and a deletion in one transaction), PostgreSQL re-checks
   `sandboxes_workspace_id_fkey` between them and the delete fails.
 
-  **The pointers are cleared first, conversations then sandboxes, and only
-  then are the workspaces deleted**, rather than left to the foreign key's
-  `ON DELETE SET NULL`, which would lock the workspace's row before its
-  sandbox's. That is the order of the machine-layer writers it can race: the
-  teardown fence locks the conversation, then the sandbox, then copies onto
-  the workspace, and `Fountain.Machines.Lease` writes the sandbox before the
-  workspace. A deletion that went the other way could deadlock against a lease
-  release on a machine it had just destroyed (review of step 3a, reproduced).
+  **The rows are taken in the machine layer's order: conversations, then
+  workspaces, then sandboxes** (the teardown fence's and a turn admission's;
+  `Fountain.Machines.Lease` locks a workspace before its sandbox, ADR 0097
+  step 3b). So the conversations' pointers are cleared, the workspaces locked,
+  the sandboxes' pointers cleared, and only then are the workspaces deleted,
+  rather than leaving it to the foreign key's `ON DELETE SET NULL`, whose order
+  is not this one. A deletion that went another way could deadlock against a
+  lease release on a machine it had just destroyed (review of step 3a,
+  reproduced).
   The user row's own delete, straight after, still cascades in the foreign
   keys' order, as it did before workspaces. The delete re-checks that no live
   sandbox has appeared. Not audited: `account.deleted`, recorded by
@@ -193,6 +195,9 @@ defmodule Fountain.Workspaces do
           Repo.update_all(from(c in Conversation, where: c.workspace_id in ^ids),
             set: [workspace_id: nil]
           )
+
+        _ =
+          Repo.all(from(w in Workspace, where: w.id in ^ids, select: w.id, lock: "FOR UPDATE"))
 
         _ =
           Repo.update_all(from(s in Sandbox, where: s.workspace_id in ^ids),

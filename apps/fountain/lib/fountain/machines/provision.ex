@@ -355,7 +355,7 @@ defmodule Fountain.Machines.Provision do
   It is a *callback* rather than a predicate because one caller needs both
   halves of it. `Launch.fail_initial_start/2` fails a conversation and its
   machine together, and `main` did that in one transaction under the
-  per-sandbox advisory lock — the machine's row is the owner's now, so the
+  machine advisory lock — the machine's row is the owner's now, so the
   transaction is gone, and what replaces it is this: the binding is re-checked
   and the conversation is failed here, under the lease, so the order an
   observer sees is the order `main` committed.
@@ -386,8 +386,11 @@ defmodule Fountain.Machines.Provision do
   """
   @spec reserve(map()) :: {:ok, Sandbox.t()} | {:error, Ecto.Changeset.t()}
   def reserve(attrs) when is_map(attrs) do
+    # Every new machine is born in a workspace (ADR 0097): it is what owns it,
+    # and a sandbox without one has no lease to take (`Lease.claim/2`).
     %Sandbox{}
     |> Sandbox.changeset(attrs)
+    |> Ecto.Changeset.validate_required([:workspace_id])
     |> Repo.insert()
   end
 
@@ -422,6 +425,16 @@ defmodule Fountain.Machines.Provision do
           # for as long as this server lives — during which every wake of it
           # answers 503 and the retry the caller is about to make is refused.
           _ = Lease.release(sandbox_id, epoch)
+        end
+
+      # A sandbox with no workspace has no owner (ADR 0097); see
+      # `Lease.unowned/1`. Nothing is provisioned on one: every sandbox a
+      # launch or a wake reserves is born with a workspace.
+      {:error, :no_workspace} ->
+        case Lease.unowned(sandbox_id) do
+          {:terminal, _sandbox} -> {:ok, :already_terminal}
+          :live -> {:error, :machine_busy}
+          :not_found -> {:error, :not_found}
         end
 
       {:error, _} = error ->

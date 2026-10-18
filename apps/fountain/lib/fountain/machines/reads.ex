@@ -17,7 +17,7 @@ defmodule Fountain.Machines.Reads do
 
   ## Admission
 
-  `run/3` admits a read in one short transaction under the per-sandbox advisory
+  `run/3` admits a read in one short transaction under the machine's advisory
   lock (4316), the lock `Lease.claim/2` takes, and decides from the row read
   under it — never from the caller's struct, which is stale by construction
   (#2307 constraint 1):
@@ -132,8 +132,6 @@ defmodule Fountain.Machines.Reads do
   correctness; the owner's serialisation buys a read nothing.
   """
 
-  import Ecto.Query, only: [from: 2]
-
   alias Fountain.Conversations
   alias Fountain.Conversations.Sandbox
   alias Fountain.Machines.Lease
@@ -242,12 +240,8 @@ defmodule Fountain.Machines.Reads do
 
   defp admit(sandbox_id, read, window) do
     Conversations.with_sandbox_lock(sandbox_id, fn ->
-      row =
-        Repo.one(
-          from s in Sandbox,
-            where: s.id == ^sandbox_id,
-            select: s
-        )
+      # Its lease and transition are its workspace's (ADR 0097, step 3b).
+      row = Lease.get(sandbox_id)
 
       case row do
         nil -> {:error, :not_found}

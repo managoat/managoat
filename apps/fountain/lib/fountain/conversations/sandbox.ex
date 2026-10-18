@@ -61,6 +61,14 @@ defmodule Fountain.Conversations.Sandbox do
     # skills live in a conversation's own config home. The column stays
     # unmapped for a release so a rolling-back release still reads it, and
     # a later migration drops it.
+    # **A copy, since ADR 0097 step 3b.** The owner's lease and in-flight state
+    # are on the sandbox's workspace (`Fountain.Workspaces.Workspace`), and
+    # every reader goes through `Fountain.Machines.Lease` (`get/1`,
+    # `machines/0`, `lock_machine/2`), whose structs carry the workspace's
+    # values in these four fields. `Lease` still writes the workspace's onto
+    # them in the same transaction, so a rollback to the release before finds
+    # them current; they are dropped a release later.
+    #
     # The machine owner's lease and its in-flight state (ADR 0058).
     # `lease_epoch` is monotonic and never reused; `lease_node` names the
     # process of this boot that holds the machine (ADR 0072); `transition` and
@@ -98,7 +106,7 @@ defmodule Fountain.Conversations.Sandbox do
     # one the backfill found with no owner. At most one
     # non-terminal sandbox per workspace (`sandboxes_live_workspace_index`).
     # Nilified when the workspace is deleted, as the row outlives its user.
-    # Nothing reads it yet.
+    # The machine's owner and lease are keyed by it since step 3b.
     belongs_to :workspace, Fountain.Workspaces.Workspace
     has_many :conversations, Conversation
     timestamps(type: :utc_datetime)
