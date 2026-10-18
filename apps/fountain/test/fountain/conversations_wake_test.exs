@@ -290,7 +290,7 @@ defmodule Fountain.ConversationsWakeTest do
       assert Repo.reload(conv).sandbox_id == sandbox.id
     end
 
-    test "a definitively gone sprite retires the suspended sandbox and provisions fresh" do
+    test "a definitively gone sprite retires the suspended sandbox and rebuilds in its workspace" do
       user = insert_verified_user()
       agent = insert_agent(user_id: user.id)
       sandbox = insert_sandbox(user_id: user.id, machine_name: "test-sprite-vanished")
@@ -303,8 +303,10 @@ defmodule Fountain.ConversationsWakeTest do
         {:ok, spawn(fn -> :ok end)}
       end)
 
+      # ADR 0097 step 4: the server is started on the retired row and rebuilds
+      # the workspace's machine, moving the conversation in that commit.
       assert {:ok, woken} = Wake.wake_conversation(conv.id)
-      assert woken.sandbox_id != sandbox.id
+      assert woken.sandbox_id == sandbox.id
       assert Repo.reload(sandbox).status == "terminated"
     end
 
@@ -326,13 +328,13 @@ defmodule Fountain.ConversationsWakeTest do
       assert {:ok, _conv} = Wake.wake_conversation(conv.id)
     end
 
-    test "returns {:ok, conv} creating fresh sandbox when sandbox is pending (not ready)" do
+    test "returns {:ok, conv} provisioning a stranded pending sandbox again in place" do
       user = insert_verified_user()
       agent = insert_agent(user_id: user.id)
 
       # A `pending` sandbox with no server anywhere: the provision died with
       # its BEAM. After the registry settle window (#800) the wake gives up
-      # waiting and provisions fresh.
+      # waiting and provisions it again, in place (ADR 0097 step 4).
       sandbox = insert_sandbox(user_id: user.id)
       conv = insert_conversation(user_id: user.id, agent: agent, sandbox: sandbox, status: "idle")
 
@@ -341,7 +343,7 @@ defmodule Fountain.ConversationsWakeTest do
       end)
 
       assert {:ok, woken} = Wake.wake_conversation(conv.id)
-      assert woken.sandbox_id != sandbox.id
+      assert woken.sandbox_id == sandbox.id
     end
 
     test "a pending sandbox whose server appears during the settle window is handed the prompt, not raced (#800)" do
@@ -426,7 +428,10 @@ defmodule Fountain.ConversationsWakeTest do
 
     test "a fresh sandbox comes with a fresh implicit workspace, and the conversation moves to it" do
       user = insert_verified_user()
-      agent = insert_agent(user_id: user.id)
+      # The agent's environment is not the one its implicit workspace was
+      # made from, so that workspace is not kept (ADR 0097 step 4).
+      env = insert_env(user_id: user.id)
+      agent = insert_agent(user_id: user.id, environment_id: env.id)
       old_ws = insert_workspace(user_id: user.id, status: "ready")
 
       sandbox =

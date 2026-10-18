@@ -559,12 +559,13 @@ defmodule Fountain.Conversations.ConversationServer do
           s when s in ["pending", "starting"] ->
             FreshProvision.run(state, conv, sandbox, agent, env, secrets)
 
+          # A lost machine: rebuilt in its workspace, or followed to the one
+          # another conversation rebuilt (ADR 0097, `Conversations.Rebuild`).
           terminal when terminal in ["terminated", "failed"] ->
-            Logger.warning(
-              "ConversationServer started for terminal conv #{conv.id} (#{terminal})"
-            )
-
-            {:stop, :normal, state}
+            case FreshProvision.rebuild(state, conv, sandbox, agent, env, secrets) do
+              {:follow, state, live} -> reattach(state, current(conv), live, agent, env, secrets)
+              reply -> reply
+            end
 
           _ ->
             FreshProvision.run(state, conv, sandbox, agent, env, secrets)
@@ -578,6 +579,9 @@ defmodule Fountain.Conversations.ConversationServer do
         {:stop, :normal, state}
     end
   end
+
+  # ownership: this server's own conversation, as the rebuild that moved it left it.
+  defp current(conv), do: Conversations._unsafe_get_conversation!(conv.id)
 
   defp reattach(state, conv, sandbox, agent, env, secrets) do
     Fountain.Telemetry.span(

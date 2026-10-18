@@ -104,10 +104,12 @@ defmodule Fountain.Workspaces do
   end
 
   @doc """
-  Move an implicit workspace out of `provisioning` once its sandbox's
-  provision has settled: `ready` for a `ready` sandbox, `failed` for a
-  `failed` one. Anything else is left alone, and so is a workspace that has
-  already settled, so a park, a wake or a later destroy never moves it.
+  Move a workspace out of `provisioning` once its sandbox's provision has
+  settled: `ready` for a `ready` sandbox, `failed` for a `failed` one.
+  Anything else is left alone, and so is a workspace that has already
+  settled, so a park, a wake or a later destroy never moves it. An explicit
+  workspace is `provisioning` again only while a rebuild of its lost machine
+  runs (`Lease.succeed/3`, ADR 0097 step 4), and settles the same way.
 
   Called by `Fountain.Machines.Provision` after its own write commits, outside
   every transaction. Best effort: a workspace that cannot be written is
@@ -122,9 +124,7 @@ defmodule Fountain.Workspaces do
     _ =
       Repo.update_all(
         from(w in Workspace,
-          where:
-            w.id == ^workspace_id and w.user_id == ^user_id and w.implicit and
-              w.status == "provisioning"
+          where: w.id == ^workspace_id and w.user_id == ^user_id and w.status == "provisioning"
         ),
         set: [status: status, updated_at: now]
       )

@@ -11,7 +11,10 @@ defmodule Fountain.Conversations.WakeRaceTest do
   `ready` rows nothing referenced.
 
   These pin each branch: what the row points at, and what is left holding a
-  quota slot.
+  quota slot. The first three describes are the fresh-sandbox path, which a
+  conversation with no workspace to keep still takes (here a row from before
+  ADR 0097); the last is the rebuild in a kept workspace (step 4), where the
+  server is started on the conversation's own row and no row is the wake's.
   """
   use Fountain.DataCase, async: false
 
@@ -26,7 +29,7 @@ defmodule Fountain.Conversations.WakeRaceTest do
   setup do
     user = insert_verified_user()
     agent = insert_agent(user_id: user.id)
-    old_sandbox = insert_sandbox(user_id: user.id, status: "terminated")
+    old_sandbox = insert_sandbox(user_id: user.id, status: "terminated", workspace_id: nil)
 
     conv =
       insert_conversation(
@@ -120,6 +123,65 @@ defmodule Fountain.Conversations.WakeRaceTest do
       {:ok, _} = Wake.wake_conversation(conv.id, "hello")
 
       assert_receive {:queued, ^winner, "hello"}
+    end
+  end
+
+  describe "in a kept workspace" do
+    setup %{user: user, agent: agent} do
+      sandbox = insert_sandbox(user_id: user.id, status: "terminated")
+
+      conv =
+        insert_conversation(
+          user_id: user.id,
+          agent_id: agent.id,
+          sandbox_id: sandbox.id,
+          status: "idle"
+        )
+
+      stub(ConversationServer, :queue_initial_prompt, fn _pid, _prompt, _images -> :ok end)
+      {:ok, kept_conv: conv, kept: sandbox}
+    end
+
+    test "the server is started on the conversation's own row, and no row is the wake's", ctx do
+      test_pid = self()
+
+      stub_server_start(fn _sup, spec ->
+        send(test_pid, {:spec, spec})
+        {:ok, spawn(fn -> Process.sleep(:infinity) end)}
+      end)
+
+      before = sandbox_ids()
+      {:ok, _} = Wake.wake_conversation(ctx.kept_conv.id, "hello")
+
+      assert_received {:spec, spec}
+      assert spec |> inspect() |> String.contains?(ctx.kept.id)
+      assert sandboxes_created_since(before) == []
+      # The rebuild moves it, in the succession's commit, not the wake.
+      assert sandbox_of(ctx.kept_conv.id).sandbox_id == ctx.kept.id
+    end
+
+    test "a wake that loses the start race hands its prompt over and leaves nothing", ctx do
+      winner = spawn(fn -> Process.sleep(:infinity) end)
+      test_pid = self()
+      stub_server_start(fn _sup, _spec -> {:error, {:already_started, winner}} end)
+
+      stub(ConversationServer, :queue_initial_prompt, fn pid, prompt, _images ->
+        send(test_pid, {:queued, pid, prompt})
+        :ok
+      end)
+
+      before = sandbox_ids()
+      {:ok, _} = Wake.wake_conversation(ctx.kept_conv.id, "hello")
+
+      assert_receive {:queued, ^winner, "hello"}
+      assert sandboxes_created_since(before) == []
+    end
+
+    test "a full fleet is the wake's answer, before any server starts", ctx do
+      stub(Fountain.Quotas, :check_fleet_ceiling, fn _opts -> {:error, :fleet_full} end)
+      stub_server_start(fn _sup, _spec -> flunk("no server should start") end)
+
+      assert {:error, :fleet_full} = Wake.wake_conversation(ctx.kept_conv.id, "hello")
     end
   end
 
