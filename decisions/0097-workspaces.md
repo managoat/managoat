@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 to 3 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace, with the rebuild and setup primitives unwired): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 to 3 and half of 4 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; ending, parking and the ceiling read the workspace, the rebuild after a loss not yet wired): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -20,8 +20,11 @@ implicit workspace beside every live sandbox, which nothing reads yet
 the owner registered, locked and leased by workspace (3b), with 0058 amended
 to say so, and the rebuild of a lost machine under that owner and the seam
 for an owner to set a machine up with no conversation (3c), neither of which
-anything calls yet. The rest is not built; the Cost section sets out the
-work and its order. It amends
+anything calls yet. Step 4 is two PRs: the first (4a) makes ending a
+conversation, the park, the reaper and the ceiling read the workspace, and
+amends 0073 and 0017; the second (4b), the rebuild after a loss, is not
+built. Explicit workspaces exist only in tests until step 5. The rest is not
+built; the Cost section sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -648,3 +651,27 @@ A PR sequence, each releasable alone:
   workspace's transition), so the release that wires it cannot be rolled
   back below 3c; a rollback to 3a or v0.36, which read each sandbox's own
   columns, stays safe.
+- 2026-10-18 — Step 4a built: the lifecycle reads the workspace's kind
+  (`Workspaces.machine_kind/1`, fixed at create, so read without a lock).
+  `detach` keeps an explicit workspace's machine (`:detached`, nothing
+  written, a live lease not waited on) and fences an implicit one's
+  (`:fenced`, the answer `:detached` used to give); ending a conversation in
+  an explicit workspace stops its adapter (with no live server, its tagged
+  sessions) and removes its config home from an awake machine. An implicit
+  workspace's row is deleted once its conversation is terminal and its
+  machine is gone, from the termination path and by an hourly reaper sweep
+  that also takes the ownerless rows and the leftovers of steps 2 and 3;
+  deleted rather than ended, because nothing reads it once its machine is
+  terminal and a row per launch would accumulate. `Policy.reclaim_action/3`
+  takes the kind: at the ceiling an explicit workspace's machine is parked,
+  every running turn on it first ended as interrupted and every co-tenant's
+  server told before the provider is asked, in the server's tick and the
+  reaper's sweep alike, while a `:max_lifetime` park of an implicit one is
+  refused (`:cannot_park`, which its callers already degrade to a destroy).
+  `machine_gone` tells every conversation bound to a parked or destroyed
+  machine, with the protocol's own words when the caller gave none. A turn
+  is refused on a `suspended` machine, where a co-tenant's park can now leave
+  a live server; its prompt's retry wakes the machine. The idle park needed
+  no change: the server's verdict and the park's recheck already read every
+  conversation on the machine (`Occupancy`), and the reaper already parked a
+  machine with no live server.

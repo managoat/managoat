@@ -77,6 +77,11 @@ defmodule Fountain.Machines.DestroyForcedTest do
     end
 
     def handle_call(_message, _from, state), do: {:reply, :ok, state}
+
+    # A real server stops straight after its terminate, so the destroy's
+    # `machine_gone` to every bound conversation (ADR 0097) never reaches it;
+    # this stand-in lives on, and takes the cast as a no-op.
+    def handle_cast(_message, state), do: {:noreply, state}
   end
 
   setup :set_mimic_global

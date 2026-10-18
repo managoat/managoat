@@ -14,10 +14,24 @@ defmodule Fountain.Machines.Binding do
 
   ## Detach
 
-  `detach/2` ends the conversation's binding, and the machine goes with it. It
-  is `Lifecycle.fence_sandbox_for_teardown/2` with a
-  `terminating_conversation_id`, under the lock, with two things a plain
-  fence does not do:
+  `detach/2` ends the conversation's binding. **Whether the machine goes with
+  it is the workspace's to decide** (ADR 0097, which brings back 0058's keep
+  rule one level up): an implicit workspace is its one conversation's, so its
+  machine goes; an explicit one keeps its machine for the conversations still
+  on it, or for the next one, until the workspace is deleted. There is no
+  refcount: the kind of workspace, fixed at create, is the whole decision.
+
+  On an explicit workspace the detach writes nothing on the machine. It locks
+  the ending conversation under the machine's lock, checks it is still bound
+  there and that its caller is still waiting, and answers `{:ok, :detached}`;
+  the caller stops that conversation's adapter and removes its config home.
+  It does not refuse a live lease: another conversation's operation on the
+  machine (a wake, a rebuild that runs for minutes) is nothing a conversation
+  leaving it has to wait for.
+
+  On an implicit workspace it is `Lifecycle.fence_sandbox_for_teardown/2`
+  with a `terminating_conversation_id`, under the lock, with two things a
+  plain fence does not do:
 
     * it **refuses a live lease** (`:machine_busy`, waited out for
       `busy_wait_ms/0` and then `:sandbox_unavailable` at the door). `main`
@@ -30,7 +44,7 @@ defmodule Fountain.Machines.Binding do
       told 503 closes a machine to admission with a server still serving on
       it.
 
-  `{:ok, :detached}` is the fence committed and the machine this caller's to finish — a live
+  `{:ok, :fenced}` is the fence committed and the machine this caller's to finish — a live
   `ConversationServer` closes its adapter and then asks `Machine.destroy/2`
   with `terminating_conversation_id: nil`, exactly as it did on `main`, so a
   rebind landing between the two cannot make the second fence refuse and
@@ -46,10 +60,13 @@ defmodule Fountain.Machines.Binding do
   left) and `:transaction_open` (the caller's bug), which the door translates.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias Fountain.Conversations
   alias Fountain.Conversations.{Lifecycle, Sandbox}
   alias Fountain.Machines.Destroy
   alias Fountain.Machines.Lease
+  alias Fountain.Machines.Machine
   alias Fountain.Machines.Occupancy
   alias Fountain.Repo
 
@@ -74,8 +91,12 @@ defmodule Fountain.Machines.Binding do
 
   @terminal_statuses ~w(terminated failed)
 
-  @typedoc "What a detach did."
-  @type detach_outcome :: :detached | :destroyed | :already_terminal
+  @typedoc """
+  What a detach did: `:detached`, the binding ended and the machine kept (an
+  explicit workspace); `:fenced`, the machine fenced for the caller to
+  destroy; `:destroyed`; or `:already_terminal`.
+  """
+  @type detach_outcome :: :detached | :fenced | :destroyed | :already_terminal
 
   # ── detach ────────────────────────────────────────────────────────────────
 
@@ -87,9 +108,9 @@ defmodule Fountain.Machines.Binding do
     * `:conversation_id` (required) — the conversation that is ending.
     * `:destroy` — `true` runs `Fountain.Machines.Destroy` in the same call
       once the fence has committed and answers `{:ok, :destroyed}`; `false`
-      (the default) answers `{:ok, :detached}` and leaves the destroy
+      (the default) answers `{:ok, :fenced}` and leaves the destroy
       to the caller, which is what a live server with an adapter to close
-      first needs.
+      first needs. Not read on an explicit workspace, whose machine stays.
     * `:actor`, `:reason`, `:fence_reason`, `:destroy_reason`, `:request_ip`,
       `:metadata`, `:audit` — attribution, as `Termination._unsafe_destroy_machine/2`
       takes them. `:reason` is the fence's own event string
@@ -134,25 +155,64 @@ defmodule Fountain.Machines.Binding do
         {:ok, :already_terminal}
 
       %Sandbox{} = sandbox ->
-        case Lifecycle.fence_sandbox_for_teardown(sandbox, fence_opts(conversation_id, opts)) do
-          {:ok, %Sandbox{status: status}} when status in @terminal_statuses ->
-            {:ok, :already_terminal}
-
-          {:ok, %Sandbox{}} ->
-            finish(sandbox_id, opts)
-
-          {:error, :machine_busy} ->
-            if System.monotonic_time(:millisecond) + @poll_ms < wait_until do
-              Process.sleep(@poll_ms)
-              fence_then_finish(sandbox_id, conversation_id, opts, wait_until)
-            else
-              Logger.warning("machine #{sandbox_id}: detach refused, an owner holds the lease")
-              {:error, :machine_busy}
-            end
-
-          {:error, _} = error ->
-            error
+        case Fountain.Workspaces.machine_kind(sandbox) do
+          :explicit -> keep(sandbox, conversation_id, opts)
+          :implicit -> fence_or_wait(sandbox, conversation_id, opts, wait_until)
         end
+    end
+  end
+
+  # The binding ends and the machine stays (an explicit workspace). The
+  # binding is checked under the machine's lock, in the lock order admission
+  # takes (advisory, then the conversation), so a conversation already moved
+  # to another machine is refused rather than answered for; nothing is
+  # written.
+  defp keep(%Sandbox{} = sandbox, conversation_id, opts) do
+    Conversations.with_sandbox_lock(sandbox.id, fn ->
+      bound? =
+        Repo.one(
+          from(c in Fountain.Conversations.Conversation,
+            where:
+              c.id == ^conversation_id and c.sandbox_id == ^sandbox.id and
+                c.user_id == ^sandbox.user_id,
+            select: c.id,
+            lock: "FOR UPDATE"
+          )
+        ) != nil
+
+      cond do
+        not bound? -> {:error, :sandbox_unavailable}
+        expired?(Keyword.get(opts, :deadline), Machine.db_now()) -> {:error, :detach_expired}
+        true -> {:ok, :detached}
+      end
+    end)
+    |> case do
+      {:ok, :detached} -> {:ok, :detached}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp fence_or_wait(%Sandbox{} = sandbox, conversation_id, opts, wait_until) do
+    sandbox_id = sandbox.id
+
+    case Lifecycle.fence_sandbox_for_teardown(sandbox, fence_opts(conversation_id, opts)) do
+      {:ok, %Sandbox{status: status}} when status in @terminal_statuses ->
+        {:ok, :already_terminal}
+
+      {:ok, %Sandbox{}} ->
+        finish(sandbox_id, opts)
+
+      {:error, :machine_busy} ->
+        if System.monotonic_time(:millisecond) + @poll_ms < wait_until do
+          Process.sleep(@poll_ms)
+          fence_then_finish(sandbox_id, conversation_id, opts, wait_until)
+        else
+          Logger.warning("machine #{sandbox_id}: detach refused, an owner holds the lease")
+          {:error, :machine_busy}
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 
@@ -190,7 +250,7 @@ defmodule Fountain.Machines.Binding do
         {:error, _} = error -> error
       end
     else
-      {:ok, :detached}
+      {:ok, :fenced}
     end
   end
 

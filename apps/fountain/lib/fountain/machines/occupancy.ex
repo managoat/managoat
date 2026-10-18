@@ -12,6 +12,14 @@ defmodule Fountain.Machines.Occupancy do
   them rather than flattening them into a single boolean; what is shared is
   the reading of the rows and the registry, not the verdict taken from it.
 
+  **Since ADR 0097 step 4 the readings are not degenerate.** An explicit
+  workspace runs many conversations on one machine, every one of them bound
+  to it by `conversations.sandbox_id`, so this is the real answer to "is
+  anyone mid-turn" that the park (`Fountain.Machines.Park`) and the
+  conversation server's idle verdict (`busy_elsewhere?/4`) read: the
+  workspace parks only when none of its conversations has a running turn and
+  none has been active inside the idle window.
+
   Nothing here holds a process or writes anything. `Fountain.Machines.Machine`
   serves this struct over a `GenServer.call`, so a later stage can put writes
   behind the same door; the functions themselves stay callable directly, which

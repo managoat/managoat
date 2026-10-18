@@ -225,6 +225,7 @@ defmodule Fountain.Workers.SandboxReaper do
   def perform(_job) do
     released = release_stuck_sandboxes()
     {parked, expired, refused, skipped} = sweep_abandoned_sandboxes()
+    workspaces = sweep_ended_workspaces()
 
     listings = list_by_provider()
     ok_listings = for {p, {:ok, names}} <- listings, into: %{}, do: {p, names}
@@ -237,7 +238,7 @@ defmodule Fountain.Workers.SandboxReaper do
 
     Logger.info(
       "reaper: released=#{released} parked=#{parked} expired=#{expired} " <>
-        "refused=#{refused} skipped=#{skipped} " <>
+        "refused=#{refused} skipped=#{skipped} workspaces=#{workspaces} " <>
         "destroyed=#{destroyed} untracked=#{untracked} live=#{live}"
     )
 
@@ -314,6 +315,23 @@ defmodule Fountain.Workers.SandboxReaper do
   # second floor for pass 1c's driver; stage 9b gave that pass a run of its own
   # and took both the floor and the sharing away.)
   defp pass_two_budget(spent), do: max(@pass_two_floor, destroy_limit() - spent)
+
+  # ── pass 1d: ended workspaces ─────────────────────────────────────────────
+
+  @doc """
+  Delete the workspaces that have ended (ADR 0097): an implicit one whose
+  conversation and machine are both gone, and an ownerless one whose machine
+  has gone (`Fountain.Workspaces._unsafe_sweep_ended/0`). The termination
+  path deletes them as it ends a conversation; this collects what it missed.
+  A database fault is logged and the run carries on. Returns how many.
+  """
+  def sweep_ended_workspaces do
+    Fountain.Workspaces._unsafe_sweep_ended()
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning("reaper: ended workspaces not swept: " <> Exception.message(error))
+      0
+  end
 
   # ── pass 1: rows stuck mid-provision ──────────────────────────────────────
 
@@ -556,11 +574,15 @@ defmodule Fountain.Workers.SandboxReaper do
     end
   end
 
-  defp sweep_verdict({sandbox, {:expired, :max_lifetime}}, {p, e, r, s, left, attempts})
-       when left > 0 and attempts > 0 do
-    case expire(sandbox, :max_lifetime, "past max lifetime") do
-      :expired -> {p, e + 1, r, s, left - 1, attempts - 1}
-      :refused -> {p, e, r + 1, s, left, attempts - 1}
+  # Past the ceiling: an explicit workspace's machine is parked, its running
+  # turns interrupted first (ADR 0097, `Machines.Policy.reclaim_action/3`); an
+  # implicit one's is destroyed, as it always was. The park spends no destroy
+  # budget unless it degrades to one.
+  defp sweep_verdict({sandbox, {:expired, :max_lifetime}} = verdict, acc)
+       when elem(acc, 5) > 0 do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> ceiling_park(sandbox, acc)
+      :implicit -> ceiling_expire(verdict, acc)
     end
   end
 
@@ -570,6 +592,28 @@ defmodule Fountain.Workers.SandboxReaper do
   end
 
   defp sweep_verdict({_sandbox, :ok}, acc), do: acc
+
+  defp ceiling_expire({sandbox, _verdict}, {p, e, r, s, left, attempts}) when left > 0 do
+    case expire(sandbox, :max_lifetime, "past max lifetime") do
+      :expired -> {p, e + 1, r, s, left - 1, attempts - 1}
+      :refused -> {p, e, r + 1, s, left, attempts - 1}
+    end
+  end
+
+  defp ceiling_expire({sandbox, _verdict}, acc) do
+    defer(sandbox, acc)
+    acc
+  end
+
+  defp ceiling_park(sandbox, {p, e, r, s, left, attempts}) do
+    case park_or_expire(sandbox, :max_lifetime, left) do
+      :parked -> {p + 1, e, r, s, left, attempts - 1}
+      :expired -> {p, e + 1, r, s, left - 1, attempts - 1}
+      :refused -> {p, e, r + 1, s, left, attempts - 1}
+      :skipped -> {p, e, r, s + 1, left, attempts - 1}
+      :deferred -> {p, e, r, s, left, attempts - 1}
+    end
+  end
 
   # The run has spent one of its two budgets. The row keeps its live status and
   # no fence, so the next run sees it unchanged and deals with it then — which
@@ -617,10 +661,16 @@ defmodule Fountain.Workers.SandboxReaper do
   # being decided here: a provider that cannot park and a suspend call that
   # failed both expire the machine instead, because an unparked sandbox keeps
   # billing (decisions/0017).
-  defp idle_sweep(sandbox, destroys_left) do
+  defp idle_sweep(sandbox, destroys_left), do: park_or_expire(sandbox, :idle, destroys_left)
+
+  # The same park at either bound: `:max_lifetime` reaches here only for an
+  # explicit workspace's machine, whose park first ends every running turn on
+  # it (`Machines.Park`). With no live server on the machine there is nobody
+  # to cancel, only turn rows nothing is driving to mark interrupted.
+  defp park_or_expire(sandbox, bound, destroys_left) do
     case Machine.park(sandbox.id,
            actor: "system:sandbox_reaper",
-           reason: :idle,
+           reason: bound,
            # No `requesting_conversation_id`: the reaper is on nobody's behalf,
            # so *any* live server on the machine refuses this park — which is
            # the liveness rule this sweep has always had, now applied under the
@@ -629,7 +679,7 @@ defmodule Fountain.Workers.SandboxReaper do
            # No `notify` either: an abandoned machine's conversations were
            # never told it had been parked, and a park is reversible — the next
            # prompt wakes it through the ordinary reattach path.
-           verdict: {:expired, :idle}
+           verdict: {:expired, bound}
          ) do
       {:ok, :parked} ->
         Logger.info(
@@ -655,10 +705,10 @@ defmodule Fountain.Workers.SandboxReaper do
         :skipped
 
       {:error, :cannot_park} ->
-        expire_within(sandbox, destroys_left, "idle on a provider without suspend")
+        expire_within(sandbox, destroys_left, bound, "#{bound} on a provider without suspend")
 
       {:error, :suspend_failed} ->
-        expire_within(sandbox, destroys_left, "idle; suspend call failed")
+        expire_within(sandbox, destroys_left, bound, "#{bound}; suspend call failed")
 
       # A teardown landed between this scan's `where` clause and the
       # lease. Somebody else owns the end of this machine, and
@@ -692,10 +742,10 @@ defmodule Fountain.Workers.SandboxReaper do
   # Both of these arms destroy a machine at the provider, so both spend from
   # the run's budget — the suspend-failure one especially, since a provider
   # whose suspend is down sends every idle row here at once.
-  defp expire_within(sandbox, destroys_left, reason) when destroys_left > 0,
-    do: expire(sandbox, :idle, reason)
+  defp expire_within(sandbox, destroys_left, bound, reason) when destroys_left > 0,
+    do: expire(sandbox, bound, reason)
 
-  defp expire_within(sandbox, _spent, _reason) do
+  defp expire_within(sandbox, _spent, _bound, _reason) do
     Logger.info(
       "reaper: deferred expiry of sandbox #{sandbox.id} (#{sandbox.machine_name}) — " <>
         "this run has spent its #{destroy_limit()} provider destroys"

@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "Suspend idle sandboxes instead of destroying them"
-description: "Idle timeout suspends a sandbox and parks it for reattach; only max lifetime destroys it."
+description: "Idle timeout suspends a sandbox and parks it for reattach, measured over every conversation in its workspace; max lifetime destroys an implicit workspace's sandbox and parks an explicit one's."
 tags: [sandbox, lifecycle]
 status: stable
 adr: "0017"
@@ -13,7 +13,10 @@ verified: { by: human:jhgaylor, at: 2026-08-13T19:28:44-04:00 }
 
 # 0017 — Suspend idle sandboxes instead of destroying them
 
-**Status:** Accepted — 2026-08-13.
+**Status:** Accepted — 2026-08-13. Amended by [0097](0097-workspaces.md) on
+2026-10-18: the idle clock is the workspace's, a wake loads one
+conversation's session, and the ceiling parks an explicit workspace's
+machine (see the History).
 
 ## Context
 
@@ -66,9 +69,24 @@ Park or destroy at each bound is decided once, in `Fountain.Machines.Policy`
 ([0058](0058-the-machine-has-one-owner.md)). The machine's owner applies it
 under its lease, a park through `Machines.Park` and the max-lifetime destroy
 through `Machines.Destroy`, for both the conversation server's own timer and
-the reaper's sweep. Every machine is one conversation's
-([0073](0073-one-sandbox-per-conversation.md)), so there is no case where the
-ceiling parks instead of destroying.
+the reaper's sweep.
+
+Since [0097](0097-workspaces.md) a machine belongs to a workspace, which may
+run many conversations, and both bounds are the workspace's:
+
+| Bound | Implicit workspace (one conversation) | Explicit workspace |
+|---|---|---|
+| Idle | Park | Park, once no conversation in it has a running turn and none has been active for the idle timeout |
+| Max lifetime | Destroy | Interrupt every running turn on it (cancelled, marked interrupted, transcript kept), then park; the clock restarts from the wake |
+
+The idle clock runs from the last turn activity of any of the workspace's
+conversations, and a wake is lazy per conversation: a prompt resumes the
+machine if it is parked and loads only that conversation's session, and the
+others stay unattached until they are prompted. The reaper parks a workspace
+that has a machine and no live conversation on the same idle bound. On a
+provider that cannot park, both bounds destroy, as above. So an explicit
+workspace's machine has no hard lifetime: it lives until the workspace is
+deleted or the machine is lost.
 
 ## Consequences
 
@@ -112,3 +130,4 @@ ceiling parks instead of destroying.
 - 2026-10-13 — No per-account cap; the deployment-wide fleet ceiling is the only concurrency bound ([0005](0005-platform-shared-sprites-token.md)).
 - 2026-10-14 — Persistent homes removed, so the ceiling always destroys (#2676, [0073](0073-one-sandbox-per-conversation.md)); one node, the rolling-deploy window gone and the `woken_at` grace dropped ([0072](0072-fountain-runs-as-one-node.md)).
 - 2026-10-15 — Usage metering removed, with the suspend/resume events ([0079](0079-usage-is-plain-counts.md)).
+- 2026-10-18 — Amended by [0097](0097-workspaces.md) (step 4): the idle clock is the workspace's, over all of its conversations; a wake loads one conversation's session; the ceiling table gets back the row 0073 removed, as "explicit workspace: interrupt the running turns, then park" beside "implicit workspace: destroy" (`Policy.reclaim_action/3`); a turn is refused on a machine a co-tenant has parked.

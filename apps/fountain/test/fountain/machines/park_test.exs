@@ -162,6 +162,14 @@ defmodule Fountain.Machines.ParkTest do
 
   # A plain process standing in for a co-tenant's server: `whereis/1` only asks
   # the registry, and a cast is a message. Same shape as `destroy_test.exs`.
+  defp flush_test_mailbox do
+    receive do
+      _ -> flush_test_mailbox()
+    after
+      0 -> :ok
+    end
+  end
+
   defp stand_in_server(conversation_id) do
     test = self()
 
@@ -227,6 +235,7 @@ defmodule Fountain.Machines.ParkTest do
     end
 
     test "the ceiling's park records the bound it was", ctx do
+      explicit_workspace!(ctx.sandbox)
       stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
 
       assert {:ok, :parked} = Park.run(ctx.sandbox.id, opts(reason: :max_lifetime))
@@ -325,7 +334,11 @@ defmodule Fountain.Machines.ParkTest do
                )
     end
 
-    test "a caller with nothing to say sends nothing", ctx do
+    test "a caller with nothing to say still tells every co-tenant, in the park's words",
+         ctx do
+      # ADR 0097: `machine_gone` tells every conversation bound to the
+      # machine, not only the ones a caller thought to name. The requester is
+      # not told about its own park.
       other = quiet_cotenant(ctx)
       stand_in_server(other.id)
       stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
@@ -333,7 +346,12 @@ defmodule Fountain.Machines.ParkTest do
       assert {:ok, :parked} =
                Park.run(ctx.sandbox.id, opts(requesting_conversation_id: ctx.conv.id))
 
-      refute_receive {:cotenant, _}, 200
+      sandbox_id = ctx.sandbox.id
+
+      assert_receive {:cotenant,
+                      {:"$gen_cast", {:machine_gone, ^sandbox_id, "suspended", "idle", message}}}
+
+      assert message == Fountain.Conversations.Lifecycle.explain(:idle, :suspend)
     end
   end
 
@@ -441,6 +459,7 @@ defmodule Fountain.Machines.ParkTest do
       # veto made the ceiling unable to park a home at all — the server had
       # already dropped its adapter, so the turn it left `running` had nothing
       # to end it, and the machine went on billing.
+      explicit_workspace!(ctx.sandbox)
       insert_turn(ctx.conv, status: "running", started_at: DateTime.utc_now())
       expect(Managoat.Sandbox, :suspend, fn _ -> :ok end)
 
@@ -453,26 +472,72 @@ defmodule Fountain.Machines.ParkTest do
       assert row(ctx).status == "suspended"
     end
 
-    test "a co-tenant's running turn refuses a max-lifetime park all the same", ctx do
-      # One conversation's clock reaching a ceiling is not a reason to cut
-      # somebody else's work on the same machine.
-      #
-      # The idle bound is turned off so this isolates the rule it names. With
-      # it on, `held_by_somebody_else?/2` answers first — a co-tenant mid-turn
-      # is inside any idle window — and the test would pass with the
-      # running-turn veto deleted.
+    test "the ceiling parks only an explicit workspace's machine", ctx do
+      # ADR 0097: an implicit workspace's machine is destroyed at the ceiling,
+      # so a park asked for there is refused in the word the callers already
+      # degrade to a destroy on, before anything is touched.
       reject(&Managoat.Sandbox.suspend/1)
+      insert_turn(ctx.conv, status: "running", started_at: DateTime.utc_now())
+
+      assert {:error, :cannot_park} =
+               Park.run(
+                 ctx.sandbox.id,
+                 opts(reason: :max_lifetime, requesting_conversation_id: ctx.conv.id)
+               )
+
+      assert row(ctx).status == "ready"
+      assert [%{status: "running"}] = Repo.all(Fountain.Conversations.Turn)
+    end
+
+    test "a co-tenant's running turn is cut by an explicit workspace's ceiling, not a veto",
+         ctx do
+      # ADR 0097: the ceiling interrupts every running turn on the workspace
+      # and then parks, without waiting for them. The co-tenant's turn is
+      # marked interrupted with its transcript kept, and its server is told
+      # *before* the provider is asked to suspend, so it cancels its adapter
+      # rather than leaving it running on a parked machine. The idle bound is
+      # off so the co-tenant's activity is not what is being judged.
+      explicit_workspace!(ctx.sandbox)
       other = quiet_cotenant(ctx)
       stand_in_server(other.id)
-      insert_turn(other, status: "running", started_at: DateTime.utc_now())
+      turn = insert_turn(other, status: "running", started_at: DateTime.utc_now())
+      test = self()
+
+      stub(Managoat.Sandbox, :suspend, fn _ ->
+        send(test, :suspending)
+        :ok
+      end)
 
       without_idle_bound(fn ->
-        assert {:error, :machine_occupied} =
+        assert {:ok, :parked} =
                  Park.run(
                    ctx.sandbox.id,
-                   opts(reason: :max_lifetime, requesting_conversation_id: ctx.conv.id)
+                   opts(
+                     reason: :max_lifetime,
+                     actor: "system:conversation_server",
+                     requesting_conversation_id: ctx.conv.id,
+                     notify: {ctx.conv.id, "suspended", "max_lifetime", "the ceiling"}
+                   )
                  )
       end)
+
+      sandbox_id = ctx.sandbox.id
+
+      # The notice was sent before the suspend: it is first in the mailbox,
+      # and it is the only one (the finalize does not tell them again).
+      assert {:messages,
+              [
+                {:cotenant,
+                 {:"$gen_cast",
+                  {:machine_gone, ^sandbox_id, "suspended", "max_lifetime", "the ceiling"}}},
+                :suspending
+              ]} = Process.info(self(), :messages)
+
+      flush_test_mailbox()
+
+      assert Repo.reload!(turn).status == "interrupted"
+      assert row(ctx).status == "suspended"
+      refute_receive {:cotenant, _}, 100
     end
 
     test "a sweep is refused by the server before its turn is ever counted", ctx do
@@ -481,6 +546,7 @@ defmodule Fountain.Machines.ParkTest do
       # "something is driving it" means a live server — which `any_live?`
       # has already refused on. So the requester exception cannot reach a
       # sweep, and neither can the turn check: the liveness rule subsumes it.
+      explicit_workspace!(ctx.sandbox)
       reject(&Managoat.Sandbox.suspend/1)
       stand_in_server(ctx.conv.id)
       insert_turn(ctx.conv, status: "running", started_at: DateTime.utc_now())

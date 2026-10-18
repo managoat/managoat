@@ -69,8 +69,9 @@ defmodule Fountain.Conversations.Lifecycle do
   module already is one of its callers (`prepare_destroy/2`);
   `Machines.Destroy`, `Accounts.Deletion` and `Machines.Binding.detach/2`
   call it, they do not own it. The detach is the caller that asks with a
-  terminating conversation. It never keeps a machine: every machine is one
-  conversation's (ADR 0073).
+  terminating conversation, on an implicit workspace only: an explicit
+  workspace keeps its machine when a conversation leaves it, and is not fenced
+  (ADR 0097, `Machines.Binding.detach/2`).
   """
 
   import Ecto.Query
@@ -239,6 +240,15 @@ defmodule Fountain.Conversations.Lifecycle do
       "Send another prompt to continue — the agent picks up right where it left off."
   end
 
+  # The ceiling parks only an explicit workspace's machine (ADR 0097), and it
+  # interrupts whatever turn was running to do it: the disk and the sessions
+  # are kept, so the memory promise holds, and the cut turn is said aloud.
+  def explain(:max_lifetime, :suspend) do
+    "Sandbox parked after reaching the #{hours(max_lifetime_seconds())} hour maximum " <>
+      "lifetime; a turn that was running was interrupted. Send another prompt to " <>
+      "continue — the agent picks up right where it left off."
+  end
+
   def explain(:idle, :destroy) do
     "Sandbox reclaimed after #{minutes(idle_timeout_seconds())} minutes idle. " <>
       "Send another prompt to continue — the transcript above is kept, but this sandbox " <>
@@ -329,7 +339,29 @@ defmodule Fountain.Conversations.Lifecycle do
   by construction.
   """
   @spec idle_machine_action(Handle.t() | nil) :: :park | :destroy
-  def idle_machine_action(handle), do: Policy.reclaim_action(:idle, provider(handle))
+  def idle_machine_action(handle),
+    # The kind of workspace does not change the idle bound's answer.
+    do: Policy.reclaim_action(:idle, provider(handle), :implicit)
+
+  @doc """
+  What the max-lifetime ceiling does to this conversation's machine:
+  `:destroy` on an implicit workspace, as it always has, and `:park` on an
+  explicit one where the provider can park (`Fountain.Machines.Policy`, ADR
+  0097). A park at the ceiling interrupts every running turn on the machine
+  first (`Fountain.Machines.Park`).
+  """
+  @spec ceiling_action(String.t() | nil, Handle.t() | nil) :: :park | :destroy
+  def ceiling_action(sandbox_id, handle) do
+    # Ownership: the caller is the server for a conversation on this sandbox,
+    # established at its init/1.
+    kind =
+      case sandbox_id && Conversations._unsafe_get_sandbox(sandbox_id) do
+        %Sandbox{} = sandbox -> Fountain.Workspaces.machine_kind(sandbox)
+        nil -> :implicit
+      end
+
+    Policy.reclaim_action(:max_lifetime, provider(handle), kind)
+  end
 
   @doc """
   The whole idle verdict for a conversation server: `:keep` the machine,

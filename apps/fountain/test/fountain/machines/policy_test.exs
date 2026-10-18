@@ -1,9 +1,9 @@
 defmodule Fountain.Machines.PolicyTest do
   @moduledoc """
-  What a reclaim does to a machine (ADR 0058 stage 7a; ADR 0017). Since
-  persistent homes were removed (ADR 0073), every machine is one
-  conversation's: an idle one parks where the provider can, and the ceiling
-  destroys.
+  What a reclaim does to a machine (ADR 0058 stage 7a; ADR 0017). An idle
+  machine parks where the provider can. The ceiling destroys an implicit
+  workspace's machine, and parks an explicit one's where the provider can
+  (ADR 0097).
   """
 
   use Fountain.DataCase, async: false
@@ -27,19 +27,45 @@ defmodule Fountain.Machines.PolicyTest do
     end
   end
 
-  describe "reclaim_action/2" do
+  describe "reclaim_action/3" do
     test "the idle bound parks where the provider can, and destroys where it cannot" do
-      can_park()
-      assert Policy.reclaim_action(:idle, :sprites) == :park
-      cannot_park()
-      assert Policy.reclaim_action(:idle, :sprites) == :destroy
+      for kind <- [:implicit, :explicit] do
+        can_park()
+        assert Policy.reclaim_action(:idle, :sprites, kind) == :park
+        cannot_park()
+        assert Policy.reclaim_action(:idle, :sprites, kind) == :destroy
+      end
     end
 
-    test "the ceiling destroys, whatever the provider" do
+    test "the ceiling destroys an implicit workspace's machine, whatever the provider" do
       can_park()
-      assert Policy.reclaim_action(:max_lifetime, :sprites) == :destroy
+      assert Policy.reclaim_action(:max_lifetime, :sprites, :implicit) == :destroy
       cannot_park()
-      assert Policy.reclaim_action(:max_lifetime, :sprites) == :destroy
+      assert Policy.reclaim_action(:max_lifetime, :sprites, :implicit) == :destroy
+    end
+
+    test "the ceiling parks an explicit workspace's machine where the provider can" do
+      can_park()
+      assert Policy.reclaim_action(:max_lifetime, :sprites, :explicit) == :park
+      cannot_park()
+      assert Policy.reclaim_action(:max_lifetime, :sprites, :explicit) == :destroy
+    end
+  end
+
+  describe "Lifecycle.ceiling_action/2" do
+    test "reads the kind of the conversation's workspace" do
+      can_park()
+      handle = Managoat.Sandbox.build_handle(:sprites, "whatever")
+      implicit = insert_sandbox(status: "ready")
+      user = insert_verified_user()
+      workspace = insert_workspace(user_id: user.id, implicit: false, name: "mine")
+      explicit = insert_sandbox(user_id: user.id, workspace_id: workspace.id, status: "ready")
+      legacy = insert_sandbox(status: "ready", workspace_id: nil)
+
+      assert Lifecycle.ceiling_action(implicit.id, handle) == :destroy
+      assert Lifecycle.ceiling_action(explicit.id, handle) == :park
+      assert Lifecycle.ceiling_action(legacy.id, handle) == :destroy
+      assert Lifecycle.ceiling_action(nil, handle) == :destroy
     end
   end
 

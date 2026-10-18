@@ -1586,6 +1586,14 @@ defmodule Fountain.Conversations do
       machine.status in @terminal_statuses ->
         {:error, :sandbox_unavailable}
 
+      # Parked under this conversation by a co-tenant (ADR 0097: the park is
+      # the workspace's, over all of its conversations). Its server is being
+      # told `machine_gone` and stops; the prompt's retry wakes the machine
+      # for this conversation through the ordinary wake. A turn admitted here
+      # would run on a row no sweep looks at (decisions/0017).
+      machine.status == "suspended" ->
+        {:error, :sandbox_unavailable}
+
       # Either fence, read off the `destroying` stamp both write (stage 9a;
       # stage 9b stopped reading the two columns 8a read here). The status
       # clause above has already taken the terminal rows where the stamp would
@@ -1657,12 +1665,16 @@ defmodule Fountain.Conversations do
   @doc """
   The other conversations still holding `sandbox_id` — not `terminated` or
   `failed` — as ids: the machine's co-tenants, for a lifecycle decision one
-  of them is about to make for all of them.
+  of them is about to make for all of them. With `nil` for `conv_id`, every
+  one of them: a machine operation nobody bound to it asked for.
 
   The same reading of the machine as the predicates above and below it
   (`Fountain.Machines.Occupancy`, ADR 0058 stage 4), returned as a list rather
   than a verdict.
   """
+  def _unsafe_list_cotenant_ids(sandbox_id, nil) when is_binary(sandbox_id),
+    do: Occupancy.bindings(sandbox_id).bound
+
   def _unsafe_list_cotenant_ids(sandbox_id, conv_id)
       when is_binary(sandbox_id) and is_binary(conv_id) do
     sandbox_id |> Occupancy.bindings() |> Occupancy.cotenant_ids(conv_id)

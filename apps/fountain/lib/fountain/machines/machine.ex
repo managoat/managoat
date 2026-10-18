@@ -824,7 +824,9 @@ defmodule Fountain.Machines.Machine do
   `Fountain.Machines.Binding.detach/2`, the last-detach decision, run inside
   the owner. `opts` are the protocol's, documented there.
 
-  The answers travel: `{:ok, :detached}`, `{:ok, :destroyed}` and
+  The answers travel: `{:ok, :detached}` (the binding ended and an explicit
+  workspace keeps the machine, ADR 0097), `{:ok, :fenced}` (the machine is
+  this caller's to destroy), `{:ok, :destroyed}` and
   `{:ok, :already_terminal}` each tell the caller something different to do
   next, and the refusals are the fence's own words
   (`:sandbox_unavailable`, `:not_found`). A live lease, waited out, and an
