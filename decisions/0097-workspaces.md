@@ -14,8 +14,8 @@ date: 2026-10-18
 **Status:** Accepted, 2026-10-18, by the maintainer, in review on #2984.
 Step 2 of the Cost section's sequence is built: the `workspaces` table, and
 an implicit workspace beside every live sandbox that has an owner, which
-nothing reads yet. The rest, step 1 included, is not built; the Cost section sets out the work and its order. It
-amends
+nothing reads yet. The rest, step 1 included, is not built; the Cost section
+sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -315,8 +315,8 @@ environment or vault that a non-implicit workspace names is refused with
 `409` while the workspace exists; today the foreign keys nilify, and they
 still do for implicit workspaces.
 The migration makes one implicit workspace per non-terminal sandbox, from the
-environment and vault its launch resolved (recorded on the sandbox row), and points the sandbox and the
-conversation at it, with the status its sandbox implies; terminal sandbox
+environment and vault its launch resolved (recorded on the sandbox row), and
+points the sandbox and the conversation at it, with the status its sandbox implies; terminal sandbox
 rows keep a null `workspace_id`.
 
 ### Naming
