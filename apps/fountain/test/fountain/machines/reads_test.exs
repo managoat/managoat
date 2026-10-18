@@ -19,7 +19,6 @@ defmodule Fountain.Machines.ReadsTest do
 
   alias Fountain.Conversations
   alias Fountain.Conversations.Conversation
-  alias Fountain.Conversations.Sandbox
   alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine
   alias Fountain.Machines.Reads

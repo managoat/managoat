@@ -86,9 +86,11 @@ defmodule Fountain.Machines.Lease do
   Every live sandbox has one: every sandbox is born with one, and the boot
   sweep gives one to any that a release before ADR 0097 made. A sandbox
   retired before ADR 0097 has none, and nothing owns it: `claim/2` answers
-  `{:error, :no_workspace}`, and its lease fields read as nobody's and no
-  transition. The protocols answer such a row as the terminal row it is
-  (`unowned/1`) and refuse one that is somehow live as busy.
+  `{:error, :no_workspace}`, and its four fields are read from its own row,
+  as before ADR 0097, so a stamp a fence writes there (`put_transition!/4`)
+  is still seen by every reader. The protocols answer such a row as the
+  terminal row it is (`unowned/1`) and refuse one that is somehow live as
+  busy: only a failed boot reconcile leaves one, until the next boot.
   """
 
   import Ecto.Query
@@ -109,6 +111,25 @@ defmodule Fountain.Machines.Lease do
   @boot_key {__MODULE__, :boot_id}
 
   @destroying "destroying"
+
+  # The boot sweep's first statement: a stamp a release before ADR 0097 step
+  # 3b wrote on a live sandbox's own row only (it read and wrote no other),
+  # carried onto the workspace before anything here reads the workspace's.
+  # Under this release the two agree at every commit, so on a deployment that
+  # never rolled back it writes nothing. The epoch never goes backwards, so no
+  # epoch that release handed out is handed out again.
+  @carry_sql """
+  UPDATE workspaces w
+     SET lease_epoch = GREATEST(w.lease_epoch, s.lease_epoch),
+         transition = s.transition,
+         transition_reason = s.transition_reason
+    FROM sandboxes s
+   WHERE s.workspace_id = w.id
+     AND s.status NOT IN ('terminated', 'failed')
+     AND (w.transition IS DISTINCT FROM s.transition
+          OR w.transition_reason IS DISTINCT FROM s.transition_reason
+          OR w.lease_epoch < s.lease_epoch)
+  """
 
   # The only columns a machine's owner may write through `cas_update/3`.
   # `lease_*` are absent on purpose — a lease changes hands through the
@@ -217,8 +238,8 @@ defmodule Fountain.Machines.Lease do
   first binding is the sandbox and its second, named `:workspace`, the
   workspace (`NULL` columns for a sandbox with none), so a caller can add
   `where: [s, w] ...` or `where: as(:workspace).transition == ...`. The select
-  replaces the sandbox's own copies of the four fields with the workspace's:
-  `0` and `nil` where there is no workspace.
+  replaces the sandbox's own copies of the four fields with the workspace's;
+  a sandbox with no workspace keeps its own.
   """
   @spec machines() :: Ecto.Query.t()
   def machines do
@@ -228,10 +249,19 @@ defmodule Fountain.Machines.Lease do
       on: w.id == s.workspace_id,
       select: %{
         s
-        | lease_epoch: coalesce(w.lease_epoch, 0),
-          lease_node: w.lease_node,
-          transition: w.transition,
-          transition_reason: w.transition_reason
+        | lease_epoch:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_epoch, w.lease_epoch),
+          lease_node:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_node, w.lease_node),
+          transition:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition),
+          transition_reason:
+            fragment(
+              "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+              w.id,
+              s.transition_reason,
+              w.transition_reason
+            )
       }
   end
 
@@ -293,8 +323,9 @@ defmodule Fountain.Machines.Lease do
     }
   end
 
-  defp overlay(%Sandbox{} = sandbox, nil),
-    do: %{sandbox | lease_epoch: 0, lease_node: nil, transition: nil, transition_reason: nil}
+  # No workspace: the sandbox's own columns are its only record, as they were
+  # before ADR 0097 (see the moduledoc).
+  defp overlay(%Sandbox{} = sandbox, nil), do: sandbox
 
   @doc """
   What a protocol makes of a sandbox `claim/2` refused as
@@ -313,7 +344,7 @@ defmodule Fountain.Machines.Lease do
         {:terminal, sandbox}
 
       %Sandbox{} ->
-        Logger.error(
+        Logger.warning(
           "machine #{sandbox_id}: a live sandbox with no workspace has no owner; " <>
             "the next boot gives it one (Workspaces._unsafe_reconcile_live/0)"
         )
@@ -337,10 +368,13 @@ defmodule Fountain.Machines.Lease do
   has not proved readiness, even when the row was already `ready` before the
   provider put it to sleep. Registration refuses that stamp too (#2560).
 
-  A live sandbox with no workspace, which only a failed
-  `_unsafe_reconcile_live/0` leaves, has its own columns swept the same way.
-  Then the workspaces' columns are copied onto their live sandboxes ("Written
-  twice"), all in one transaction.
+  First, a stamp a release before this one wrote on a live sandbox's row only
+  is carried onto its workspace (see `@carry_sql`), so a rollback and a roll
+  forward lose nothing even when `Workspaces._unsafe_reconcile_live/0` failed
+  this boot. A live sandbox with no workspace, which only that failure
+  leaves, has its own columns swept the same way. Then the workspaces' columns
+  are copied onto their live sandboxes where they differ ("Written twice"),
+  all in one transaction.
 
   Returns the number of workspaces it cleared.
   """
@@ -355,6 +389,7 @@ defmodule Fountain.Machines.Lease do
   end
 
   defp sweep_rows(prefix) do
+    _ = Repo.query!(@carry_sql)
     {count, _} = Repo.update_all(swept(Workspace, prefix), [])
     _ = Repo.update_all(from(s in swept(Sandbox, prefix), where: is_nil(s.workspace_id)), [])
     _ = copy_to_sandboxes(:all, nil)
@@ -757,8 +792,17 @@ defmodule Fountain.Machines.Lease do
 
     query =
       case {workspace_id, also} do
+        # Only the rows that differ: a workspace per launch, and most agree.
         {:all, _} ->
-          where(query, [s], s.status not in @terminal_statuses)
+          where(
+            query,
+            [s, w],
+            s.status not in @terminal_statuses and
+              (fragment("? IS DISTINCT FROM ?", s.lease_node, w.lease_node) or
+                 fragment("? IS DISTINCT FROM ?", s.transition, w.transition) or
+                 fragment("? IS DISTINCT FROM ?", s.transition_reason, w.transition_reason) or
+                 s.lease_epoch != w.lease_epoch)
+          )
 
         {id, nil} ->
           where(query, [s, w], w.id == ^id and s.status not in @terminal_statuses)

@@ -20,7 +20,7 @@ defmodule Fountain.Machines.AdmissionTest do
   import ExUnit.CaptureLog
 
   alias Fountain.Conversations
-  alias Fountain.Conversations.{Conversation, Sandbox, Turn}
+  alias Fountain.Conversations.{Conversation, Turn}
   alias Fountain.Machines.Admission
   alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine

@@ -252,7 +252,7 @@ defmodule Fountain.Machines.Destroy do
     # 3b): in the fence's transaction, after its `Lease.lock_machine/2`.
     case Lease.put_transition!(locked.id, "destroying", reason, touch: true) do
       0 -> raise Ecto.StaleEntryError, struct: locked, action: :update
-      _ -> %{locked | transition: "destroying", transition_reason: reason}
+      _ -> Lease.get(locked.id)
     end
   end
 

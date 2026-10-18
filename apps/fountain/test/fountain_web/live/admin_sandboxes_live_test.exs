@@ -34,8 +34,6 @@ defmodule FountainWeb.AdminSandboxesLiveTest do
   end
 
   defp stamp(sandbox, sets) do
-    import Ecto.Query
-
     put_lease(sandbox.id, sets)
   end
 

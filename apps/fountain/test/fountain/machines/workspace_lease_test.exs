@@ -226,17 +226,95 @@ defmodule Fountain.Machines.WorkspaceLeaseTest do
     end
   end
 
+  describe "the boot sweep after a rollback" do
+    test "a stamp an earlier release wrote on the sandbox row is carried, then swept", ctx do
+      other_ws = insert_workspace(user_id: ctx.user.id)
+
+      parked =
+        insert_sandbox(user_id: ctx.user.id, workspace_id: other_ws.id, status: "suspended")
+
+      # What v0.36 leaves: its own rows only, a fence and an abandoned park,
+      # under a holder of its boot, at epochs past the workspace's.
+      ctx.sandbox
+      |> Ecto.Changeset.change(
+        lease_epoch: 5,
+        lease_node: dead_lease_holder(),
+        transition: "destroying",
+        transition_reason: "terminated"
+      )
+      |> Repo.update!()
+
+      parked
+      |> Ecto.Changeset.change(
+        lease_epoch: 3,
+        lease_node: dead_lease_holder(),
+        transition: "parking"
+      )
+      |> Repo.update!()
+
+      Lease.sweep_boot()
+
+      assert %{
+               transition: "destroying",
+               transition_reason: "terminated",
+               lease_node: nil,
+               lease_epoch: 5
+             } =
+               assert_agree(ctx)
+
+      assert %{transition: nil, lease_node: nil, lease_epoch: 3} = lease_of(other_ws)
+      assert lease_of(parked) == lease_of(other_ws)
+      assert {:ok, 6} = Lease.claim(ctx.sandbox.id)
+    end
+
+    test "a retired sandbox's workspace loses its dead holder", ctx do
+      put_lease(ctx.sandbox,
+        status: "terminated",
+        lease_epoch: 3,
+        lease_node: dead_lease_holder()
+      )
+
+      Lease.sweep_boot()
+
+      assert %{lease_node: nil, lease_epoch: 3} = lease_of(ctx.ws)
+    end
+  end
+
+  test "a superseding claim takes the workspace's lease and is copied", ctx do
+    holder = spawn(fn -> receive do: (:stop -> :ok) end)
+    {:ok, 1} = Lease.claim(ctx.sandbox.id, holder: holder)
+    {:ok, 2} = Lease.claim(ctx.sandbox.id, supersede: holder)
+
+    assert %{lease_epoch: 2, lease_node: node} = assert_agree(ctx)
+    assert node == Lease.holder(self())
+    send(holder, :stop)
+  end
+
   describe "a sandbox with no workspace" do
     setup ctx do
       %{bare: insert_sandbox(user_id: ctx.user.id, workspace_id: nil, status: "terminated")}
     end
 
-    test "has no owner: a claim is refused, and its lease reads as nobody's", ctx do
+    test "has no owner: a claim is refused, and its own row is its record", ctx do
       ctx.bare |> Ecto.Changeset.change(transition: "destroying") |> Repo.update!()
 
       assert {:error, :no_workspace} = Lease.claim(ctx.bare.id)
-      assert %Sandbox{transition: nil, lease_node: nil, lease_epoch: 0} = Lease.get(ctx.bare.id)
+      assert %Sandbox{transition: "destroying", lease_node: nil} = Lease.get(ctx.bare.id)
       assert {:terminal, %Sandbox{}} = Lease.unowned(ctx.bare.id)
+    end
+
+    test "a live one's fence is seen by every reader, as before workspaces", ctx do
+      live = insert_sandbox(user_id: ctx.user.id, workspace_id: nil, status: "ready")
+
+      {:ok, %Sandbox{transition: "destroying"}} =
+        Lifecycle.fence_sandbox_for_teardown(Lease.get(live.id),
+          actor: "api",
+          reason: "conversation_terminated",
+          transition_reason: :terminated
+        )
+
+      assert %Sandbox{transition: "destroying"} = Lease.get(live.id)
+      assert %Sandbox{transition: "destroying"} = Repo.get!(Sandbox, live.id)
     end
 
     test "a live one is refused as busy, and said loudly", ctx do

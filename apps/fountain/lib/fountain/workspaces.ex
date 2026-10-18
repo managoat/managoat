@@ -40,7 +40,7 @@ defmodule Fountain.Workspaces do
 
   @terminal_statuses ~w(terminated failed)
 
-  # `_unsafe_reconcile_live/0`'s two statements. `20261018210000` keeps a frozen copy.
+  # `_unsafe_reconcile_live/0`'s fill. `20261018210000` keeps a frozen copy.
   @fill_sql """
   WITH live AS (
     SELECT s.id AS sandbox_id,
@@ -81,19 +81,6 @@ defmodule Fountain.Workspaces do
     RETURNING c.id
   )
   SELECT (SELECT count(*) FROM ws), (SELECT count(*) FROM cv)
-  """
-
-  @carry_sql """
-  UPDATE workspaces w
-     SET lease_epoch = GREATEST(w.lease_epoch, s.lease_epoch),
-         transition = s.transition,
-         transition_reason = s.transition_reason
-    FROM sandboxes s
-   WHERE s.workspace_id = w.id
-     AND s.status NOT IN ('terminated', 'failed')
-     AND (w.transition IS DISTINCT FROM s.transition
-          OR w.transition_reason IS DISTINCT FROM s.transition_reason
-          OR w.lease_epoch < s.lease_epoch)
   """
 
   @doc """
@@ -186,6 +173,23 @@ defmodule Fountain.Workspaces do
   """
   @spec delete_for_account(Ecto.UUID.t()) :: :ok
   def delete_for_account(user_id) when is_binary(user_id) do
+    # Every one of the user's conversations, then every one of its workspaces,
+    # the kept ones included, locked before anything here or the user row's
+    # cascade reaches a sandbox: the cascade nilifies `sandboxes.user_id`
+    # before `workspaces.user_id` (the foreign keys' trigger order), and a
+    # compare-and-set on a machine that outlived the deletion holds its
+    # workspace's row while it waits for its sandbox's (review of step 3b,
+    # reproduced).
+    _ =
+      Repo.all(
+        from(c in Conversation, where: c.user_id == ^user_id, select: c.id, lock: "FOR UPDATE")
+      )
+
+    _ =
+      Repo.all(
+        from(w in Workspace, where: w.user_id == ^user_id, select: w.id, lock: "FOR UPDATE")
+      )
+
     case Repo.all(from(w in without_live_sandbox(), where: w.user_id == ^user_id, select: w.id)) do
       [] ->
         :ok
@@ -195,9 +199,6 @@ defmodule Fountain.Workspaces do
           Repo.update_all(from(c in Conversation, where: c.workspace_id in ^ids),
             set: [workspace_id: nil]
           )
-
-        _ =
-          Repo.all(from(w in Workspace, where: w.id in ^ids, select: w.id, lock: "FOR UPDATE"))
 
         _ =
           Repo.update_all(from(s in Sandbox, where: s.workspace_id in ^ids),
@@ -224,8 +225,8 @@ defmodule Fountain.Workspaces do
   end
 
   @doc """
-  Give every live sandbox a workspace, point every conversation at its
-  sandbox's, and carry each live sandbox's in-flight stamps to its workspace.
+  Give every live sandbox a workspace and point every conversation on a live
+  sandbox at its sandbox's.
 
   Run by `Fountain.Machines.BootSweep` on every boot, before anything can
   claim a lease, and once by `20261018210000_add_machine_lease_to_workspaces`.
@@ -238,38 +239,31 @@ defmodule Fountain.Workspaces do
   The fill is `20261018190100`'s, plus a live sandbox with no user (account
   deletion nilifies `sandboxes.user_id`), which gets an ownerless workspace so
   its owner still has a lease to take. The repoint touches only conversations
-  on a live sandbox: a terminal one's pointer is history. The carry copies
-  `transition` and `transition_reason` where they differ, and never moves the
-  epoch backwards. In this release the lease sweep straight after copies every
-  live sandbox's columns onto its workspace anyway, so the carry matters only
-  if that sweep fails; from step 3b, where the workspace's columns are the ones
-  read, it is what brings across a stamp an earlier release wrote on the
-  sandbox row.
+  on a live sandbox: a terminal one's pointer is history. The stamps such a
+  release wrote on a sandbox row are carried to its workspace by
+  `Fountain.Machines.Lease.sweep_boot/0`, in the transaction that then sweeps
+  them, so the two can never be split by a failure between them.
 
   One transaction under a ten-second `lock_timeout`, like the migrations: a
   stray session holding one of these rows makes the boot log a failure rather
   than wedge (`BootSweep` carries on to the lease sweep).
 
-  Returns `{filled, repointed, carried}`. Nothing is audited: an implicit
-  workspace is not something anybody asked for (see the moduledoc).
+  Returns `{filled, repointed}`. Nothing is audited: an implicit workspace is
+  not something anybody asked for (see the moduledoc).
   """
-  @spec _unsafe_reconcile_live() :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}
+  @spec _unsafe_reconcile_live() :: {non_neg_integer(), non_neg_integer()}
   def _unsafe_reconcile_live do
-    {:ok, {filled, repointed, carried}} =
+    {:ok, {filled, repointed}} =
       Repo.transaction(fn ->
         Repo.query!("SET LOCAL lock_timeout = '10s'")
         %{rows: [[filled, repointed]]} = Repo.query!(@fill_sql)
-        %{num_rows: carried} = Repo.query!(@carry_sql)
-        {filled, repointed, carried}
+        {filled, repointed}
       end)
 
-    if filled + repointed + carried > 0 do
-      Logger.info(
-        "workspaces: #{filled} filled, #{repointed} conversation(s) repointed, " <>
-          "#{carried} stamp(s) carried from a sandbox row"
-      )
+    if filled + repointed > 0 do
+      Logger.info("workspaces: #{filled} filled, #{repointed} conversation(s) repointed")
     end
 
-    {filled, repointed, carried}
+    {filled, repointed}
   end
 end

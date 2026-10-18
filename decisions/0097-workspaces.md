@@ -614,8 +614,11 @@ A PR sequence, each releasable alone:
   workspace's (`Machines.Lease.machines/0`), and every locked reader takes the
   workspace's row before the sandbox's. The sandbox's four columns are still
   written, as a copy onto the workspace's live sandbox in the same
-  transaction, for a rollback; they are dropped a release later. A sandbox
-  with no workspace, which only a row retired before this ADR is, has no
-  owner and is answered as terminal; every new sandbox must name a workspace.
+  transaction, for a rollback; they are dropped a release later, and the
+  boot sweep carries onto the workspace any stamp an earlier release wrote
+  on the sandbox row. A sandbox with no workspace (a row retired before this
+  ADR, or a live one a failed boot reconcile leaves until the next boot) has
+  no owner, reads its own row, and is answered as terminal or refused as
+  busy; every new sandbox must name a workspace.
   Every message to an owner now names its sandbox, so a message in an earlier
   release's shape is refused by the rollout clause.

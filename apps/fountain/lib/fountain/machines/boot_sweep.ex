@@ -13,6 +13,11 @@ defmodule Fountain.Machines.BootSweep do
   sandbox's, which a migration alone cannot promise once a rollback to a
   release before ADR 0097 has run and been rolled forward again.
 
+  The lease sweep also carries onto the workspaces the stamps a release before
+  ADR 0097 step 3b wrote on sandbox rows, and copies the workspaces' columns
+  back onto their sandboxes for a rollback, so since 3b it is more than
+  tidiness on a deployment that rolled back.
+
   A failure is logged, not raised: every lease of an earlier boot already reads
   as dead (`Lease.live?/1`), so what the sweep adds is tidiness — no stale
   holder on the admin table, no stale `parking` stamp for the next owner to
