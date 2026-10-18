@@ -28,9 +28,10 @@ defmodule Fountain.Accounts.Deletion do
 
   3. **Delete the user.** Postgres cascades take agents, api_keys,
      conversations (and their turns and log events), environments, vaults,
-     oauth_identities, inference_credentials, chatgpt_subscriptions and
-     user_data_keys. `audit_events` and `sandboxes` nilify instead, keeping
-     operational history that no longer names anybody.
+     oauth_identities, inference_credentials, chatgpt_subscriptions,
+     workspaces and user_data_keys. `audit_events` and `sandboxes` nilify
+     instead, keeping operational history that no longer names anybody; a
+     sandbox's `workspace_id` goes with its workspace.
 
   4. **End the ChatGPT sign-in at OpenAI**, after the delete commits. Its
      refresh token is read before the delete, because the cascade takes the
@@ -135,6 +136,9 @@ defmodule Fountain.Accounts.Deletion do
     result =
       Repo.transaction(fn ->
         Fountain.InferenceCredentials.lock_source(user.id)
+
+        # Before the user row: see `Workspaces.delete_for_account/1`.
+        :ok = Fountain.Workspaces.delete_for_account(user.id)
 
         case Repo.delete(user) do
           {:error, reason} -> Repo.rollback(reason)

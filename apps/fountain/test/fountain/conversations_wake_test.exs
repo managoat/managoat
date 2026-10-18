@@ -424,6 +424,41 @@ defmodule Fountain.ConversationsWakeTest do
       assert {:ok, _conv} = Wake.wake_conversation(conv.id)
     end
 
+    test "a fresh sandbox comes with a fresh implicit workspace, and the conversation moves to it" do
+      user = insert_verified_user()
+      agent = insert_agent(user_id: user.id)
+      old_ws = insert_workspace(user_id: user.id, status: "ready")
+
+      sandbox =
+        insert_sandbox(user_id: user.id, workspace_id: old_ws.id, machine_name: "gone-sprite")
+
+      {:ok, sandbox} = update_sandbox(sandbox, %{status: "terminated"})
+
+      conv =
+        insert_conversation(
+          user_id: user.id,
+          agent: agent,
+          sandbox: sandbox,
+          workspace_id: old_ws.id,
+          status: "idle"
+        )
+
+      stub_server_start(fn _supervisor, _child_spec -> {:ok, spawn(fn -> :ok end)} end)
+
+      assert {:ok, woken} = Wake.wake_conversation(conv.id)
+      assert woken.sandbox_id != sandbox.id
+
+      new_sandbox = Conversations._unsafe_get_sandbox!(woken.sandbox_id)
+      assert woken.workspace_id == new_sandbox.workspace_id
+      refute woken.workspace_id in [nil, old_ws.id]
+
+      ws = Repo.get!(Fountain.Workspaces.Workspace, woken.workspace_id)
+      assert ws.implicit and ws.user_id == user.id and ws.provider == new_sandbox.provider
+
+      # The old pair is history and is left as it was.
+      assert Repo.reload!(sandbox).workspace_id == old_ws.id
+    end
+
     test "mark_old_sandbox_terminated handles deleted sandbox gracefully" do
       user = insert_verified_user()
       agent = insert_agent(user_id: user.id)

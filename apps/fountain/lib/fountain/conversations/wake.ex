@@ -745,7 +745,7 @@ defmodule Fountain.Conversations.Wake do
            Fountain.Quotas.with_sandbox_reservation(
              [provider: provider, exclude: conv.sandbox_id],
              fn ->
-               Fountain.Machines.Provision.reserve(%{
+               attrs = %{
                  environment_id: conv.environment_id || agent.environment_id,
                  agent_id: conv.agent_id,
                  vault_id: conv.vault_id,
@@ -753,7 +753,20 @@ defmodule Fountain.Conversations.Wake do
                  status: "pending",
                  provider: Atom.to_string(provider),
                  user_id: conv.user_id
-               })
+               }
+
+               # A fresh implicit workspace for the fresh machine (ADR 0097,
+               # step 2), not the conversation's old one: the old sandbox is
+               # still live until the new server is up (see below), and a
+               # concurrent wake reserves a machine of its own, so a shared
+               # workspace would trip the live-workspace index on both. The
+               # conversation moves to it with `sandbox_id`. Keeping one
+               # workspace across a lost machine is step 4's rebuild. Under the
+               # fleet lock, unlike the launch's: one more insert, whose foreign
+               # key checks the sandbox insert takes anyway.
+               with {:ok, workspace} <- Fountain.Workspaces.insert_implicit(attrs) do
+                 Fountain.Machines.Provision.reserve(Map.put(attrs, :workspace_id, workspace.id))
+               end
              end
            ) do
       # The row is repointed *after* the server starts, not before (#717).
@@ -790,6 +803,7 @@ defmodule Fountain.Conversations.Wake do
           {:ok, conv} =
             Conversations.update_conversation(conv, %{
               sandbox_id: new_sandbox.id,
+              workspace_id: new_sandbox.workspace_id,
               status: "pending"
             })
 

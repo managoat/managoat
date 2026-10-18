@@ -390,6 +390,47 @@ defmodule Fountain.ConversationsStartTest do
       assert conv.status == "pending"
     end
 
+    test "the sandbox and the conversation share a new implicit workspace (ADR 0097)" do
+      user = insert_active_user()
+      env = insert_env(user_id: user.id)
+      vault = insert_vault(user_id: user.id)
+      agent = insert_agent(user_id: user.id, environment_id: env.id)
+      stub_server_start(fn _s, _spec -> {:ok, spawn(fn -> :ok end)} end)
+
+      assert {:ok, conv} =
+               Launch.start_conversation(%{
+                 "agent_id" => agent.id,
+                 "user_id" => user.id,
+                 "vault_id" => vault.id
+               })
+
+      sandbox = Conversations._unsafe_get_sandbox!(conv.sandbox_id)
+      assert is_binary(conv.workspace_id)
+      assert sandbox.workspace_id == conv.workspace_id
+
+      ws = Repo.get!(Fountain.Workspaces.Workspace, conv.workspace_id)
+      assert ws.implicit
+      assert ws.status == "provisioning"
+
+      # The environment the launch resolved (the agent's, since the launch
+      # named none), not the conversation's own nil override.
+      assert conv.environment_id == nil
+
+      assert {ws.user_id, ws.environment_id, ws.vault_id, ws.provider} ==
+               {user.id, env.id, vault.id, sandbox.provider}
+    end
+
+    test "a refused reservation leaves no workspace behind" do
+      user = insert_active_user()
+      agent = insert_agent(user_id: user.id)
+      fill_fleet()
+
+      assert {:error, :fleet_full} =
+               Launch.start_conversation(%{"agent_id" => agent.id, "user_id" => user.id})
+
+      refute Repo.exists?(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
+    end
+
     test "broadcasts graph update when parent_conversation_id is set", %{} do
       user = insert_active_user()
       agent = insert_agent(user_id: user.id)

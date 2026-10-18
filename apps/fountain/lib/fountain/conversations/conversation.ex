@@ -83,6 +83,11 @@ defmodule Fountain.Conversations.Conversation do
 
     belongs_to :user, User
     belongs_to :sandbox, Sandbox
+    # The workspace its sandbox belongs to (ADR 0097). Set with `sandbox_id`
+    # at launch and on a wake that provisions a fresh sandbox; nil on a
+    # conversation whose sandbox was already terminal when step 2 shipped.
+    # Nothing reads it yet.
+    belongs_to :workspace, Fountain.Workspaces.Workspace
     belongs_to :agent, Agent
     belongs_to :vault, Vault
     # Per-launch environment override (#783). nil means "the agent's
@@ -166,6 +171,7 @@ defmodule Fountain.Conversations.Conversation do
       :title,
       :user_id,
       :sandbox_id,
+      :workspace_id,
       :agent_id,
       :agent_version_id,
       :vault_id,
@@ -182,6 +188,7 @@ defmodule Fountain.Conversations.Conversation do
       :callback_api_key_id,
       :user_id,
       :sandbox_id,
+      :workspace_id,
       :agent_id,
       :agent_version_id,
       :vault_id,
@@ -198,6 +205,7 @@ defmodule Fountain.Conversations.Conversation do
     |> validate_sandbox_api_access_immutable()
     |> Fountain.Conversations.Labels.changeset()
     |> foreign_key_constraint(:sandbox_id)
+    |> foreign_key_constraint(:workspace_id)
     |> foreign_key_constraint(:agent_id)
     |> foreign_key_constraint(:agent_version_id)
     |> foreign_key_constraint(:vault_id)

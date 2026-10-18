@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Unbuilt: a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Step 2 built, the rest not (schema and implicit workspaces, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -12,8 +12,10 @@ date: 2026-10-18
 # 0097 — A workspace owns the sandbox, and conversations run in it
 
 **Status:** Accepted, 2026-10-18, by the maintainer, in review on #2984.
-Nothing here is built; the Cost section sets out the work and its order. It
-amends
+Step 2 of the Cost section's sequence is built: the `workspaces` table, and
+an implicit workspace beside every live sandbox that has an owner, which
+nothing reads yet. The rest, step 1 included, is not built; the Cost section
+sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -306,15 +308,15 @@ A caller who wants isolation launches without a `workspace_id`.
 ### Data
 
 A `workspaces` table (`user_id`, `environment_id`, `vault_id`, `provider`,
-`name`, `implicit`, `status`, `error`, and the lease columns),
+`name`, `implicit`, `status`, `error`, and from step 3 the lease columns),
 `sandboxes.workspace_id` with a partial unique index on
 the non-terminal row, and `conversations.workspace_id`. Deleting an
 environment or vault that a non-implicit workspace names is refused with
 `409` while the workspace exists; today the foreign keys nilify, and they
 still do for implicit workspaces.
 The migration makes one implicit workspace per non-terminal sandbox, from the
-environment and vault of its conversation, and points the sandbox and the
-conversation at it, with the status its sandbox implies; terminal sandbox
+environment and vault its launch resolved (recorded on the sandbox row), and
+points the sandbox and the conversation at it, with the status its sandbox implies; terminal sandbox
 rows keep a null `workspace_id`.
 
 ### Naming
@@ -463,7 +465,8 @@ A PR sequence, each releasable alone:
    machines (runtimes, skills record, Claude MCP config, launch field). No
    workspace yet; proves the 1.2 s and memory cost in production.
 2. Schema, implicit workspaces and the backfill: every sandbox gets one,
-   with the lease columns on `workspaces`, and nothing reads them yet.
+   and nothing reads them yet. The lease columns move in step 3, with the
+   migration that carries them.
 3. The owner and lease move to the workspace: registry key, advisory lock,
    compare-and-set, boot sweep, the `destroying` driver and reads admission,
    with the migration carrying in-flight stamps; the owner also learns to run
@@ -551,3 +554,14 @@ A PR sequence, each releasable alone:
   `workspace.status` event, a prompt into a failed one retrying the
   provision; a rebuild after a loss stays lazy, and implicit workspaces are
   unchanged.
+- 2026-10-18 — Step 2 built (#2985): the `workspaces` table without the
+  lease columns, which move in step 3 with the migration that carries
+  them; an implicit workspace made with every new sandbox in its
+  reservation's transaction, its status taking the provision's outcome; and
+  a backfill of one implicit workspace per live sandbox, from the sandbox's
+  own environment and vault (the launch's resolved pair, which the
+  conversation's override column leaves nil for an agent's default). Until
+  step 4's rebuild, a wake that provisions a fresh sandbox gives it a fresh
+  implicit workspace and moves the conversation to it, since the old
+  sandbox is still live while the new one is reserved. A live sandbox with
+  no owner gets no workspace; nothing is audited for an implicit one.

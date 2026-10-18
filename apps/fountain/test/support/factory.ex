@@ -220,6 +220,27 @@ defmodule Fountain.Factory do
     Repo.update(changeset)
   end
 
+  @doc """
+  An implicit workspace (ADR 0097), owned by `user_id` or a fresh user.
+  `status` and the other fields may be overridden; `insert_sandbox/1` does not
+  make one, so a test that wants the pair passes `workspace_id:` there.
+  """
+  def insert_workspace(overrides \\ %{}) do
+    overrides_map = to_atom_map(overrides)
+    user_id = Map.get(overrides_map, :user_id) || insert_verified_user().id
+
+    {:ok, workspace} =
+      %{provider: "sprites"}
+      |> Map.merge(overrides_map)
+      |> Map.put(:user_id, user_id)
+      |> Fountain.Workspaces.insert_implicit()
+
+    case Map.take(overrides_map, [:status, :name, :implicit, :error]) do
+      sets when map_size(sets) == 0 -> workspace
+      sets -> workspace |> Ecto.Changeset.change(sets) |> Repo.update!()
+    end
+  end
+
   def insert_sandbox(overrides \\ %{}) do
     overrides_map = to_atom_map(overrides)
     user_id = Map.get(overrides_map, :user_id) || insert_verified_user().id

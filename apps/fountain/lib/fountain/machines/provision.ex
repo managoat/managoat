@@ -812,6 +812,7 @@ defmodule Fountain.Machines.Provision do
 
     case Lease.cas_update(sandbox.id, epoch, attrs, refuse_fenced: true) do
       {:ok, %Sandbox{} = ready} ->
+        :ok = Fountain.Workspaces.settle_provision(ready)
         audit(ready, "sandbox.provisioned", %{}, opts)
         {:ok, :provisioned, result}
 
@@ -892,6 +893,7 @@ defmodule Fountain.Machines.Provision do
 
     case Lease.cas_update(sandbox.id, epoch, attrs, []) do
       {:ok, %Sandbox{} = failed} ->
+        :ok = Fountain.Workspaces.settle_provision(failed)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 
@@ -1030,6 +1032,7 @@ defmodule Fountain.Machines.Provision do
 
     case outcome do
       {:ok, %Sandbox{} = failed} ->
+        :ok = Fountain.Workspaces.settle_provision(failed)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 
@@ -1046,6 +1049,16 @@ defmodule Fountain.Machines.Provision do
   end
 
   # ── after the finalize ────────────────────────────────────────────────────
+
+  # Each provision finalize (`finalize/4`'s `ready`, `write_failed/4` and
+  # `retire/4`) is followed, outside the transaction and before the audit
+  # event, by `Fountain.Workspaces.settle_provision/1`: the sandbox's implicit
+  # workspace takes the provision's outcome (ADR 0097, step 2). `confirm/3`'s
+  # `ready` does not settle: it reaches only rows whose provision already did.
+  # Best effort and read by nothing yet. A workspace whose sandbox is retired
+  # mid-provision by some other path (a wake that lost the start race, a
+  # conversation terminated while its machine was still `pending`) stays
+  # `provisioning`; nothing reads it before step 4.
 
   # One completed-operation event per owner verb is the pattern stages 5, 6 and
   # 7a set (`sandbox.destroyed`, `sandbox.suspended`, `sandbox.resumed`); these
