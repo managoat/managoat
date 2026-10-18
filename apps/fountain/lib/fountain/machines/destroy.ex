@@ -248,9 +248,15 @@ defmodule Fountain.Machines.Destroy do
   """
   @spec stamp_intent!(Sandbox.t(), String.t()) :: Sandbox.t()
   def stamp_intent!(%Sandbox{} = locked, reason) when is_binary(reason) do
-    locked
-    |> Ecto.Changeset.change(transition: "destroying", transition_reason: reason)
-    |> Repo.update!()
+    stamped =
+      locked
+      |> Ecto.Changeset.change(transition: "destroying", transition_reason: reason)
+      |> Repo.update!()
+
+    # Written twice until the workspace's columns are the owner's (ADR 0097,
+    # step 3a); in the fence's transaction, like the stamp.
+    :ok = Lease.copy_to_workspace(stamped.id)
+    stamped
   end
 
   @doc """

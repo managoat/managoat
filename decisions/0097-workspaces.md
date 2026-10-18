@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 and 2 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1, 2 and 3a built, the rest not (per-conversation config homes and cwd; schema, implicit workspaces and the lease columns written twice, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -15,9 +15,10 @@ date: 2026-10-18
 Steps 1 and 2 of the Cost section's sequence are built: a config home and
 working directory per conversation, with `cwd` on launch, on today's
 one-conversation machines (step 1); and the `workspaces` table, with an
-implicit workspace beside every live sandbox that has an owner, which
-nothing reads yet (step 2). The rest is not built; the Cost section sets out
-the work and its order. It amends
+implicit workspace beside every live sandbox, which nothing reads yet
+(step 2). So is step 3's first PR, 3a: the lease columns on `workspaces`,
+written in the same transaction as the sandbox's own and not yet read. The
+rest is not built; the Cost section sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -237,6 +238,10 @@ process.
   a retention bound on parked sandboxes ships: Managoat is self-hosted, and
   the operator watches provider storage (see Consequences).
 - **Account deletion** deletes the account's workspaces with their sandboxes.
+  A workspace whose sandbox outlives the deletion (a destroy that failed,
+  #2329) is kept, ownerless, as its sandbox row is, so the machine's lease and
+  `destroying` stamp are still there for the reaper's driver; nothing deletes
+  it afterwards yet (step 4).
 
 ### The owner
 
@@ -317,7 +322,9 @@ A caller who wants isolation launches without a `workspace_id`.
 ### Data
 
 A `workspaces` table (`user_id`, `environment_id`, `vault_id`, `provider`,
-`name`, `implicit`, `status`, `error`, and from step 3 the lease columns),
+`name`, `implicit`, `status`, `error`, and from step 3 the lease columns;
+`user_id` is nilified, not cascaded, when the user goes, for the reason under
+Lifecycle),
 `sandboxes.workspace_id` with a partial unique index on
 the non-terminal row, and `conversations.workspace_id`. Deleting an
 environment or vault that a non-implicit workspace names is refused with
@@ -482,7 +489,10 @@ A PR sequence, each releasable alone:
    the machine-level provision steps itself. Implicit workspaces only, so
    there is one owner per conversation as today and behaviour is unchanged.
    Likely two or three PRs, as 0058's own stages were, each with adversarial
-   review.
+   review. Built as 3a (the columns, written twice, and the backfill run
+   again), 3b (the owner keyed and locked by workspace, reading the
+   workspace's lease) and 3c (the rebuild under one owner, and the setup
+   seam); the sandbox's columns are dropped a release after 3b.
 4. The lifecycle reads the workspace: rebuild after a loss under the owner,
    `detach`, the idle clock, the ceiling's park for an explicit workspace,
    the reaper. Still unreachable without the API.
@@ -585,3 +595,14 @@ A PR sequence, each releasable alone:
   `conversations.applied_skills` (backfilled; the old column is dropped a
   release later). Ending a conversation removes its config home from an
   awake machine; a legacy home is never removed.
+- 2026-10-18 — Step 3a built: `lease_epoch`, `lease_node`, `transition` and
+  `transition_reason` on `workspaces`, copied from the sandbox's columns in
+  the same transaction as every write of them and not yet read; the
+  migration repeats step 2's fill, now also for a live sandbox with no user,
+  repoints conversations whose `workspace_id` no longer matches their
+  sandbox's, and carries each live sandbox's stamps. The boot sweep runs the
+  same fill on every boot, because a rollback to a release before this ADR
+  can follow the migration. `workspaces.user_id` is nilified rather than
+  cascaded when the user goes, and account deletion keeps a workspace whose
+  sandbox outlived it, ownerless like that sandbox (#2329), so the machine's
+  lease and its `destroying` stamp survive for the reaper's driver.

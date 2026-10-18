@@ -51,6 +51,7 @@ defmodule Fountain.Machines.Binding do
   alias Fountain.Conversations
   alias Fountain.Conversations.{Lifecycle, Sandbox}
   alias Fountain.Machines.Destroy
+  alias Fountain.Machines.Lease
   alias Fountain.Machines.Occupancy
   alias Fountain.Repo
 
@@ -230,6 +231,9 @@ defmodule Fountain.Machines.Binding do
         set: [transition: nil, transition_reason: nil]
       )
 
+    # Written twice until the workspace's columns are the owner's (ADR 0097,
+    # step 3a), in the registration's transaction.
+    :ok = Lease.copy_to_workspace(sandbox_id)
     count
   end
 

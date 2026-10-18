@@ -3,12 +3,16 @@ defmodule Fountain.Workspaces.Workspace do
   A workspace: `{user_id, environment_id, vault_id}` plus a provider and a
   name, fixed at create, which owns the sandbox (ADR 0097).
 
-  **Not read by anything yet** (ADR 0097, step 2). Every sandbox created from
-  this release on is born with an *implicit* workspace, made in the same
-  transaction as its row, and the live sandboxes with an owner were
-  backfilled with one.
-  The lease moves here in step 3 and the lifecycle reads it in step 4;
-  explicit workspaces, made through `/api/workspaces`, come in step 5.
+  **Not read by anything yet** (ADR 0097, step 3a). Every sandbox is born
+  with an *implicit* workspace, made in the same transaction as its row, and
+  every live sandbox is given one at boot if it has none
+  (`Fountain.Workspaces._unsafe_reconcile_live/0`). The lease columns are here and
+  written, and step 3b makes them the owner's; the lifecycle reads the
+  workspace in step 4, and explicit workspaces, made through
+  `/api/workspaces`, come in step 5.
+
+  `user_id` is `nil` only on a workspace whose sandbox outlived its account's
+  deletion, as `sandboxes.user_id` is (#2329).
 
   `status` is the provision's outcome, not the machine's state:
   `provisioning` until the provision of the workspace's sandbox settles, then
@@ -39,6 +43,19 @@ defmodule Fountain.Workspaces.Workspace do
     field :implicit, :boolean, default: false
     field :status, :string, default: "provisioning"
     field :error, :string
+    # The machine owner's lease and its in-flight state (ADR 0058), moving
+    # here from `sandboxes` (ADR 0097, step 3). Step 3a only writes them, as a
+    # copy of the sandbox's own columns kept in the same transaction by
+    # `Fountain.Machines.Lease`; step 3b makes these the ones the owner reads.
+    # Deliberately absent from every changeset: an owner's write is not
+    # something a caller's attrs may reach.
+    field :lease_epoch, :integer, default: 0
+    field :lease_node, :string
+    field :transition, :string
+    field :transition_reason, :string
+    # Nilified, not cascaded, when the user is deleted (step 3a): a workspace
+    # whose sandbox outlived its account's deletion keeps that machine's
+    # lease and `destroying` stamp. See `Fountain.Workspaces.delete_for_account/1`.
     belongs_to :user, User
     belongs_to :environment, Environment
     belongs_to :vault, Vault
