@@ -63,7 +63,8 @@ defmodule Fountain.ConversationsContextTest do
       attrs = %{
         machine_name: "test-sprite-create",
         status: "pending",
-        user_id: user.id
+        user_id: user.id,
+        workspace_id: insert_workspace(user_id: user.id).id
       }
 
       assert {:ok, sandbox} = Fountain.Machines.Provision.reserve(attrs)
@@ -76,6 +77,8 @@ defmodule Fountain.ConversationsContextTest do
       assert {:error, changeset} = Fountain.Machines.Provision.reserve(%{})
       assert changeset.valid? == false
       assert errors_on(changeset)[:machine_name]
+      # Every machine is born in a workspace (ADR 0097).
+      assert errors_on(changeset)[:workspace_id]
     end
 
     test "returns error changeset when status is invalid" do

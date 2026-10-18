@@ -83,6 +83,7 @@ defmodule Fountain.Conversations.Lifecycle do
   alias Fountain.Conversations.{Conversation, Sandbox}
   alias Fountain.Machines.Binding
   alias Fountain.Machines.Destroy
+  alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine
   alias Fountain.Machines.Occupancy
   alias Fountain.Machines.Policy
@@ -92,7 +93,7 @@ defmodule Fountain.Conversations.Lifecycle do
   @default_idle_minutes 60
   @default_max_lifetime_hours 0
 
-  # Advisory-lock namespace for per-sandbox machine operations — must match
+  # Advisory-lock namespace for machine operations, keyed by the workspace — must match
   # `Fountain.Conversations`' own `@sandbox_lock_namespace` (4316); every
   # module that takes this lock hardcodes the same integer rather than
   # sharing the attribute, since module attributes do not cross a module
@@ -712,15 +713,14 @@ defmodule Fountain.Conversations.Lifecycle do
     Repo.transaction(fn ->
       Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
         @sandbox_lock_namespace,
-        :erlang.phash2(sandbox.id)
+        Conversations.sandbox_lock_key(sandbox.id)
       ])
 
-      # Match admission's advisory -> conversation -> sandbox lock order.
+      # Match admission's advisory -> conversation -> workspace -> sandbox
+      # lock order (`Machines.Lease`'s, ADR 0097).
       lock_terminating_conversation(sandbox, ending_id)
 
-      current =
-        Repo.one(from s in Sandbox, where: s.id == ^sandbox.id, lock: "FOR UPDATE") ||
-          Repo.rollback(:not_found)
+      current = Lease.lock_machine(sandbox.id, :update) || Repo.rollback(:not_found)
 
       # The detach's two refusals, on the locked row and the database's clock
       # (stage 8b). Before the policy: a machine an owner is operating on is

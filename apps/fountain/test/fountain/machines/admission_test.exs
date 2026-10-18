@@ -20,7 +20,7 @@ defmodule Fountain.Machines.AdmissionTest do
   import ExUnit.CaptureLog
 
   alias Fountain.Conversations
-  alias Fountain.Conversations.{Conversation, Sandbox, Turn}
+  alias Fountain.Conversations.{Conversation, Turn}
   alias Fountain.Machines.Admission
   alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine
@@ -50,7 +50,7 @@ defmodule Fountain.Machines.AdmissionTest do
   defp turns(conv), do: Conversations._unsafe_list_turns(conv.id)
 
   defp stamp(ctx, sets) do
-    Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id), set: sets)
+    put_lease(ctx.sandbox.id, sets)
   end
 
   # The row an owner leaves when it dies mid-operation: a stamp under a lease
@@ -344,7 +344,7 @@ defmodule Fountain.Machines.AdmissionTest do
 
         quietly(fn ->
           assert {:error, :admission_expired} =
-                   GenServer.call(owner, {:admit_turn, attrs(ctx.conv), [], past})
+                   GenServer.call(owner, {:admit_turn, ctx.sandbox.id, attrs(ctx.conv), [], past})
         end)
 
         assert System.monotonic_time(:millisecond) - started < 250,
@@ -357,17 +357,21 @@ defmodule Fountain.Machines.AdmissionTest do
       assert turns(ctx.conv) == []
     end
 
-    test "a message from a caller on the previous release is refused, not crashed on", ctx do
+    test "a message in a shape an earlier release sent is refused, not crashed on", ctx do
       # The other direction of the mixed-version note (round 2, surfaces
-      # review): a caller on the round-1 head sends the three-tuple, with no
-      # deadline. An owner without a clause for it would crash, and a
-      # cotenant's park queued behind it would go with it. It is refused in the
+      # review): a caller on the round-1 head sent the three-tuple, with no
+      # deadline, and every caller before ADR 0097 step 3b sent no sandbox id.
+      # An owner without a clause for one would crash, and a cotenant's park
+      # queued behind it would go with it. The rollout clause refuses it in the
       # one word every version of the door translates.
       {:ok, owner} = Machine.ensure_started(ctx.sandbox.id)
 
       quietly(fn ->
-        assert {:error, :machine_busy} =
+        assert {:error, :sandbox_unavailable} =
                  GenServer.call(owner, {:admit_turn, attrs(ctx.conv), []})
+
+        assert {:error, :sandbox_unavailable} =
+                 GenServer.call(owner, {:admit_turn, attrs(ctx.conv), [], Machine.db_now()})
       end)
 
       assert Machine.whereis(ctx.sandbox.id) == owner
@@ -670,13 +674,11 @@ defmodule Fountain.Machines.AdmissionTest do
             # The holder becomes a lease and commits; the admission then sees
             # it under the lock it was waiting for.
             {:ok, _} =
-              Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-                set: [
-                  lease_epoch: 1,
-                  lease_node: live_lease_holder()
-                ]
+              put_lease(sandbox.id,
+                lease_epoch: 1,
+                lease_node: live_lease_holder()
               )
-              |> then(fn {1, _} -> {:ok, :ok} end)
+              |> then(fn %Fountain.Conversations.Sandbox{} -> {:ok, :ok} end)
 
             send(holder.pid, :commit)
             assert {:ok, :ok} = Task.await(holder)
@@ -785,6 +787,7 @@ defmodule Fountain.Machines.AdmissionTest do
     Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
     Repo.delete_all(from c in Conversation, where: c.user_id == ^user.id)
     for sandbox <- sandboxes, do: Repo.delete!(sandbox)
+    Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
     Repo.delete!(user)
   end
 

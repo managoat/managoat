@@ -190,15 +190,23 @@ defmodule Fountain.WorkspacesTest do
     test "gives a live sandbox with none a workspace, an ownerless one included" do
       user = insert_verified_user()
       env = insert_env(user_id: user.id)
-      bare = insert_sandbox(user_id: user.id, status: "suspended", environment_id: env.id)
+
+      bare =
+        insert_sandbox(
+          user_id: user.id,
+          workspace_id: nil,
+          status: "suspended",
+          environment_id: env.id
+        )
+
       conv = insert_conversation(user_id: user.id, sandbox: bare)
 
-      orphan = insert_sandbox(user_id: user.id, status: "pending")
+      orphan = insert_sandbox(user_id: user.id, workspace_id: nil, status: "pending")
       Repo.update_all(from(s in Sandbox, where: s.id == ^orphan.id), set: [user_id: nil])
 
-      terminal = insert_sandbox(user_id: user.id, status: "terminated")
+      terminal = insert_sandbox(user_id: user.id, workspace_id: nil, status: "terminated")
 
-      assert {2, 1, 0} = Workspaces._unsafe_reconcile_live()
+      assert {2, 1} = Workspaces._unsafe_reconcile_live()
 
       ws = Repo.get!(Workspace, Repo.reload!(bare).workspace_id)
 
@@ -213,7 +221,7 @@ defmodule Fountain.WorkspacesTest do
       assert Repo.reload!(terminal).workspace_id == nil
 
       # Idempotent: a second run writes nothing.
-      assert {0, 0, 0} = Workspaces._unsafe_reconcile_live()
+      assert {0, 0} = Workspaces._unsafe_reconcile_live()
     end
 
     test "repoints a conversation an earlier release moved off its workspace" do
@@ -223,17 +231,17 @@ defmodule Fountain.WorkspacesTest do
       sandbox = insert_sandbox(user_id: user.id, workspace_id: new_ws.id, status: "ready")
       conv = insert_conversation(user_id: user.id, sandbox: sandbox, workspace_id: old_ws.id)
 
-      gone = insert_sandbox(user_id: user.id, status: "terminated")
+      gone = insert_sandbox(user_id: user.id, workspace_id: nil, status: "terminated")
       stale = insert_conversation(user_id: user.id, sandbox: gone, workspace_id: old_ws.id)
 
       # Only a live sandbox's conversations: a terminal one's pointer is
       # history and is left as it is.
-      assert {0, 1, 0} = Workspaces._unsafe_reconcile_live()
+      assert {0, 1} = Workspaces._unsafe_reconcile_live()
       assert Repo.get!(Conversation, conv.id).workspace_id == new_ws.id
       assert Repo.get!(Conversation, stale.id).workspace_id == old_ws.id
     end
 
-    test "carries a stamp written on the sandbox row only, and never lowers the epoch" do
+    test "a stamp written on the sandbox row only is carried by the lease sweep, the epoch never lowered" do
       user = insert_verified_user()
       ws = insert_workspace(user_id: user.id)
       ws |> Ecto.Changeset.change(lease_epoch: 9) |> Repo.update!()
@@ -253,7 +261,8 @@ defmodule Fountain.WorkspacesTest do
       |> Ecto.Changeset.change(transition: "destroying")
       |> Repo.update!()
 
-      assert {0, 0, 1} = Workspaces._unsafe_reconcile_live()
+      assert {0, 0} = Workspaces._unsafe_reconcile_live()
+      Fountain.Machines.Lease.sweep_boot()
 
       assert %Workspace{lease_epoch: 9, transition: "destroying", transition_reason: "idle"} =
                Repo.reload!(ws)

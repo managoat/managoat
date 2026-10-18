@@ -66,11 +66,7 @@ defmodule FountainWeb.ConversationWakeControllerTest do
   end
 
   test "a refusal that needs no provider still answers the call, and nothing is woken", ctx do
-    {:ok, _} =
-      ctx.conv.sandbox_id
-      |> Fountain.Conversations._unsafe_get_sandbox()
-      |> Ecto.Changeset.change(transition: "destroying")
-      |> Fountain.Repo.update()
+    put_lease(ctx.conv.sandbox_id, transition: "destroying")
 
     stub_server_start(fn _supervisor, _child_spec -> flunk("woke a machine being reset") end)
 

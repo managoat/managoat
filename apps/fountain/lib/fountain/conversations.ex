@@ -27,11 +27,12 @@ defmodule Fountain.Conversations do
   alias Fountain.Conversations.TurnLocks
   alias Fountain.InferenceCredentials
   alias Fountain.InferenceCredentials.Source
+  alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine
   alias Fountain.Machines.Occupancy
   alias Fountain.Repo
 
-  # Advisory-lock namespace for per-sandbox machine operations. Distinct from
+  # Advisory-lock namespace for machine operations, keyed by the workspace (`sandbox_lock_key/1`). Distinct from
   # Quotas' per-user reservation (4315): this one is taken inside a turn
   # start, and the two must never be mistaken for one another.
   @sandbox_lock_namespace 4316
@@ -81,11 +82,15 @@ defmodule Fountain.Conversations do
   def _unsafe_count_sandboxes_admin, do: Repo.aggregate(admin_sandboxes(), :count, :id)
 
   defp admin_sandboxes do
-    from s in Sandbox, where: s.status not in ["terminated", "failed"]
+    from s in Lease.machines(), where: s.status not in ["terminated", "failed"]
   end
 
-  def _unsafe_get_sandbox(id), do: Repo.get(Sandbox, id)
-  def _unsafe_get_sandbox!(id), do: Repo.get!(Sandbox, id)
+  # Through `Machines.Lease`, so a machine's lease and transition are its
+  # workspace's (ADR 0097, step 3b).
+  def _unsafe_get_sandbox(id), do: Lease.get(id)
+
+  def _unsafe_get_sandbox!(id),
+    do: Lease.get(id) || raise(Ecto.NoResultsError, queryable: Sandbox)
 
   @doc """
   Load any tenant's conversation for the admin support view (#446).
@@ -970,7 +975,7 @@ defmodule Fountain.Conversations do
 
         Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
           @sandbox_lock_namespace,
-          :erlang.phash2(sandbox_id)
+          sandbox_lock_key(sandbox_id)
         ])
       end
 
@@ -1025,7 +1030,28 @@ defmodule Fountain.Conversations do
   defp lock_timeout?(_error), do: false
 
   @doc """
-  Start a `ConversationServer` on `sandbox_id`, under the per-sandbox lock
+  The key of a machine's advisory lock in namespace 4316: its **workspace's**
+  id (ADR 0097, step 3b), so the lock that serializes a claim, a fence, a turn
+  admission and a registration is the one the workspace's owner takes, and
+  every sandbox a workspace ever has shares it. A sandbox with no workspace,
+  which only a row retired before ADR 0097 is, keeps its own id; so does an
+  id with no row.
+
+  One read, without a lock, and safe without one: a live sandbox's
+  `workspace_id` does not change while anything can hold its lock (see
+  `Fountain.Machines.Lease`). Every taker of 4316 comes through here, so two
+  of them never disagree about the key.
+  """
+  @spec sandbox_lock_key(Ecto.UUID.t()) :: non_neg_integer()
+  def sandbox_lock_key(sandbox_id) when is_binary(sandbox_id) do
+    workspace_id =
+      Repo.one(from s in Sandbox, where: s.id == ^sandbox_id, select: s.workspace_id)
+
+    :erlang.phash2(workspace_id || sandbox_id)
+  end
+
+  @doc """
+  Start a `ConversationServer` on `sandbox_id`, under the machine's lock
   (ADR 0058 stage 6a, ADR 0072).
 
   **The only door onto `Fountain.ConversationSupervisor`.** All three starters
@@ -1114,17 +1140,7 @@ defmodule Fountain.Conversations do
       # The verdict is made on the locked read, never on the struct a caller
       # brought: a pre-lock reading is stale by construction, which is what
       # makes this worth doing twice.
-      current =
-        Repo.one(
-          from s in Sandbox,
-            where: s.id == ^sandbox_id,
-            select: %{
-              status: s.status,
-              transition: s.transition,
-              lease_node: s.lease_node
-            },
-            lock: "FOR UPDATE"
-        )
+      current = Lease.lock_machine(sandbox_id, :update)
 
       cond do
         is_nil(current) ->
@@ -1385,7 +1401,7 @@ defmodule Fountain.Conversations do
   end
 
   @doc """
-  Create a turn on the conversation's sandbox, under the per-sandbox lock.
+  Create a turn on the conversation's sandbox, under the machine's lock.
 
   **The owner's write** (ADR 0058 stage 8a). `Fountain.Machines.Admission` is
   the only caller; everything that used to call this directly goes through
@@ -1400,7 +1416,7 @@ defmodule Fountain.Conversations do
   commit may land one transaction tail after the deadline, and that tail has
   no lock wait in it.
 
-  All runtimes take the per-sandbox advisory lock and read the machine's row
+  All runtimes take the machine's advisory lock and read the machine's row
   under it, and every verdict about the machine is taken from that read (#2307
   constraint 1): the conversation must still be bound to this nonterminal
   sandbox; neither fence may be set, nor the `destroying` stamp that replaces
@@ -1437,7 +1453,7 @@ defmodule Fountain.Conversations do
 
         Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
           @sandbox_lock_namespace,
-          :erlang.phash2(sandbox_id)
+          sandbox_lock_key(sandbox_id)
         ])
 
         # Hold the parent row through the turn insert.
@@ -1479,20 +1495,19 @@ defmodule Fountain.Conversations do
         # while a later forced retirement follows the turn. The clock rides
         # along with the read, so the caller's deadline is judged at the same
         # instant the row was seen.
+        # Its lease and transition are its workspace's, read under the
+        # workspace's row lock first (`Lease.lock_machine/2`), in the order
+        # every compare-and-set takes them.
         machine =
-          Repo.one(
-            from s in Sandbox,
-              where: s.id == ^sandbox_id,
-              select: %{
-                id: s.id,
-                user_id: s.user_id,
-                status: s.status,
-                transition: s.transition,
-                lease_node: s.lease_node,
-                db_now: fragment("statement_timestamp()")
-              },
-              lock: "FOR SHARE"
-          )
+          case Lease.lock_machine(sandbox_id, :share) do
+            nil ->
+              nil
+
+            %Sandbox{} = locked ->
+              locked
+              |> Map.take([:id, :user_id, :status, :transition, :lease_node])
+              |> Map.put(:db_now, statement_clock())
+          end
 
         case admissible_machine(machine, conv, sandbox_id) do
           :ok -> :ok
@@ -1554,6 +1569,13 @@ defmodule Fountain.Conversations do
   # The lease is the new refusal and gets the protocol's word so that
   # `Fountain.Machines.Admission` can wait it out — the others are final for
   # this prompt, a live lease is not.
+  # The database's clock at this statement, for the deadline: read just after
+  # the machine's rows, inside the same transaction.
+  defp statement_clock do
+    %Postgrex.Result{rows: [[%DateTime{} = now]]} = Repo.query!("SELECT statement_timestamp()")
+    now
+  end
+
   defp admissible_machine(nil, _conv, _sandbox_id), do: {:error, :sandbox_unavailable}
 
   defp admissible_machine(machine, conv, sandbox_id) do
@@ -2510,8 +2532,11 @@ defmodule Fountain.Conversations do
   @doc "One of the caller's sandboxes, or nil. A foreign or malformed id reads as nil."
   def get_sandbox(id, user_id) when is_binary(id) and is_binary(user_id) do
     case Ecto.UUID.dump(id) do
-      {:ok, _} -> Repo.get_by(Sandbox, id: id, user_id: user_id)
-      :error -> nil
+      {:ok, _} ->
+        Repo.one(from s in Lease.machines(), where: s.id == ^id and s.user_id == ^user_id)
+
+      :error ->
+        nil
     end
   end
 
@@ -2522,7 +2547,7 @@ defmodule Fountain.Conversations do
   """
   def list_sandboxes(user_id, opts \\ []) when is_binary(user_id) do
     query =
-      from(s in Sandbox,
+      from(s in Lease.machines(),
         where: s.user_id == ^user_id,
         order_by: [desc: s.inserted_at, desc: s.id]
       )

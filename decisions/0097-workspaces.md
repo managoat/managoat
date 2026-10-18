@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1, 2 and 3a built, the rest not (per-conversation config homes and cwd; schema, implicit workspaces and the lease columns written twice, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1, 2, 3a and 3b built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -16,9 +16,10 @@ Steps 1 and 2 of the Cost section's sequence are built: a config home and
 working directory per conversation, with `cwd` on launch, on today's
 one-conversation machines (step 1); and the `workspaces` table, with an
 implicit workspace beside every live sandbox, which nothing reads yet
-(step 2). So is step 3's first PR, 3a: the lease columns on `workspaces`,
-written in the same transaction as the sandbox's own and not yet read. The
-rest is not built; the Cost section sets out the work and its order. It amends
+(step 2). So are step 3's first two PRs: the lease columns on `workspaces`
+(3a), and the owner registered, locked and leased by workspace (3b), with
+0058 amended to say so. The rest is not built; the Cost section sets out the
+work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -606,3 +607,18 @@ A PR sequence, each releasable alone:
   cascaded when the user goes, and account deletion keeps a workspace whose
   sandbox outlived it, ownerless like that sandbox (#2329), so the machine's
   lease and its `destroying` stamp survive for the reaper's driver.
+- 2026-10-18 — Step 3b built: the owner is registered in `MachineRegistry`
+  under the workspace id, the advisory lock (namespace 4316) is keyed by the
+  workspace, and the claim, the compare-and-set and the boot sweep run on the
+  `workspaces` row; every reader of a machine's lease or transition reads the
+  workspace's (`Machines.Lease.machines/0`), and every locked reader takes the
+  workspace's row before the sandbox's. The sandbox's four columns are still
+  written, as a copy onto the workspace's live sandbox in the same
+  transaction, for a rollback; they are dropped a release later, and the
+  boot sweep carries onto the workspace any stamp an earlier release wrote
+  on the sandbox row. A sandbox with no workspace (a row retired before this
+  ADR, or a live one a failed boot reconcile leaves until the next boot) has
+  no owner, reads its own row, and is answered as terminal or refused as
+  busy; every new sandbox must name a workspace.
+  Every message to an owner now names its sandbox, so a message in an earlier
+  release's shape is refused by the rollout clause.

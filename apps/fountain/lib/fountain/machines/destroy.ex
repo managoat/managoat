@@ -31,7 +31,7 @@ defmodule Fountain.Machines.Destroy do
      lease yet — that arrives with `park` and `ensure_up` in stages 6 and 7 —
      so this lease bounds this destroy and nothing more.
   3. **Fence** with `Lifecycle.fence_sandbox_for_teardown/2`, which stamps
-     `transition: "destroying"` under the per-sandbox advisory lock and closes
+     `transition: "destroying"` under the machine's advisory lock and closes
      the machine to admission on every node. (Until stage 9b it also wrote
      `reset_requested_at` and `teardown_requested_at`, which a replica that
      predated the owner honoured.)
@@ -233,7 +233,7 @@ defmodule Fountain.Machines.Destroy do
   `Lifecycle.fence_sandbox_for_teardown/2`.
 
   **In the owner's namespace, not its process.** The fence decides under the
-  per-sandbox advisory lock, on a row it read `FOR UPDATE`, and the teardown
+  machine advisory lock, on a row it read `FOR UPDATE`, and the teardown
   fence's last-detach rule reads rows its own transaction has written and not
   yet committed (#2348 review), so the write runs inside the caller's
   transaction and never behind a `GenServer.call`. What moving it here buys is
@@ -248,15 +248,12 @@ defmodule Fountain.Machines.Destroy do
   """
   @spec stamp_intent!(Sandbox.t(), String.t()) :: Sandbox.t()
   def stamp_intent!(%Sandbox{} = locked, reason) when is_binary(reason) do
-    stamped =
-      locked
-      |> Ecto.Changeset.change(transition: "destroying", transition_reason: reason)
-      |> Repo.update!()
-
-    # Written twice until the workspace's columns are the owner's (ADR 0097,
-    # step 3a); in the fence's transaction, like the stamp.
-    :ok = Lease.copy_to_workspace(stamped.id)
-    stamped
+    # On the machine's workspace, and copied onto the sandbox (ADR 0097, step
+    # 3b): in the fence's transaction, after its `Lease.lock_machine/2`.
+    case Lease.put_transition!(locked.id, "destroying", reason, touch: true) do
+      0 -> raise Ecto.StaleEntryError, struct: locked, action: :update
+      _ -> Lease.get(locked.id)
+    end
   end
 
   @doc """
@@ -412,6 +409,15 @@ defmodule Fountain.Machines.Destroy do
           # Best effort and deliberately not matched on: a destroy that
           # finished is finished whether or not its lease came back.
           _ = Lease.release(sandbox_id, epoch)
+        end
+
+      # A sandbox with no workspace has no owner (ADR 0097): a row retired
+      # before workspaces existed, answered as the terminal row it is.
+      {:error, :no_workspace} ->
+        case Lease.unowned(sandbox_id) do
+          {:terminal, sandbox} -> already_terminal(sandbox, opts)
+          :live -> {:error, :machine_busy}
+          :not_found -> {:error, :not_found}
         end
 
       {:error, _} = error ->

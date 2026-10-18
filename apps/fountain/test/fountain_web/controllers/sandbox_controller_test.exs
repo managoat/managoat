@@ -55,8 +55,7 @@ defmodule FountainWeb.SandboxControllerTest do
   describe "GET /api/sandboxes/:id" do
     test "exposes unfinished readiness even on a previously ready row", ctx do
       ctx.sandbox
-      |> Ecto.Changeset.change(transition: "resuming")
-      |> Fountain.Repo.update!()
+      |> put_lease(transition: "resuming")
 
       data =
         ctx.conn

@@ -19,7 +19,6 @@ defmodule Fountain.Machines.ReadsTest do
 
   alias Fountain.Conversations
   alias Fountain.Conversations.Conversation
-  alias Fountain.Conversations.Sandbox
   alias Fountain.Machines.Lease
   alias Fountain.Machines.Machine
   alias Fountain.Machines.Reads
@@ -40,7 +39,7 @@ defmodule Fountain.Machines.ReadsTest do
   @empty_listing {:ok, "", 0}
 
   defp stamp(ctx, sets),
-    do: Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id), set: sets)
+    do: put_lease(ctx.sandbox.id, sets)
 
   # Every entry the table holds for the machine, expired or not: what
   # `in_flight/1` counts plus what nobody has released yet.
@@ -646,12 +645,10 @@ defmodule Fountain.Machines.ReadsTest do
 
             # The holder becomes a lease and commits; the admission then reads
             # it under the lock it was waiting for.
-            {1, _} =
-              Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-                set: [
-                  lease_epoch: 1,
-                  lease_node: live_lease_holder()
-                ]
+            %Fountain.Conversations.Sandbox{} =
+              put_lease(sandbox.id,
+                lease_epoch: 1,
+                lease_node: live_lease_holder()
               )
 
             send(holder.pid, :commit)
@@ -708,6 +705,7 @@ defmodule Fountain.Machines.ReadsTest do
     Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
     Repo.delete_all(from c in Conversation, where: c.user_id == ^user.id)
     for sandbox <- sandboxes, do: Repo.delete!(sandbox)
+    Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
     Repo.delete!(user)
   end
 end

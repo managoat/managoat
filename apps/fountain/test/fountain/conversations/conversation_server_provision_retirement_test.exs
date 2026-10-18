@@ -50,8 +50,7 @@ defmodule Fountain.Conversations.ConversationServerProvisionRetirementTest do
       retired =
         if unquote(terminal) == "reset_pending" do
           sandbox
-          |> Ecto.Changeset.change(transition: "destroying", transition_reason: "reset")
-          |> Fountain.Repo.update!()
+          |> put_lease(transition: "destroying", transition_reason: "reset")
         else
           {:ok, retired} = update_sandbox(sandbox, %{status: unquote(terminal)})
           retired

@@ -86,6 +86,7 @@ defmodule Fountain.InferenceSourceWriteOrderTest do
         after
           Task.shutdown(admission, :brutal_kill)
           Repo.delete_all(from a in Fountain.Audit.Event, where: a.user_id == ^user.id)
+          Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
           Repo.delete!(user)
         end
       end)
@@ -152,6 +153,7 @@ defmodule Fountain.InferenceSourceWriteOrderTest do
       after
         Task.shutdown(blocker, :brutal_kill)
         Repo.delete_all(from a in Fountain.Audit.Event, where: a.user_id == ^user.id)
+        Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
         Repo.delete!(user)
       end
     end)

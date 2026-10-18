@@ -243,13 +243,11 @@ defmodule Fountain.Workers.SandboxReaperParkTest do
 
   describe "recovery is a serialized takeover" do
     setup ctx do
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          lease_epoch: 1,
-          lease_node: dead_lease_holder(),
-          transition: "parking",
-          transition_reason: "idle"
-        ]
+      put_lease(ctx.sandbox.id,
+        lease_epoch: 1,
+        lease_node: dead_lease_holder(),
+        transition: "parking",
+        transition_reason: "idle"
       )
 
       :ok
@@ -345,11 +343,9 @@ defmodule Fountain.Workers.SandboxReaperParkTest do
       # The pre-filter. Asking would mean waiting out the busy wait for an
       # answer the row already gives, and a machine that lands in no counter at
       # all is one an operator reading the hourly summary cannot account for.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          lease_epoch: 1,
-          lease_node: live_lease_holder()
-        ]
+      put_lease(ctx.sandbox.id,
+        lease_epoch: 1,
+        lease_node: live_lease_holder()
       )
 
       reject(&Managoat.Sandbox.suspend/1)

@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "The machine has one owner"
-description: "One process per sandbox, holding a durable lease on its row, is the only writer of sandboxes.status and the only caller of the provider's lifecycle operations."
+description: "One process per workspace (ADR 0097), holding a durable lease on the workspace's row, is the only writer of sandboxes.status and the only caller of the provider's lifecycle operations."
 tags: [sandbox, lifecycle, conversations]
 status: stable
 adr: "0058"
@@ -12,7 +12,9 @@ date: 2026-09-16
 # 0058 — The machine has one owner
 
 **Status:** Accepted, 2026-09-16. Built 2026-09-16 to 2026-09-18 (tracker
-#2344). Settles #2307 and open decisions 1–3 on #2255. Takes the idle and
+#2344). Amended by [0097](0097-workspaces.md) on 2026-10-18: the owner and
+the lease are keyed by the sandbox's workspace (see History). Settles #2307
+and open decisions 1–3 on #2255. Takes the idle and
 ceiling decision of [0017](0017-suspend-idle-sandboxes.md) into the owner.
 
 ## Context
@@ -57,8 +59,10 @@ writing, so two processes on one node still race without it.
 ## Decision
 
 A sandbox has one owner: a `Fountain.Machines.Machine` process, registered in
-the local `Fountain.MachineRegistry` under the sandbox id and backed by a
-lease on the `sandboxes` row. It is the only code that writes
+the local `Fountain.MachineRegistry` under the id of the sandbox's
+**workspace** and backed by a lease on the `workspaces` row
+([0097](0097-workspaces.md); until then the sandbox id and the `sandboxes`
+row). Every verb still names the machine by its sandbox. It is the only code that writes
 `sandboxes.status` and the timestamps of a transition, the only caller of
 `Managoat.Sandbox.create/2`, `resume/1`, `suspend/1` and `destroy/1`, and the
 one answer to "who is on this machine, and is anyone mid-turn"
@@ -78,7 +82,7 @@ The source of truth is the lease on the row, not the process: `lease_epoch`
 process is alive; `Machine.busy?/1` and every reader follow it, and none reads
 a clock. A holder that dies stops holding when it dies.
 
-A lease is claimed in one short transaction under the per-sandbox advisory
+A lease is claimed in one short transaction under the per-workspace advisory
 lock, with a `FOR UPDATE` re-read of the row. It is per operation: an idle
 machine holds none, so "busy" means a live lease, not a stamped transition.
 Every state write the owner makes is a compare-and-set on
@@ -240,3 +244,4 @@ already 503 with a `Retry-After` and already handled by the SDK.
 - 2026-10-15 — The release (`detach` with `policy: :keep`) removed with the team ([0074](0074-remove-the-team.md), #2715).
 - 2026-10-15 — The environment warm-start checkpoint removed, leaving the reaper's destroy of a terminal row the one provider call outside the owner (#2720).
 - 2026-10-15 — The direct-writes ratchet test removed (#2721); `woken_at` dropped (#2725).
+- 2026-10-18 — Keyed by workspace ([0097](0097-workspaces.md) step 3b): one owner per workspace, registered under the workspace id; `lease_epoch`, `lease_node`, `transition` and `transition_reason` read from and written to the `workspaces` row, with the per-workspace advisory lock (namespace 4316, keyed by the workspace id) and the compare-and-set on the workspace's epoch; every locked reader takes the workspace's row before the sandbox's. The transitions, the boot sweep (over workspaces), durable `destroying` (`sweep_fenced_teardowns/0` over workspace stamps), `Machines.Reads` admission and the quota count of `resuming` carry over keyed by workspace. A sandbox retired before workspaces existed has no owner and is answered as terminal. The sandbox's own four columns are still written as a copy for a rollback, and dropped a release later. Not yet: the rebuild of a lost machine under the same owner, `detach` keeping the machine of a non-implicit workspace, `machine_gone` to every bound conversation, and `Policy.reclaim_action/2` taking the workspace's kind (0097, steps 3c and 4).

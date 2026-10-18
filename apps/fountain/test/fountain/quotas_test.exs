@@ -224,10 +224,7 @@ defmodule Fountain.QuotasTest do
     test "and stops the moment that lease lapses, exactly as live?/2 decides", ctx do
       {:ok, _} = stamp_resuming(ctx)
 
-      Repo.update_all(
-        from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [lease_node: dead_lease_holder()]
-      )
+      put_lease(ctx.sandbox.id, lease_node: dead_lease_holder())
 
       # The two answers are asserted against each other, not against a literal:
       # that is what makes this a pin on the copy rather than a second opinion.
@@ -238,10 +235,7 @@ defmodule Fountain.QuotasTest do
     test "a holder-less deadline is not a lease, here either", ctx do
       {:ok, _} = stamp_resuming(ctx)
 
-      Repo.update_all(
-        from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [lease_node: nil]
-      )
+      put_lease(ctx.sandbox.id, lease_node: nil)
 
       refute Lease.live?(Repo.reload!(ctx.sandbox))
       assert active_sandbox_count(ctx.user.id) == 0

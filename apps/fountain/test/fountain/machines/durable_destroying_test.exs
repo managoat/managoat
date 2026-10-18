@@ -56,7 +56,7 @@ defmodule Fountain.Machines.DurableDestroyingTest do
     %{user: user, agent: agent, sandbox: sandbox, conv: conv}
   end
 
-  defp stamp(sandbox, changes), do: sandbox |> Ecto.Changeset.change(changes) |> Repo.update!()
+  defp stamp(sandbox, changes), do: put_lease(sandbox, changes)
 
   # The intent, and nothing else. The lease is spent and released, which is what
   # makes every refusal below a statement about the stamp rather than about an
@@ -72,7 +72,9 @@ defmodule Fountain.Machines.DurableDestroyingTest do
 
   defp conv_with_sandbox(ctx), do: Repo.reload!(ctx.conv) |> Repo.preload(:sandbox)
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  # The machine as every reader sees it: its lease and stamp are its
+  # workspace's (ADR 0097, step 3b).
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   describe "the stamp is not a lease reading" do
     test "a lease-less destroying row is still not busy", ctx do

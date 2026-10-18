@@ -26,7 +26,7 @@ defmodule Fountain.Conversations.InferenceBinding do
         # Match turn admission and teardown before any row lock.
         Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
           4316,
-          :erlang.phash2(conv.sandbox_id)
+          Fountain.Conversations.sandbox_lock_key(conv.sandbox_id)
         ])
       end
 

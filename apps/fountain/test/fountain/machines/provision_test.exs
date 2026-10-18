@@ -93,7 +93,7 @@ defmodule Fountain.Machines.ProvisionTest do
   end
 
   defp stamp(ctx, sets) do
-    Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id), set: sets)
+    put_lease(ctx.sandbox.id, sets)
   end
 
   # The row a provision leaves when its owner dies between the intent and the
@@ -1119,7 +1119,8 @@ defmodule Fountain.Machines.ProvisionTest do
       |> Sandbox.changeset(%{
         machine_name: "provision-#{Ecto.UUID.generate()}",
         status: "pending",
-        user_id: user.id
+        user_id: user.id,
+        workspace_id: Fountain.Factory.insert_workspace(user_id: user.id).id
       })
       |> Repo.insert!()
 
@@ -1129,6 +1130,7 @@ defmodule Fountain.Machines.ProvisionTest do
   defp discard(%{user: user, sandbox: sandbox}) do
     Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
     Repo.delete!(sandbox)
+    Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
     Repo.delete!(user)
   end
 

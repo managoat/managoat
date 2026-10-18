@@ -74,13 +74,11 @@ defmodule Fountain.Machines.DestroyTest do
         reason: "conversation_terminated"
       )
 
-    Repo.update_all(from(s in Sandbox, where: s.id == ^fenced.id),
-      set: [
-        lease_epoch: 1,
-        lease_node: dead_lease_holder(),
-        transition: "destroying",
-        transition_reason: "terminated"
-      ]
+    put_lease(fenced.id,
+      lease_epoch: 1,
+      lease_node: dead_lease_holder(),
+      transition: "destroying",
+      transition_reason: "terminated"
     )
 
     :ok
@@ -566,12 +564,10 @@ defmodule Fountain.Machines.DestroyTest do
 
       # Past the driver's grace window, which runs from the stamp — the row's
       # last write.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          updated_at:
-            DateTime.utc_now() |> DateTime.add(-20 * 60, :second) |> DateTime.truncate(:second),
-          lease_node: dead_lease_holder()
-        ]
+      put_lease(ctx.sandbox.id,
+        updated_at:
+          DateTime.utc_now() |> DateTime.add(-20 * 60, :second) |> DateTime.truncate(:second),
+        lease_node: dead_lease_holder()
       )
 
       stub(Managoat.Sandbox, :destroy, fn _ -> :ok end)
@@ -684,12 +680,10 @@ defmodule Fountain.Machines.DestroyTest do
       # over can still complete the provider call it started, and the
       # compare-and-set is what makes its write invisible.
       expect(Managoat.Sandbox, :destroy, fn _ ->
-        assert {1, _} =
-                 Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-                   set: [
-                     lease_epoch: 99,
-                     lease_node: live_lease_holder()
-                   ]
+        assert %Fountain.Conversations.Sandbox{lease_epoch: 99} =
+                 put_lease(ctx.sandbox.id,
+                   lease_epoch: 99,
+                   lease_node: live_lease_holder()
                  )
 
         :ok
@@ -709,13 +703,11 @@ defmodule Fountain.Machines.DestroyTest do
     test "an interrupted destroy is continued from the provider call", ctx do
       # The forged row a crashed owner leaves: the fence is committed, the
       # intent is stamped, the holder is gone, and nothing finalized.
-      Repo.update_all(from(s in Sandbox, where: s.id == ^ctx.sandbox.id),
-        set: [
-          lease_epoch: 7,
-          lease_node: dead_lease_holder(),
-          transition: "destroying",
-          transition_reason: "terminated"
-        ]
+      put_lease(ctx.sandbox.id,
+        lease_epoch: 7,
+        lease_node: dead_lease_holder(),
+        transition: "destroying",
+        transition_reason: "terminated"
       )
 
       expect(Managoat.Sandbox, :destroy, fn _ -> :ok end)

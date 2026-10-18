@@ -276,7 +276,7 @@ defmodule Fountain.Conversations.Wake do
   # arrived, with nothing reporting the loss (#2373).
   def start_conversation_server(conv, sandbox_id, runtime_module, initial_prompt, images) do
     # Through the one registration door (ADR 0058 stage 6a): it starts the
-    # server under the per-sandbox lock, so a reaper or a park that takes the
+    # server under the machine's lock, so a reaper or a park that takes the
     # lock after it finds the server. It hands the supervisor's answer back
     # verbatim, so the `{:already_started, winner_pid}` both call sites of this
     # function compensate for still arrives unchanged.

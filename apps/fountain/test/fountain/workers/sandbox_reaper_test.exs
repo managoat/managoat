@@ -528,9 +528,7 @@ defmodule Fountain.Workers.SandboxReaperTest do
       # default, so a fallback would be visible.
       {user, sandbox, _conv} = fenced_sandbox()
 
-      Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-        set: [transition_reason: "reclaimed"]
-      )
+      put_lease(sandbox.id, transition_reason: "reclaimed")
 
       age_fence(sandbox, 60)
       live_provider([sandbox.machine_name])
@@ -549,12 +547,10 @@ defmodule Fountain.Workers.SandboxReaperTest do
       user = insert_verified_user()
       sandbox = insert_sandbox(user_id: user.id, status: "ready")
 
-      Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-        set: [
-          transition: "destroying",
-          transition_reason: "teardown",
-          updated_at: minutes_ago(60)
-        ]
+      put_lease(sandbox.id,
+        transition: "destroying",
+        transition_reason: "teardown",
+        updated_at: minutes_ago(60)
       )
 
       live_provider([sandbox.machine_name])
@@ -620,9 +616,7 @@ defmodule Fountain.Workers.SandboxReaperTest do
 
       {:ok, 1} = Fountain.Machines.Lease.claim(sandbox.id)
 
-      Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-        set: [lease_node: dead_lease_holder()]
-      )
+      put_lease(sandbox.id, lease_node: dead_lease_holder())
 
       capture_log(fn -> assert {1, 0} = SandboxReaper.sweep_fenced_teardowns() end)
       assert Repo.reload(sandbox).status == "terminated"
@@ -653,9 +647,7 @@ defmodule Fountain.Workers.SandboxReaperTest do
       conv = insert_conversation(user_id: user.id, sandbox: sandbox, status: "idle")
       age_rows(sandbox, conv, 60 * 24 * 83)
 
-      Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id),
-        set: [transition: "destroying", transition_reason: "terminated"]
-      )
+      put_lease(sandbox.id, transition: "destroying", transition_reason: "terminated")
 
       reject(Managoat.Sandbox, :suspend, 1)
       reject(Managoat.Sandbox, :destroy, 1)

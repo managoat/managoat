@@ -64,6 +64,7 @@ defmodule Fountain.Conversations.AdmissionLockIsolationTest do
           for %{user: user} <- [first, second] do
             sandboxes = Repo.all(from s in Sandbox, where: s.user_id == ^user.id)
             Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
+            Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
             Repo.delete!(user)
             for sandbox <- sandboxes, do: Repo.delete!(sandbox)
           end

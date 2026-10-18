@@ -8,6 +8,8 @@ defmodule Fountain.Factory do
   keyword lists and atom-keyed maps for ergonomics in tests.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias Fountain.Repo
   require Ecto.Query
   alias Fountain.Conversations.{Conversation, LogEvent, Sandbox, Turn}
@@ -245,6 +247,14 @@ defmodule Fountain.Factory do
     overrides_map = to_atom_map(overrides)
     user_id = Map.get(overrides_map, :user_id) || insert_verified_user().id
 
+    # Every sandbox is born in a workspace (ADR 0097), which holds its
+    # machine's lease, so one is made unless the test names its own, or
+    # `workspace_id: nil` for a row from before workspaces.
+    overrides_map =
+      if Map.has_key?(overrides_map, :workspace_id),
+        do: overrides_map,
+        else: Map.put(overrides_map, :workspace_id, insert_workspace(user_id: user_id).id)
+
     attrs =
       %{machine_name: "test-sprite-#{uniq()}", status: "pending", user_id: user_id}
       |> Map.merge(overrides_map)
@@ -275,6 +285,50 @@ defmodule Fountain.Factory do
       nil -> sandbox
       at -> sandbox |> Ecto.Changeset.change(inserted_at: at) |> Repo.update!()
     end
+  end
+
+  @doc """
+  Set a machine's lease columns (`lease_epoch`, `lease_node`, `transition`,
+  `transition_reason`) as a test fixture: on its workspace, where the owner
+  reads them (ADR 0097), and on the sandbox's own copy, as
+  `Fountain.Machines.Lease` keeps it. A sandbox with no workspace has only its
+  own written. Any other key in `attrs` is written to the sandbox. Returns the
+  sandbox as `Lease.get/1` reads it.
+  """
+  #
+  # Given a struct, like `Ecto.Changeset.change/2` it writes only the keys whose
+  # value differs from the struct's, so a fixture that names a field it means
+  # to leave alone leaves it.
+  def put_lease(sandbox_or_id, attrs) do
+    id = if is_binary(sandbox_or_id), do: sandbox_or_id, else: sandbox_or_id.id
+    attrs = attrs |> to_atom_map() |> Enum.to_list()
+
+    attrs =
+      case sandbox_or_id do
+        %Sandbox{} = given -> Enum.reject(attrs, fn {k, v} -> Map.get(given, k) == v end)
+        _id -> attrs
+      end
+
+    {lease, rest} =
+      Keyword.split(attrs, [:lease_epoch, :lease_node, :transition, :transition_reason])
+
+    sandbox = Repo.get!(Sandbox, id)
+
+    if lease != [] and sandbox.workspace_id do
+      {1, _} =
+        Repo.update_all(
+          from(w in Fountain.Workspaces.Workspace, where: w.id == ^sandbox.workspace_id),
+          set: lease
+        )
+    end
+
+    sets = lease ++ rest
+
+    if sets != [] do
+      {1, _} = Repo.update_all(from(s in Sandbox, where: s.id == ^id), set: sets)
+    end
+
+    Fountain.Machines.Lease.get(id)
   end
 
   @doc """

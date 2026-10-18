@@ -183,7 +183,7 @@ defmodule Fountain.Workers.SandboxReaper do
   # `updated_at` — which the wake path touches when it flips `suspended ->
   # ready` — gets fifteen minutes before a row counts as unheld. A wake that
   # finds the row already `ready` writes nothing, and needs no grace: it starts
-  # its server under the per-sandbox lock, in the local registry, before the
+  # its server under the machine's lock, in the local registry, before the
   # lock is released (ADR 0072), so `Lifecycle.any_server_alive?/1` sees it.
   @abandoned_grace_minutes 15
 
@@ -322,7 +322,7 @@ defmodule Fountain.Workers.SandboxReaper do
     now = DateTime.utc_now()
     cutoff = DateTime.add(now, -@stuck_after_minutes * 60, :second)
 
-    Sandbox
+    Lease.machines()
     |> where(
       [s],
       s.status in ^@active_statuses and s.updated_at < ^cutoff
@@ -396,8 +396,17 @@ defmodule Fountain.Workers.SandboxReaper do
   # composable condition, so the two liveness passes ask it in exactly the same
   # words — the shape stage 6a gave the marker below, for the reason it gave
   # it: two readings of one rule drift.
+  #
+  # The stamp is the workspace's (ADR 0097, step 3b), read through
+  # `Lease.machines/0`'s `:workspace` binding (a sandbox with no workspace off
+  # its own row, as `Lease.machines/0` reads it).
   defp not_destroying do
-    dynamic([s], is_nil(s.transition) or s.transition != ^@destroying)
+    dynamic(
+      [s, workspace: w],
+      is_nil(fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition)) or
+        fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) !=
+          ^@destroying
+    )
   end
 
   # A live ConversationServer means provisioning is still in flight, however
@@ -467,7 +476,7 @@ defmodule Fountain.Workers.SandboxReaper do
       grace_cutoff = DateTime.add(now, -@abandoned_grace_minutes * 60, :second)
 
       candidates =
-        Sandbox
+        Lease.machines()
         |> where(
           [s],
           s.status == "ready" and s.updated_at < ^grace_cutoff
@@ -823,8 +832,16 @@ defmodule Fountain.Workers.SandboxReaper do
     now = DateTime.utc_now()
     cutoff = DateTime.add(now, -@fenced_teardown_grace_minutes * 60, :second)
 
-    Sandbox
-    |> where([s], s.status not in ^@terminal_statuses and s.transition == ^@destroying)
+    # Over the workspaces' stamps (ADR 0097, step 3b), each with its live
+    # sandbox: the stamp is the workspace's, the machine to destroy the
+    # sandbox's.
+    Lease.machines()
+    |> where(
+      [s, workspace: w],
+      s.status not in ^@terminal_statuses and
+        fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) ==
+          ^@destroying
+    )
     # The grace window runs from the row's last write, which for a stamped row
     # is the stamp: every reader refuses a `destroying` row, and a
     # `cas_update/4` moves `updated_at` with a state change and not with a
@@ -935,7 +952,7 @@ defmodule Fountain.Workers.SandboxReaper do
   # gone terminal meanwhile, is somebody else's reclamation and counts on
   # neither gauge. Anything else is a refusal.
   defp contended_or_refused(%Sandbox{} = sandbox, refusal) do
-    case Repo.get(Sandbox, sandbox.id) do
+    case Lease.get(sandbox.id) do
       %Sandbox{status: status} when status in @terminal_statuses ->
         :noop
 

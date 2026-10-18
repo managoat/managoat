@@ -277,6 +277,15 @@ defmodule Fountain.Machines.Resume do
           _ = Lease.release(sandbox_id, epoch)
         end
 
+      # A sandbox with no workspace has no owner (ADR 0097); see
+      # `Lease.unowned/1`.
+      {:error, :no_workspace} ->
+        case Lease.unowned(sandbox_id) do
+          {:terminal, _sandbox} -> {:ok, :already_terminal}
+          :live -> {:error, :machine_busy}
+          :not_found -> {:error, :not_found}
+        end
+
       {:error, _} = error ->
         error
     end

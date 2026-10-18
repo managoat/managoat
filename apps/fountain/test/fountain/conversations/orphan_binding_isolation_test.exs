@@ -91,6 +91,7 @@ defmodule Fountain.Conversations.OrphanBindingIsolationTest do
           Task.shutdown(leading, :brutal_kill)
           :telemetry.detach(handler)
           Repo.delete_all(from e in Fountain.Audit.Event, where: e.user_id == ^user.id)
+          Repo.delete_all(from w in Fountain.Workspaces.Workspace, where: w.user_id == ^user.id)
           Repo.delete!(user)
           Repo.delete!(old)
           Repo.delete!(replacement)

@@ -119,7 +119,7 @@ defmodule Fountain.Machines.Occupancy do
   Who holds `sandbox_id`, in one query, without consulting the registry.
 
   For a caller that only needs `held_by_other?/2` or `cotenant_ids/2` — the
-  teardown fence asks inside its transaction, under the per-sandbox advisory
+  teardown fence asks inside its transaction, under the machine's advisory
   lock, where the cheapest correct read is the right one.
   """
   @spec bindings(String.t()) :: t()

@@ -57,12 +57,11 @@ defmodule Fountain.Machines.MachineTest do
       # `mid_operation_readers_test.exs`.
       parking =
         ctx.sandbox
-        |> Ecto.Changeset.change(
+        |> put_lease(
           transition: "parking",
           lease_epoch: 1,
           lease_node: live_lease_holder()
         )
-        |> Repo.update!()
 
       assert Machine.busy?(parking)
     end
@@ -71,9 +70,13 @@ defmodule Fountain.Machines.MachineTest do
   # The owners registered for one machine. Scoped to the test's own row: every
   # verb runs in an owner since stage 9b, so the async suites running beside
   # this one leave owners of their own machines behind for a minute each.
+  #
+  # Registered under the sandbox's workspace (ADR 0097, step 3b).
   defp owners_of(sandbox_id) do
+    key = Machine.owner_key(sandbox_id)
+
     Registry.select(Fountain.MachineRegistry, [
-      {{:"$1", :"$2", :_}, [{:==, :"$1", sandbox_id}], [:"$2"]}
+      {{:"$1", :"$2", :_}, [{:==, :"$1", key}], [:"$2"]}
     ])
   end
 
@@ -162,7 +165,7 @@ defmodule Fountain.Machines.MachineTest do
       assert {:error, {:already_started, ^winner}} =
                DynamicSupervisor.start_child(
                  Fountain.MachineSupervisor,
-                 {Machine, sandbox_id: ctx.sandbox.id}
+                 {Machine, key: Machine.owner_key(ctx.sandbox.id)}
                )
 
       assert {:ok, ^winner} = Machine.ensure_started(ctx.sandbox.id)
@@ -358,7 +361,7 @@ defmodule Fountain.Machines.MachineTest do
       # somewhere in here.
       for _ <- 1..4 do
         Process.sleep(100)
-        assert %Occupancy{} = GenServer.call(pid, :who_is_here)
+        assert %Occupancy{} = GenServer.call(pid, {:who_is_here, ctx.sandbox.id})
       end
 
       refute_received {:DOWN, ^ref, :process, ^pid, _}

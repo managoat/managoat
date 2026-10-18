@@ -2,8 +2,9 @@ defmodule Fountain.Machines do
   @moduledoc """
   The machine — a sandbox with one owner (ADR 0058).
 
-  A sandbox gets one `Fountain.Machines.Machine` process, registered in
-  `Fountain.MachineRegistry` under the sandbox id. It is the only writer of
+  A sandbox's workspace gets one `Fountain.Machines.Machine` process,
+  registered in `Fountain.MachineRegistry` under the workspace id, with the
+  lease on the workspace's row (ADR 0097, step 3b). It is the only writer of
   `sandboxes.status` and the only caller of the provider's create, resume,
   suspend and destroy. It answers one read-only question,
   `Machine.who_is_here/1`, and owns six protocols: `Fountain.Machines.Destroy`

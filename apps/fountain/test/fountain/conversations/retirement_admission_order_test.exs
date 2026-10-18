@@ -47,9 +47,7 @@ defmodule Fountain.Conversations.RetirementAdmissionOrderTest do
       # epoch, not to whether the holder lives.
       {:ok, epoch} = Fountain.Machines.Lease.claim(home.id)
 
-      Repo.update_all(from(s in Fountain.Conversations.Sandbox, where: s.id == ^home.id),
-        set: [lease_node: dead_lease_holder()]
-      )
+      put_lease(home.id, lease_node: dead_lease_holder())
 
       operation = fn
         :retirement ->

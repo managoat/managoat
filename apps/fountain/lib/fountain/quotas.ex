@@ -104,8 +104,15 @@ defmodule Fountain.Quotas do
           query
 
         excluded ->
-          from s in query,
-            where: s.id != ^excluded or s.transition == "destroying"
+          from [s, w] in query,
+            where:
+              s.id != ^excluded or
+                fragment(
+                  "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+                  w.id,
+                  s.transition,
+                  w.transition
+                ) == "destroying"
       end
 
     Repo.one(query) || 0
@@ -115,12 +122,35 @@ defmodule Fountain.Quotas do
   # holder is a lease of this boot. This is a `count(*)` under an advisory
   # lock, so it cannot ask each holder whether its process is alive; see the
   # moduledoc for what that leaves.
+  #
+  # The transition and the lease are the sandbox's workspace's (ADR 0097,
+  # step 3b), and count only while the sandbox itself is live: a workspace
+  # names one machine's operation, not its retired sandboxes'. A sandbox with
+  # no workspace is read off its own row, as `Lease.machines/0` reads it.
   defp active_sandboxes do
     from s in Sandbox,
+      left_join: w in Fountain.Workspaces.Workspace,
+      on: w.id == s.workspace_id,
       where:
         s.status in @active_statuses or
-          (s.transition == "destroying" and s.status not in ["terminated", "failed"]) or
-          (s.transition == "resuming" and like(s.lease_node, ^"#{Lease.boot_prefix()}%"))
+          (s.status not in ["terminated", "failed"] and
+             (fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) ==
+                "destroying" or
+                (fragment(
+                   "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+                   w.id,
+                   s.transition,
+                   w.transition
+                 ) == "resuming" and
+                   like(
+                     fragment(
+                       "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+                       w.id,
+                       s.lease_node,
+                       w.lease_node
+                     ),
+                     ^"#{Lease.boot_prefix()}%"
+                   ))))
   end
 
   @doc """

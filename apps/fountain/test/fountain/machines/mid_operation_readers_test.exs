@@ -59,7 +59,7 @@ defmodule Fountain.Machines.MidOperationReadersTest do
   # The columns no changeset casts: an owner writes them through
   # `Machines.Lease`, and a test writes them the same way the database does.
   defp stamp(sandbox, changes) do
-    sandbox |> Ecto.Changeset.change(changes) |> Repo.update!()
+    put_lease(sandbox, changes)
   end
 
   defp held(state \\ :live)

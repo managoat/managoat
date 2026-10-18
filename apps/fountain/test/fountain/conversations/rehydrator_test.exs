@@ -50,7 +50,7 @@ defmodule Fountain.Conversations.RehydratorTest do
   # prompt, comes back after the lease has gone.
   test "boot skips a machine whose owner holds a live lease" do
     conv = resumable("idle")
-    conv.sandbox |> Ecto.Changeset.change(held()) |> Repo.update!()
+    put_lease(conv.sandbox, held())
 
     log = ExUnit.CaptureLog.capture_log(fn -> assert sweep() == 0 end)
     assert log =~ "machine_busy"
@@ -66,12 +66,11 @@ defmodule Fountain.Conversations.RehydratorTest do
       conv = resumable("idle")
 
       conv.sandbox
-      |> Ecto.Changeset.change(
+      |> put_lease(
         transition: unquote(transition),
         lease_epoch: 1,
         lease_node: nil
       )
-      |> Repo.update!()
 
       assert sweep() == 1
       assert_received {:worker_start, args}
@@ -83,12 +82,11 @@ defmodule Fountain.Conversations.RehydratorTest do
     conv = resumable("idle")
 
     conv.sandbox
-    |> Ecto.Changeset.change(
+    |> put_lease(
       transition: "resuming",
       lease_epoch: 1,
       lease_node: dead_lease_holder()
     )
-    |> Repo.update!()
 
     Fountain.Machines.Lease.sweep_boot()
     log = ExUnit.CaptureLog.capture_log(fn -> assert sweep() == 0 end)
@@ -119,13 +117,12 @@ defmodule Fountain.Conversations.RehydratorTest do
     conv = resumable("idle")
 
     conv.sandbox
-    |> Ecto.Changeset.change(
+    |> put_lease(
       transition: "destroying",
       transition_reason: "terminated",
       lease_epoch: 1,
       lease_node: nil
     )
-    |> Repo.update!()
 
     # `reject` on the registration door, because the door refuses this row too
     # (rule 16's second door) and both refusals log the same word — so without
@@ -152,8 +149,7 @@ defmodule Fountain.Conversations.RehydratorTest do
 
     stub(Fountain.RuntimeDispatch, :for_agent, fn arg ->
       conv.sandbox
-      |> Ecto.Changeset.change(transition: "destroying", transition_reason: "terminated")
-      |> Repo.update!()
+      |> put_lease(transition: "destroying", transition_reason: "terminated")
 
       Mimic.call_original(Fountain.RuntimeDispatch, :for_agent, [arg])
     end)
@@ -178,8 +174,7 @@ defmodule Fountain.Conversations.RehydratorTest do
 
     stub(Fountain.RuntimeDispatch, :for_agent, fn c ->
       Repo.get!(Fountain.Conversations.Sandbox, conv.sandbox_id)
-      |> Ecto.Changeset.change(held())
-      |> Repo.update!()
+      |> put_lease(held())
 
       Mimic.call_original(Fountain.RuntimeDispatch, :for_agent, [c])
     end)
@@ -194,8 +189,7 @@ defmodule Fountain.Conversations.RehydratorTest do
     conv = resumable("idle")
 
     conv.sandbox
-    |> Ecto.Changeset.change(held(:dead))
-    |> Repo.update!()
+    |> put_lease(held(:dead))
 
     assert sweep() == 1
     assert_received {:worker_start, args}

@@ -71,8 +71,7 @@ defmodule Fountain.Conversations.TeardownFenceTest do
     # newer reason — and the event is recorded. The machine never stops being
     # fenced along the way. A second forced fence is then a repeat.
     ctx.home
-    |> Ecto.Changeset.change(transition: "destroying", transition_reason: "reset")
-    |> Repo.update!()
+    |> put_lease(transition: "destroying", transition_reason: "reset")
 
     reject(Managoat.Sandbox.Sprites, :destroy, 1)
 

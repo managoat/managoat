@@ -1,13 +1,23 @@
 defmodule Fountain.Machines.Lease do
   @moduledoc """
-  The durable half of a machine's ownership (ADR 0058, reduced by ADR 0072).
+  The durable half of a machine's ownership (ADR 0058, reduced by ADR 0072,
+  keyed by workspace by ADR 0097).
 
-  A lease on the `sandboxes` row says which process is operating on the
-  machine. `lease_epoch` is a monotonic integer that is never reused; a
-  claimant takes the next one under the per-sandbox advisory lock, and every
-  write the holder then makes is a compare-and-set on that epoch. A write from
-  a superseded epoch matches zero rows and tells its caller `:stale`, which is
-  how an operation that lost the machine makes no visible change.
+  **The lease is on the workspace.** A sandbox is one machine; its workspace
+  is what owns it (ADR 0097), so the lease that says which process is
+  operating on the machine is on the `workspaces` row: `lease_epoch`,
+  `lease_node`, `transition` and `transition_reason`. Every function here
+  still takes the sandbox's id, because every caller is about one machine,
+  and finds the workspace through `sandboxes.workspace_id`. Today every
+  workspace is implicit and has one sandbox, so this is the lease 0058
+  describes, on a different row.
+
+  `lease_epoch` is a monotonic integer that is never reused; a claimant takes
+  the next one under the machine's advisory lock (keyed by the workspace,
+  `Fountain.Conversations.sandbox_lock_key/1`), and every write the holder
+  then makes is a compare-and-set on that epoch. A write from a superseded
+  epoch matches nothing and tells its caller `:stale`, which is how an
+  operation that lost the machine makes no visible change.
 
   **The holder is a process of this boot.** `lease_node` names it as
   `"<boot id>/<pid>"`: `boot_id/0` is drawn once when the application starts,
@@ -18,11 +28,6 @@ defmodule Fountain.Machines.Lease do
   `sweep_boot/0` clears them all before anything else runs. A holder that
   dies mid-operation stops holding at the moment it dies: there is no TTL to
   wait out, no renewal to keep it alive and no clock to read.
-
-  That is why the `lease_until` column is gone. Until ADR 0072 the lease was
-  a deadline on the database's clock, renewed by `Machines.Renewal` while an
-  operation ran and taken over early from a holder on a disconnected node.
-  All of that existed because two BEAMs could hold leases at once.
 
   What did not depend on the cluster stays. A provision runs in a
   `ConversationServer` while a park or a destroy runs in the machine's owner,
@@ -40,9 +45,8 @@ defmodule Fountain.Machines.Lease do
   inside an enclosing one (`{:error, :transaction_open}`) unless the caller says
   the nesting is deliberate — one caller does, and `cas_update/4`'s `nest:`
   option is where that is argued. Nesting would join the caller's transaction
-  through a savepoint and hold a transaction-scoped advisory lock until the
-  outer commit. Provider I/O happens in the owner, between these calls, never
-  inside one.
+  and hold a transaction-scoped advisory lock until the outer commit. Provider
+  I/O happens in the owner, between these calls, never inside one.
 
   Nothing user-facing happens here, so nothing here is audited: a lease is
   control-plane bookkeeping, and the events an operation owes — `sandbox.destroyed`
@@ -51,29 +55,42 @@ defmodule Fountain.Machines.Lease do
   The write half has four callers, and they are the four protocols: `Destroy`,
   `Park`, `Resume` and `Provision`. Each claims a lease around one operation,
   stamps the transition, does its provider I/O outside every lock, finalizes
-  with `cas_update/3` and releases.
+  with `cas_update/3` and releases. `put_transition!/3` is the write the two
+  lock-holding doors outside them make: the teardown fence and registration.
 
   The read half is `live?/1`, through `Machines.Machine.busy?/1` for readers
-  outside this namespace.
+  outside this namespace, and the machine as a `Sandbox` struct whose four
+  lease fields are its workspace's: `get/1`, `machines/0` for a reader that
+  filters, and `lock_machine/2` for one that reads under the lock.
 
-  ## Written twice (ADR 0097, step 3a)
+  ## Locks
 
-  The lease is moving to the sandbox's workspace. In this release the columns
-  on `sandboxes` are still the ones every function here reads, and every write
-  of them is followed, in the same transaction, by `copy_to_workspace/1`,
-  which copies all four onto the sandbox's workspace. So the two always agree
-  at a commit, and step 3b can make the workspace the source of truth with a
-  release that rolls back onto this one cleanly. The epoch is copied as the
-  greater of the two, so the workspace's never goes backwards either.
+  The order is always **the advisory lock, then the workspace's row, then the
+  sandbox's row**. `cas_update/4` takes no advisory lock and locks the
+  workspace's row before the sandbox's, and every locked reader
+  (`lock_machine/2`) does the same, so a compare-and-set and a fence, a
+  registration or a turn admission cannot deadlock on the two rows.
 
-  Only the workspace's **current** sandbox is copied: its live one, or, when
-  it has none, the sandbox written (with several retired ones and no live
-  one, which no release yet makes, which of them the boot sweep copies is
-  not defined). Today a workspace has one sandbox, so that
-  is every write; a later release that rebuilds a lost machine in the same
-  workspace leaves a retired sandbox beside a live one, and a write to the
-  retired row (a release after a destroy, say) must not overwrite the live
-  machine's lease if this release ever runs against such a workspace.
+  ## Written twice (ADR 0097, step 3)
+
+  Until the release after this one drops them, the sandbox keeps its own four
+  columns, and every write here copies the workspace's onto the workspace's
+  live sandbox in the same transaction (and onto the sandbox a write is
+  addressed to). Nothing in this release reads them. They are there so that a
+  rollback to the release before, which reads only the sandbox's, finds the
+  machine as this one left it. `Fountain.Workspaces._unsafe_reconcile_live/0`
+  carries the other way at boot, for the stamps such a release writes.
+
+  ## A sandbox with no workspace
+
+  Every live sandbox has one: every sandbox is born with one, and the boot
+  sweep gives one to any that a release before ADR 0097 made. A sandbox
+  retired before ADR 0097 has none, and nothing owns it: `claim/2` answers
+  `{:error, :no_workspace}`, and its four fields are read from its own row,
+  as before ADR 0097, so a stamp a fence writes there (`put_transition!/4`)
+  is still seen by every reader. The protocols answer such a row as the
+  terminal row it is (`unowned/1`) and refuse one that is somehow live as
+  busy: only a failed boot reconcile leaves one, until the next boot.
   """
 
   import Ecto.Query
@@ -85,7 +102,7 @@ defmodule Fountain.Machines.Lease do
 
   require Logger
 
-  @typedoc "A lease generation. Monotonic per sandbox; never reused."
+  @typedoc "A lease generation. Monotonic per workspace; never reused."
   @type epoch :: non_neg_integer()
 
   @typedoc "Why a claim was refused: a live process of this boot holds the lease."
@@ -94,6 +111,25 @@ defmodule Fountain.Machines.Lease do
   @boot_key {__MODULE__, :boot_id}
 
   @destroying "destroying"
+
+  # The boot sweep's first statement: a stamp a release before ADR 0097 step
+  # 3b wrote on a live sandbox's own row only (it read and wrote no other),
+  # carried onto the workspace before anything here reads the workspace's.
+  # Under this release the two agree at every commit, so on a deployment that
+  # never rolled back it writes nothing. The epoch never goes backwards, so no
+  # epoch that release handed out is handed out again.
+  @carry_sql """
+  UPDATE workspaces w
+     SET lease_epoch = GREATEST(w.lease_epoch, s.lease_epoch),
+         transition = s.transition,
+         transition_reason = s.transition_reason
+    FROM sandboxes s
+   WHERE s.workspace_id = w.id
+     AND s.status NOT IN ('terminated', 'failed')
+     AND (w.transition IS DISTINCT FROM s.transition
+          OR w.transition_reason IS DISTINCT FROM s.transition_reason
+          OR w.lease_epoch < s.lease_epoch)
+  """
 
   # The only columns a machine's owner may write through `cas_update/3`.
   # `lease_*` are absent on purpose — a lease changes hands through the
@@ -106,14 +142,14 @@ defmodule Fountain.Machines.Lease do
   # has to be invisible if the operation has been superseded, for the same
   # reason the finalize does.
   #
-  # `applied_skills` joined them in stage 7b and left with config homes (ADR
-  # 0097 step 1): the record of a conversation's skills is the conversation's
-  # (`Fountain.Conversations.Skills`), because the skills are in its own
-  # config home rather than in a directory of the machine's.
   @writable ~w(status transition transition_reason terminated_at last_resumed_at provider_meta)a
 
+  # The two of them that live on the workspace (ADR 0097). The rest are the
+  # machine's own and stay on the sandbox.
+  @workspace_fields [:transition, :transition_reason]
+
   # Where a sandbox stops. Kept in step with `@terminal_statuses` in
-  # `Fountain.Conversations`, whose `prevent_sandbox_revival/1` this mirrors.
+  # `Fountain.Conversations`.
   @terminal_statuses ~w(terminated failed)
 
   @doc """
@@ -150,10 +186,11 @@ defmodule Fountain.Machines.Lease do
   Is somebody holding this machine right now?
 
   **The one definition, for readers inside this namespace and out.** Takes a
-  `Sandbox`, or any map carrying `:lease_node`, so a query may `select` the
-  one column rather than the row. Live means the holder was named in this boot
-  and its process is alive (ADR 0072). A holder from another boot, a malformed
-  one and `nil` are all not live.
+  `Sandbox` read through this module (`get/1`, `machines/0`,
+  `lock_machine/2`), whose `lease_node` is its workspace's, or any map
+  carrying `:lease_node`, so a query may `select` the one column. Live means
+  the holder was named in this boot and its process is alive (ADR 0072). A
+  holder from another boot, a malformed one and `nil` are all not live.
   """
   @spec live?(Sandbox.t() | map()) :: boolean()
   def live?(%{lease_node: holder}) when is_binary(holder) do
@@ -192,9 +229,135 @@ defmodule Fountain.Machines.Lease do
   @spec boot_prefix() :: String.t()
   def boot_prefix, do: boot_id() <> "/"
 
+  # ── reading the machine ───────────────────────────────────────────────────
+
+  @doc """
+  Every sandbox, each with its workspace's lease in its four lease fields.
+
+  The query every reader of a machine's lease or transition starts from. Its
+  first binding is the sandbox and its second, named `:workspace`, the
+  workspace (`NULL` columns for a sandbox with none), so a caller can add
+  `where: [s, w] ...` or `where: as(:workspace).transition == ...`. The select
+  replaces the sandbox's own copies of the four fields with the workspace's;
+  a sandbox with no workspace keeps its own.
+  """
+  @spec machines() :: Ecto.Query.t()
+  def machines do
+    from s in Sandbox,
+      left_join: w in Workspace,
+      as: :workspace,
+      on: w.id == s.workspace_id,
+      select: %{
+        s
+        | lease_epoch:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_epoch, w.lease_epoch),
+          lease_node:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_node, w.lease_node),
+          transition:
+            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition),
+          transition_reason:
+            fragment(
+              "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+              w.id,
+              s.transition_reason,
+              w.transition_reason
+            )
+      }
+  end
+
+  @doc "One sandbox as `machines/0` reads it, or `nil`."
+  @spec get(Ecto.UUID.t()) :: Sandbox.t() | nil
+  def get(sandbox_id) when is_binary(sandbox_id),
+    do: Repo.one(from s in machines(), where: s.id == ^sandbox_id)
+
+  @doc """
+  The sandbox, read under row locks by a caller that holds the machine's
+  advisory lock: its workspace's row first, then its own, so this can never
+  deadlock against `cas_update/4` (see the moduledoc). `mode` is `:update`
+  or `:share`. Returns the struct as `machines/0` reads it, or `nil`.
+
+  Runs inside the caller's transaction; that is the point of it.
+  """
+  @spec lock_machine(Ecto.UUID.t(), :update | :share) :: Sandbox.t() | nil
+  def lock_machine(sandbox_id, mode) when is_binary(sandbox_id) and mode in [:update, :share] do
+    case workspace_id_of(sandbox_id) do
+      :not_found ->
+        nil
+
+      workspace_id ->
+        workspace = workspace_id && locked(Workspace, workspace_id, mode)
+
+        case locked(Sandbox, sandbox_id, mode) do
+          nil -> nil
+          %Sandbox{} = sandbox -> overlay(sandbox, workspace)
+        end
+    end
+  end
+
+  defp locked(schema, id, :update),
+    do: Repo.one(from r in schema, where: r.id == ^id, lock: "FOR UPDATE")
+
+  defp locked(schema, id, :share),
+    do: Repo.one(from r in schema, where: r.id == ^id, lock: "FOR SHARE")
+
+  # The workspace a sandbox belongs to: its id, `nil` for a sandbox with none,
+  # `:not_found` for no sandbox. Read without a lock, and safe to: a live
+  # sandbox's `workspace_id` is written when the row is inserted (or by the
+  # boot sweep, before anything can claim), and nilified only by deleting its
+  # workspace, which nothing does while the workspace has a live sandbox
+  # (`Workspaces.delete_for_account/1`).
+  defp workspace_id_of(sandbox_id) do
+    case Repo.one(from s in Sandbox, where: s.id == ^sandbox_id, select: {s.workspace_id}) do
+      nil -> :not_found
+      {workspace_id} -> workspace_id
+    end
+  end
+
+  defp overlay(%Sandbox{} = sandbox, %Workspace{} = w) do
+    %{
+      sandbox
+      | lease_epoch: w.lease_epoch,
+        lease_node: w.lease_node,
+        transition: w.transition,
+        transition_reason: w.transition_reason
+    }
+  end
+
+  # No workspace: the sandbox's own columns are its only record, as they were
+  # before ADR 0097 (see the moduledoc).
+  defp overlay(%Sandbox{} = sandbox, nil), do: sandbox
+
+  @doc """
+  What a protocol makes of a sandbox `claim/2` refused as
+  `{:error, :no_workspace}`: `{:terminal, sandbox}` for a retired row, which
+  it answers as the terminal row it is, with no lease taken; `:live` for a
+  live one, which nothing can own until the next boot gives it a workspace
+  and which it refuses as busy; `:not_found` for a row that went.
+  """
+  @spec unowned(Ecto.UUID.t()) :: {:terminal, Sandbox.t()} | :live | :not_found
+  def unowned(sandbox_id) when is_binary(sandbox_id) do
+    case get(sandbox_id) do
+      nil ->
+        :not_found
+
+      %Sandbox{status: status} = sandbox when status in @terminal_statuses ->
+        {:terminal, sandbox}
+
+      %Sandbox{} ->
+        Logger.warning(
+          "machine #{sandbox_id}: a live sandbox with no workspace has no owner; " <>
+            "the next boot gives it one (Workspaces._unsafe_reconcile_live/0)"
+        )
+
+        :live
+    end
+  end
+
+  # ── the boot sweep ────────────────────────────────────────────────────────
+
   @doc """
   Clear every lease and every abandoned operation stamp left by an earlier
-  boot (ADR 0072).
+  boot (ADR 0072), on every workspace.
 
   Runs once at boot, before Oban, the endpoint and the rehydrator start, so
   nothing in this boot has claimed anything yet; the `WHERE` leaves this
@@ -205,63 +368,80 @@ defmodule Fountain.Machines.Lease do
   has not proved readiness, even when the row was already `ready` before the
   provider put it to sleep. Registration refuses that stamp too (#2560).
 
-  Returns the number of rows it cleared.
+  First, a stamp a release before this one wrote on a live sandbox's row only
+  is carried onto its workspace (see `@carry_sql`), so a rollback and a roll
+  forward lose nothing even when `Workspaces._unsafe_reconcile_live/0` failed
+  this boot. A live sandbox with no workspace, which only that failure
+  leaves, has its own columns swept the same way. Then the workspaces' columns
+  are copied onto their live sandboxes where they differ ("Written twice"),
+  all in one transaction.
+
+  Returns the number of workspaces it cleared.
   """
   @spec sweep_boot() :: non_neg_integer()
   def sweep_boot do
     prefix = boot_prefix() <> "%"
 
-    {:ok, count} = Repo.transaction(fn -> sweep_rows(prefix) end)
+    # The reconcile's ten seconds: a stray session holding a row makes the boot
+    # log a failure rather than wedge.
+    {:ok, count} =
+      Repo.transaction(fn ->
+        Repo.query!("SET LOCAL lock_timeout = '10s'")
+        sweep_rows(prefix)
+      end)
 
     if count > 0, do: Logger.info("machine leases: cleared #{count} left by an earlier boot")
     count
   end
 
-  # The sweep and its copy onto the workspaces, in one transaction like every
-  # other write of these columns.
   defp sweep_rows(prefix) do
-    {count, _} =
-      Repo.update_all(
-        from(s in Sandbox,
-          where:
-            (not is_nil(s.lease_node) and not like(s.lease_node, ^prefix)) or
-              (not is_nil(s.transition) and s.transition not in ["destroying", "resuming"] and
-                 (is_nil(s.lease_node) or not like(s.lease_node, ^prefix))),
-          update: [
-            set: [
-              lease_node: nil,
-              transition:
-                fragment(
-                  "CASE WHEN ? IN ('destroying', 'resuming') THEN ? ELSE NULL END",
-                  s.transition,
-                  s.transition
-                ),
-              transition_reason:
-                fragment(
-                  "CASE WHEN ? IN ('destroying', 'resuming') THEN ? ELSE NULL END",
-                  s.transition,
-                  s.transition_reason
-                )
-            ]
-          ]
-        ),
-        []
-      )
-
-    _ = copy_current_to_workspaces()
+    _ = Repo.query!(@carry_sql)
+    {count, _} = Repo.update_all(swept(Workspace, prefix), [])
+    _ = Repo.update_all(from(s in swept(Sandbox, prefix), where: is_nil(s.workspace_id)), [])
+    _ = copy_to_sandboxes(:all, nil)
     count
   end
 
-  @doc """
-  Take the lease on `sandbox_id` for the calling process.
+  defp swept(schema, prefix) do
+    from(r in schema,
+      where:
+        (not is_nil(r.lease_node) and not like(r.lease_node, ^prefix)) or
+          (not is_nil(r.transition) and r.transition not in ["destroying", "resuming"] and
+             (is_nil(r.lease_node) or not like(r.lease_node, ^prefix))),
+      update: [
+        set: [
+          lease_node: nil,
+          transition:
+            fragment(
+              "CASE WHEN ? IN ('destroying', 'resuming') THEN ? ELSE NULL END",
+              r.transition,
+              r.transition
+            ),
+          transition_reason:
+            fragment(
+              "CASE WHEN ? IN ('destroying', 'resuming') THEN ? ELSE NULL END",
+              r.transition,
+              r.transition_reason
+            )
+        ]
+      ]
+    )
+  end
 
-  Serializes on the per-sandbox advisory lock, re-reads the row `FOR UPDATE`,
-  and refuses with `{:error, {:held, holder}}` when a live process holds it.
-  The verdict is made on the locked read, never on a struct the caller
-  brought: a pre-lock reading is stale by construction.
+  # ── the lease ─────────────────────────────────────────────────────────────
+
+  @doc """
+  Take the lease on the machine behind `sandbox_id` for the calling process:
+  on its workspace's row.
+
+  Serializes on the machine's advisory lock, re-reads the workspace
+  `FOR UPDATE`, and refuses with `{:error, {:held, holder}}` when a live
+  process holds it. The verdict is made on the locked read, never on a struct
+  the caller brought: a pre-lock reading is stale by construction.
 
   On success the epoch advances by exactly one and is returned. The holder
-  quotes it on every subsequent write.
+  quotes it on every subsequent write. `{:error, :no_workspace}` is a sandbox
+  with no workspace, which nothing owns (see the moduledoc and `unowned/1`).
 
   `holder: pid` names a different holder than the caller; only tests do.
   `supersede: pid` takes the lease from that one holder even while it is
@@ -272,7 +452,13 @@ defmodule Fountain.Machines.Lease do
   @spec claim(Ecto.UUID.t(), keyword()) ::
           {:ok, epoch()}
           | {:error,
-             :not_found | :lost | :transaction_open | {:invalid, :sandbox_id} | held() | term()}
+             :not_found
+             | :no_workspace
+             | :lost
+             | :transaction_open
+             | {:invalid, :sandbox_id}
+             | held()
+             | term()}
   def claim(sandbox_id, opts \\ []) when is_binary(sandbox_id) and is_list(opts) do
     holder = opts |> Keyword.get(:holder, self()) |> holder()
     guarded(sandbox_id, fn -> do_claim(sandbox_id, holder, opts) end)
@@ -281,37 +467,51 @@ defmodule Fountain.Machines.Lease do
   @doc """
   Give the lease up.
 
-  Clears `lease_node` and keeps `lease_epoch` where it is:
-  epochs are monotonic and never reused, so the next claimant still gets a
-  strictly higher one and this holder's outstanding writes still fail. Guarded
-  on the holder column too, so releasing twice is `{:error, :lost}` rather
-  than a second success — after the first, this caller is no longer the holder.
+  Clears `lease_node` and keeps `lease_epoch` where it is: epochs are
+  monotonic and never reused, so the next claimant still gets a strictly
+  higher one and this holder's outstanding writes still fail. Guarded on the
+  holder column too, so releasing twice is `{:error, :lost}` rather than a
+  second success — after the first, this caller is no longer the holder.
   """
   @spec release(Ecto.UUID.t(), epoch()) ::
           :ok | {:error, :lost | :transaction_open | {:invalid, :sandbox_id} | term()}
   def release(sandbox_id, epoch) when is_binary(sandbox_id) and is_integer(epoch) do
     guarded(sandbox_id, fn ->
-      if taken_epoch?(epoch) do
-        written_twice(sandbox_id, fn ->
-          case Repo.update_all(held_by(sandbox_id, epoch), set: [lease_node: nil]) do
-            {1, _} -> {:copy, :ok}
-            {0, _} -> {:error, :lost}
-          end
-        end)
-      else
-        {:error, :lost}
-      end
+      if taken_epoch?(epoch), do: do_release(sandbox_id, epoch), else: {:error, :lost}
     end)
+  end
+
+  defp do_release(sandbox_id, epoch) do
+    {:ok, result} =
+      Repo.transaction(fn ->
+        case Repo.update_all(held_by(sandbox_id, epoch), set: [lease_node: nil]) do
+          {1, [workspace_id]} ->
+            _ = copy_to_sandboxes(workspace_id, sandbox_id)
+            :ok
+
+          {0, _} ->
+            {:error, :lost}
+        end
+      end)
+
+    result
   end
 
   @doc """
   Write machine state, if and only if `epoch` is still the lease.
 
-  The one write primitive the owner uses. One `update_all` matching on the
-  epoch *and the holder columns*, returning the row it wrote; zero rows is
-  `:stale`, which is the whole protocol in one word — a superseded owner
-  changes nothing and learns so. A lease that was released, or an epoch no
-  claim ever handed out, is `:stale` for the same reason: neither is held.
+  The one write primitive the owner uses. In one short transaction: the
+  workspace's row is locked where it holds this epoch *and a holder*, then
+  the sandbox's row; nothing to lock is `:stale`, which is the whole protocol
+  in one word — a superseded owner changes nothing and learns so. A lease that
+  was released, or an epoch no claim ever handed out, is `:stale` for the same
+  reason: neither is held. The answer is the sandbox as `machines/0` reads
+  it, after the write.
+
+  `transition` and `transition_reason` are written to the workspace and
+  everything else to the sandbox, with the copy the moduledoc describes.
+  `updated_at` moves on the sandbox with every write, and not with a claim or
+  a release, so it keeps meaning "the machine changed".
 
   `attrs` is a plain map or a keyword list — **a struct is refused**
   (`{:error, {:invalid, :attrs}}`) even though it is a map, because nothing an
@@ -319,40 +519,34 @@ defmodule Fountain.Machines.Lease do
   #{inspect(@writable)}, with atom keys, each at most
   once. `status` must be a member of `Sandbox.statuses/0` and `transition` of
   `Sandbox.transitions/0` (`nil` clears it, which is how a transition
-  finalizes); anything else is `{:error, {:invalid, field}}` and the row is
-  untouched. That is **membership, not legality** — whether a particular
-  transition is allowed from a particular state belongs to `Machines.Policy`
-  in a later stage, and nothing here decides it. The one exception is
-  retirement: a terminal row is never written back to a live status, the same
-  refusal `Conversations.update_sandbox/2` made before stage 9b deleted it,
-  reported as `{:error, :retired}` so the owner
-  does not mistake it for a takeover.
+  finalizes); anything else is `{:error, {:invalid, field}}` and nothing is
+  written. That is **membership, not legality**: whether a transition is
+  allowed from a state is the protocols' to decide. The one exception is
+  retirement: a terminal sandbox is never written back to a live status,
+  reported as `{:error, :retired}` so the owner does not mistake it for a
+  takeover.
 
   **`:stale` beats `:retired`.** A superseded epoch is `:stale` even on a
-  retired row; `:retired` means you *are* the holder and the row is terminal. A
-  caller that no longer owns the machine has no business being told the row's
-  status, and the diagnosis reads through the same held-lease predicate the
-  write did, so it falls to `:stale` before the status is ever consulted.
+  retired row; `:retired` means you *are* the holder and the row is terminal.
+  A caller that no longer owns the machine has no business being told the
+  row's status.
 
-  **`destroying` survives a write that would clear it** (stage 9a). On a row
-  that is not yet terminal, a write naming `transition` as anything but
-  `"destroying"` leaves the stamp and its reason exactly where they are, and
-  returns the row saying so — the caller's other columns land, the intent does
-  not move. That is what makes `destroying` the one *durable* transition: every
-  other stamp is an abandoned operation a later owner clears, and this one is a
-  request that outlives the owner that was serving it. Three writes pass
-  through: a re-stamp of `destroying` itself, a write that retires the row
-  (which is the destroy finishing), and any write to a row that is *already*
-  terminal, where the stamp is leftovers rather than intent. See
-  `preserve_destroying/2`.
+  **`destroying` survives a write that would clear it** (stage 9a). On a
+  sandbox that is not yet terminal, a write naming `transition` as anything
+  but `"destroying"` leaves the stamp and its reason exactly where they are,
+  and returns the row saying so — the caller's other columns land, the intent
+  does not move. That is what makes `destroying` the one *durable*
+  transition: every other stamp is an abandoned operation a later owner
+  clears, and this one is a request that outlives the owner that was serving
+  it. See `preserving?/3` for the three writes that pass.
 
   A write that moves the status to `terminated` or `failed` stamps
-  `terminated_at` when the row has none, as `Conversations.stamp_terminated_at/1`
-  did until stage 9b deleted it — see `stamp_terminated_at/2` below for why
-  that matters and where it is deliberately narrower.
+  `terminated_at` when the row has none.
 
-  Deliberately takes no advisory lock: a single guarded `update_all` is already
-  atomic, and the serialization this needs was done when the epoch was taken.
+  **`refuse_fenced: true`** additionally requires no `destroying` stamp and
+  answers `{:error, :fenced}` when there is one; see `refuse_fenced/2`.
+  Refusals are checked in this order, so the reason names the first: not the
+  holder, then retired, then fenced.
 
   **`nest: true` permits an enclosing transaction**, which every other function
   here refuses, and there are two callers. `Machines.Resume`'s admission runs
@@ -360,30 +554,25 @@ defmodule Fountain.Machines.Lease do
   `resuming` stamp and the quota count that authorised it commit together.
   `Machines.Provision.fail/2` runs it beside its caller's own write, so that
   `Launch.fail_initial_start/2` fails a conversation and its machine in one
-  commit or neither — which `main` did under the per-sandbox advisory lock, and
-  which the machine's row leaving that lock's reach would otherwise have cost. The
-  moduledoc's reason for the guard does not reach this function — it is about
-  holding `pg_advisory_xact_lock(4316, …)` until an outer commit, and this takes
-  no advisory lock — and the *other* thing nesting does, joining the caller's
-  transaction so a rollback undoes the write, is exactly what a reservation
-  wants: a refused quota must leave no stamp behind. It is opt-in rather than
-  the default because everywhere else an enclosing transaction is the mistake
-  the guard exists to catch, and the option makes a reviewer look at the one
-  place it is not.
+  commit or neither. The moduledoc's reason for the guard does not reach this
+  function — it is about holding the advisory lock until an outer commit, and
+  this takes none — and the *other* thing nesting does, joining the caller's
+  transaction so a rollback undoes the write, is exactly what those callers
+  want. It is opt-in because everywhere else an enclosing transaction is the
+  mistake the guard exists to catch.
 
-  Two consequences a caller passing it owns. The diagnosis of a zero-row write
-  runs a second read *inside* that transaction, so it sees the transaction's own
-  uncommitted rows — which is right here, since the only writer of this row in
-  this transaction is this call. And an error out of the nested `Repo.update_all`
-  aborts the enclosing transaction, so the caller must treat any `{:error, _}`
-  from here as fatal to the whole reservation rather than something to continue
-  from; `Resume` does, by returning it and letting `with_sandbox_reservation/2`
-  roll back.
+  Two consequences a caller passing it owns. The two row locks this takes are
+  held to the enclosing commit; in `Resume`'s case that is the quota
+  reservation's, which took 4315 first, and nothing takes 4315 after either
+  row. And an error out of a nested statement aborts the enclosing
+  transaction, so the caller must treat a `{:database, _}` from here as fatal
+  to the whole reservation rather than something to continue from; `Resume`
+  does, by returning it and letting `with_sandbox_reservation/2` roll back.
 
   It does not ask whether the holder is alive: the caller *is* the holder.
-  What the CAS buys is that the moment another claim has happened — after this
-  holder died, or `ProvisionWatchdog` superseded it — the old holder's write is
-  invisible.
+  What the compare-and-set buys is that the moment another claim has happened
+  — after this holder died, or `ProvisionWatchdog` superseded it — the old
+  holder's write is invisible.
   """
   @spec cas_update(Ecto.UUID.t(), epoch(), map() | keyword(), keyword()) ::
           {:ok, Sandbox.t()}
@@ -394,25 +583,8 @@ defmodule Fountain.Machines.Lease do
     guarded(sandbox_id, Keyword.get(opts, :nest, false), fn ->
       if taken_epoch?(epoch) do
         with {:ok, sets} <- cast_attrs(attrs) do
-          # `updated_at` moves with a state change and not with a claim or a
-          # release, so it keeps meaning "the machine changed".
-          sets = Keyword.put(sets, :updated_at, DateTime.utc_now() |> DateTime.truncate(:second))
-
-          {query, sets} =
-            sandbox_id
-            |> held_by(epoch)
-            |> refuse_revival(sets)
-            |> refuse_fenced(Keyword.get(opts, :refuse_fenced, false))
-            |> stamp_terminated_at(sets)
-            |> select([s], s)
-            |> preserve_destroying(sets)
-
-          written_twice(sandbox_id, fn ->
-            case Repo.update_all(query, set: sets) do
-              {1, [sandbox]} -> {:copy, {:ok, sandbox}}
-              {0, _} -> {:error, zero_row_reason(sandbox_id, epoch, opts)}
-            end
-          end)
+          {:ok, result} = Repo.transaction(fn -> locked_cas(sandbox_id, epoch, sets, opts) end)
+          result
         end
       else
         {:error, :stale}
@@ -420,123 +592,283 @@ defmodule Fountain.Machines.Lease do
     end)
   end
 
+  defp locked_cas(sandbox_id, epoch, sets, opts) do
+    with {:ok, workspace} <- held_workspace(sandbox_id, epoch),
+         {:ok, sandbox} <- locked_sandbox(sandbox_id),
+         :ok <- refuse_revival(sandbox, sets),
+         :ok <- refuse_fenced(workspace, Keyword.get(opts, :refuse_fenced, false)) do
+      write(sandbox, workspace, sets)
+    end
+  end
+
+  # The workspace's row, locked, if it still holds `epoch` with a holder. The
+  # epoch *and the holder column*: an epoch-only match makes the lease nobody
+  # took quotable by anybody, and `release/2` keeps the epoch on purpose.
+  defp held_workspace(sandbox_id, epoch) do
+    with workspace_id when is_binary(workspace_id) <- workspace_id_of(sandbox_id),
+         %Workspace{} = workspace <-
+           Repo.one(
+             from w in Workspace,
+               where:
+                 w.id == ^workspace_id and w.lease_epoch == ^epoch and not is_nil(w.lease_node),
+               lock: "FOR UPDATE"
+           ) do
+      {:ok, workspace}
+    else
+      _ -> {:error, :stale}
+    end
+  end
+
+  # Gone between the two reads only if the sandbox was deleted, which nothing
+  # does to a row a lease is held on; answered as the lost machine it is.
+  defp locked_sandbox(sandbox_id) do
+    case locked(Sandbox, sandbox_id, :update) do
+      nil -> {:error, :stale}
+      %Sandbox{} = sandbox -> {:ok, sandbox}
+    end
+  end
+
+  # Holding the lease is not permission to un-retire a row. Terminal-to-terminal
+  # still goes through, and a write that never names a status is not a revival.
+  # The only copy of the rule `Conversations.prevent_sandbox_revival/1` was.
+  defp refuse_revival(%Sandbox{status: status}, sets) do
+    new = Keyword.get(sets, :status)
+
+    if is_binary(new) and new not in @terminal_statuses and status in @terminal_statuses,
+      do: {:error, :retired},
+      else: :ok
+  end
+
+  # **`refuse_fenced: true`** additionally requires **no `destroying` stamp**,
+  # and it is opt-in because everywhere else the fence is not this write's
+  # business. `Destroy` writes a terminal status onto a row it has just fenced,
+  # and `Park`'s finalize is allowed to land on a fence that arrived
+  # mid-operation (stage 6b). What cannot be allowed is a *provision*
+  # finishing `ready` onto a machine somebody asked to be destroyed while it
+  # was being built, which `SandboxReaper.sweep_fenced_teardowns/0` would then
+  # finish underneath a conversation. `Provision.admissible/1` reads the same
+  # stamp, so the two ends of the bracket agree about what a fence means.
+  defp refuse_fenced(%Workspace{transition: @destroying}, true), do: {:error, :fenced}
+  defp refuse_fenced(%Workspace{}, _refuse?), do: :ok
+
+  defp write(%Sandbox{} = sandbox, %Workspace{} = workspace, sets) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+    {workspace_sets, sandbox_sets} = Keyword.split(sets, @workspace_fields)
+    workspace_sets = if preserving?(workspace, sandbox, sets), do: [], else: workspace_sets
+    workspace = written_workspace(workspace, workspace_sets)
+
+    # The copy ("Written twice"), in the statement that writes the machine's
+    # own columns.
+    sets =
+      sandbox_sets
+      |> stamp_terminated_at(sandbox, now)
+      |> Keyword.merge(
+        updated_at: now,
+        lease_epoch: workspace.lease_epoch,
+        lease_node: workspace.lease_node,
+        transition: workspace.transition,
+        transition_reason: workspace.transition_reason
+      )
+
+    {1, [written]} =
+      Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id, select: s), set: sets)
+
+    {:ok, overlay(written, workspace)}
+  end
+
+  defp written_workspace(workspace, []), do: workspace
+
+  defp written_workspace(%Workspace{id: id}, sets) do
+    {1, [written]} =
+      Repo.update_all(from(w in Workspace, where: w.id == ^id, select: w), set: sets)
+
+    written
+  end
+
+  # `destroying` is the one transition a write may not take off a live machine
+  # (ADR 0058 stage 9a). Every other stamp is abandonable: a reader that finds
+  # `parking` or `resuming` with no live lease is looking at an owner that
+  # died, and three sites clear it on sight so the machine can be used again.
+  # `destroying` is the opposite statement — somebody asked for this machine
+  # to go away, and an owner dying halfway through does not withdraw the
+  # request.
+  #
+  # Enforced here rather than only at the callers because the write that would
+  # lose it is not a clearing write at all. `Machines.Park`'s finalize writes
+  # `status: "suspended", transition: nil` on a machine it stamped `parking`,
+  # and a teardown fence committing *during* the suspend — the fence takes the
+  # advisory lock, the park holds only its lease — lands between the stamp and
+  # the finalize. So the park still finalizes (the machine really is suspended
+  # and the row must say so) and the stamp rides through, for the driver to
+  # finish.
+  #
+  # **Three writes deliberately pass.** A write that names `transition:
+  # "destroying"` is a re-stamp, which is how a second destroy records its own
+  # reason. A write that moves the sandbox to a terminal status is the destroy
+  # finishing, and clearing the stamp there is the finalize. And a stamp on a
+  # sandbox that is *already* terminal is leftovers rather than intent, so the
+  # guard reads the sandbox's status as it was before the write.
+  #
+  # When it fires neither of the workspace's two columns is written. A write
+  # that named only the reason never reaches here (it names no `transition`),
+  # and a write that named both keeps both.
+  defp preserving?(%Workspace{transition: @destroying}, %Sandbox{status: status}, sets)
+       when status not in @terminal_statuses do
+    Keyword.has_key?(sets, :transition) and
+      Keyword.get(sets, :transition) != @destroying and
+      Keyword.get(sets, :status) not in @terminal_statuses
+  end
+
+  defp preserving?(_workspace, _sandbox, _sets), do: false
+
+  # Fills `terminated_at` on the way into a terminal status, keeping the row's
+  # own when it has one, and a caller's own when it names one. A write that
+  # never names a status leaves the column alone.
+  defp stamp_terminated_at(sets, %Sandbox{} = sandbox, now) do
+    if Keyword.get(sets, :status) in @terminal_statuses and
+         not Keyword.has_key?(sets, :terminated_at) do
+      Keyword.put(sets, :terminated_at, sandbox.terminated_at || now)
+    else
+      sets
+    end
+  end
+
+  @doc """
+  Set the machine's `transition` and `transition_reason`, for the two writers
+  of them outside the owner: the teardown fence's `destroying` stamp
+  (`Machines.Destroy.stamp_intent!/2`) and registration's clearing of an
+  abandoned one (`Machines.Binding.clear_abandoned_transition/1`).
+
+  Inside the caller's transaction, under the machine's advisory lock and after
+  `lock_machine(sandbox_id, :update)`; that order is the caller's to keep.
+  Written to the workspace and copied onto its live sandbox and this one; a
+  sandbox with no workspace has its own columns written. `touch: true` also
+  moves the sandbox's `updated_at`, which the fence's stamp does:
+  `SandboxReaper.sweep_fenced_teardowns/0` measures its grace from it.
+  Returns how many sandbox rows were written: `0` for one that vanished.
+  """
+  @spec put_transition!(Ecto.UUID.t(), String.t() | nil, String.t() | nil, keyword()) ::
+          non_neg_integer()
+  def put_transition!(sandbox_id, transition, reason, opts \\ []) when is_binary(sandbox_id) do
+    sets = [transition: transition, transition_reason: reason]
+
+    count =
+      case workspace_id_of(sandbox_id) do
+        :not_found ->
+          0
+
+        nil ->
+          {count, _} =
+            Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox_id), set: sets)
+
+          count
+
+        workspace_id ->
+          {1, _} =
+            Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
+
+          copy_to_sandboxes(workspace_id, sandbox_id)
+      end
+
+    if count > 0 and Keyword.get(opts, :touch, false) do
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+      _ = Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox_id), set: [updated_at: now])
+    end
+
+    count
+  end
+
+  # The copy ("Written twice"): the workspace's four columns onto its live
+  # sandbox, and onto `also` whatever its status, which is the sandbox the
+  # write was addressed to. `:all` copies every workspace onto its live
+  # sandbox, for the boot sweep. Returns how many sandboxes it wrote.
+  defp copy_to_sandboxes(workspace_id, also) do
+    query =
+      from s in Sandbox,
+        join: w in Workspace,
+        on: w.id == s.workspace_id,
+        update: [
+          set: [
+            lease_epoch: w.lease_epoch,
+            lease_node: w.lease_node,
+            transition: w.transition,
+            transition_reason: w.transition_reason
+          ]
+        ]
+
+    query =
+      case {workspace_id, also} do
+        # Only the rows that differ: a workspace per launch, and most agree.
+        {:all, _} ->
+          where(
+            query,
+            [s, w],
+            s.status not in @terminal_statuses and
+              (fragment("? IS DISTINCT FROM ?", s.lease_node, w.lease_node) or
+                 fragment("? IS DISTINCT FROM ?", s.transition, w.transition) or
+                 fragment("? IS DISTINCT FROM ?", s.transition_reason, w.transition_reason) or
+                 s.lease_epoch != w.lease_epoch)
+          )
+
+        {id, nil} ->
+          where(query, [s, w], w.id == ^id and s.status not in @terminal_statuses)
+
+        {id, also} ->
+          where(
+            query,
+            [s, w],
+            w.id == ^id and (s.status not in @terminal_statuses or s.id == ^also)
+          )
+      end
+
+    {count, _} = Repo.update_all(query, [])
+    count
+  end
+
   defp do_claim(sandbox_id, holder, opts) do
     superseded = superseded_holder(Keyword.get(opts, :supersede))
 
     Conversations.with_sandbox_lock(sandbox_id, fn ->
-      current =
-        Repo.one(
-          from s in Sandbox,
-            where: s.id == ^sandbox_id,
-            select: %{epoch: s.lease_epoch, lease_node: s.lease_node},
-            lock: "FOR UPDATE"
-        )
-
-      cond do
-        is_nil(current) ->
-          {:error, :not_found}
-
-        live?(current) and current.lease_node != superseded ->
-          {:error, {:held, current.lease_node}}
-
-        true ->
-          epoch = current.epoch + 1
-
-          claimed =
-            from(s in Sandbox, where: s.id == ^sandbox_id and s.lease_epoch == ^current.epoch)
-
-          case Repo.update_all(claimed, set: [lease_epoch: epoch, lease_node: holder]) do
-            {1, _} ->
-              :ok = copy_to_workspace(sandbox_id)
-              log_claim(sandbox_id, holder, epoch, current)
-              {:ok, epoch}
-
-            {0, _} ->
-              {:error, :lost}
-          end
+      case workspace_id_of(sandbox_id) do
+        :not_found -> {:error, :not_found}
+        nil -> {:error, :no_workspace}
+        workspace_id -> claim_workspace(sandbox_id, workspace_id, holder, superseded)
       end
     end)
   end
 
-  @doc """
-  Copy `sandbox_id`'s lease columns onto its workspace (ADR 0097, step 3a).
+  defp claim_workspace(sandbox_id, workspace_id, holder, superseded) do
+    current =
+      Repo.one(
+        from w in Workspace,
+          where: w.id == ^workspace_id,
+          select: %{epoch: w.lease_epoch, lease_node: w.lease_node},
+          lock: "FOR UPDATE"
+      )
 
-  Called in the same transaction as every write of those columns: by this
-  module's own writes, and by the two writers of `transition` outside it,
-  `Machines.Destroy.stamp_intent!/2` (the fence) and
-  `Machines.Binding.clear_abandoned_transition/1` (registration). A sandbox
-  with no workspace copies nothing. Not for any other caller.
-  """
-  @spec copy_to_workspace(Ecto.UUID.t()) :: :ok
-  def copy_to_workspace(sandbox_id) when is_binary(sandbox_id) do
-    {_count, _} =
-      Repo.update_all(from(w in copy_query(), where: as(:sandbox).id == ^sandbox_id), [])
+    cond do
+      is_nil(current) ->
+        {:error, :not_found}
 
-    :ok
-  end
+      live?(current) and current.lease_node != superseded ->
+        {:error, {:held, current.lease_node}}
 
-  # The boot sweep's copy: every workspace's current sandbox onto it, once
-  # `sweep_boot/0` has cleared the sandbox rows, where the two differ (there
-  # is a workspace per launch, and most agree).
-  defp copy_current_to_workspaces do
-    Repo.update_all(
-      from([w, sandbox: s] in copy_query(),
-        where:
-          fragment("? IS DISTINCT FROM ?", w.lease_node, s.lease_node) or
-            fragment("? IS DISTINCT FROM ?", w.transition, s.transition) or
-            fragment("? IS DISTINCT FROM ?", w.transition_reason, s.transition_reason) or
-            w.lease_epoch < s.lease_epoch
-      ),
-      []
-    )
-  end
+      true ->
+        epoch = current.epoch + 1
 
-  # A sandbox's four columns onto its workspace, where it is the workspace's
-  # current sandbox (see the moduledoc): live, or the workspace has no live
-  # one.
-  defp copy_query do
-    from(w in Workspace,
-      join: s in Sandbox,
-      as: :sandbox,
-      on: s.workspace_id == w.id,
-      where:
-        s.status not in @terminal_statuses or
-          not exists(
-            from(o in Sandbox,
-              where:
-                o.workspace_id == parent_as(:sandbox).workspace_id and
-                  o.status not in @terminal_statuses
-            )
-          ),
-      update: [
-        set: [
-          lease_epoch: fragment("GREATEST(?, ?)", w.lease_epoch, s.lease_epoch),
-          lease_node: s.lease_node,
-          transition: s.transition,
-          transition_reason: s.transition_reason
-        ]
-      ]
-    )
-  end
+        claimed =
+          from(w in Workspace, where: w.id == ^workspace_id and w.lease_epoch == ^current.epoch)
 
-  # A write of the sandbox's lease columns and its copy onto the workspace, in
-  # one transaction (joined, when the caller already has one open, which only
-  # `cas_update/4`'s `nest: true` permits). `fun` answers `{:copy, result}`
-  # when it wrote, and anything else when it did not.
-  defp written_twice(sandbox_id, fun) do
-    {:ok, result} =
-      Repo.transaction(fn ->
-        case fun.() do
-          {:copy, result} ->
-            :ok = copy_to_workspace(sandbox_id)
-            result
+        case Repo.update_all(claimed, set: [lease_epoch: epoch, lease_node: holder]) do
+          {1, _} ->
+            _ = copy_to_sandboxes(workspace_id, sandbox_id)
+            log_claim(sandbox_id, holder, epoch, current)
+            {:ok, epoch}
 
-          other ->
-            other
+          {0, _} ->
+            {:error, :lost}
         end
-      end)
-
-    result
+    end
   end
 
   defp superseded_holder(nil), do: nil
@@ -553,206 +885,19 @@ defmodule Fountain.Machines.Lease do
     :ok
   end
 
-  # The epoch *and the holder column*: an epoch-only match makes the lease
-  # nobody took quotable by anybody, and `release/2` keeps the epoch on
-  # purpose. Requiring a holder closes both, and `taken_epoch?/1` refuses 0
-  # before the query.
+  # The workspace of `sandbox_id` where it holds `epoch` with a holder,
+  # selecting its id: `release/2`'s one statement.
   defp held_by(sandbox_id, epoch) do
-    from s in Sandbox,
-      where: s.id == ^sandbox_id and s.lease_epoch == ^epoch and not is_nil(s.lease_node)
+    from w in Workspace,
+      join: s in Sandbox,
+      on: s.workspace_id == w.id,
+      where: s.id == ^sandbox_id and w.lease_epoch == ^epoch and not is_nil(w.lease_node),
+      select: w.id
   end
 
-  # `do_claim/3` hands out 1 first, so anything below it is not an epoch a
+  # `claim/2` hands out 1 first, so anything below it is not an epoch a
   # claim ever produced — it is the column default wearing an epoch's clothes.
   defp taken_epoch?(epoch), do: epoch >= 1
-
-  # Holding the lease is not permission to un-retire a row. Terminal-to-terminal
-  # still goes through, and a write that never names a status is not a revival.
-  # The same rule as `Fountain.Conversations.prevent_sandbox_revival/1`, which
-  # stage 9b deleted with `update_sandbox/2`; this is the only copy now.
-  defp refuse_revival(query, sets) do
-    case Keyword.get(sets, :status) do
-      nil -> query
-      status when status in @terminal_statuses -> query
-      _live -> from(s in query, where: s.status not in @terminal_statuses)
-    end
-  end
-
-  # Fills `terminated_at` on the way into a terminal status, as
-  # `Fountain.Conversations.stamp_terminated_at/1` did for `update_sandbox/2`
-  # until stage 9b deleted both; this is the only copy now. Of the writers of
-  # a terminal status the ones that *fail* a machine never pass a timestamp —
-  # which once left every failed sandbox reading as still running. `cas_update/3` is another such writer.
-  # `COALESCE` in the database rather than a read here keeps the write one
-  # statement and keeps a caller's own timestamp, so this only fills a gap.
-  #
-  # Narrower than the original on purpose. `stamp_terminated_at/1` worked off
-  # `get_field/2`, which falls back to the *stored* status, so it also repaired
-  # a status-free write to an already-terminal row. This fires only on the
-  # transition into a terminal status, which is the case with the hazard; a
-  # write that never names a status leaves the column alone.
-  defp stamp_terminated_at(query, sets) do
-    if Keyword.get(sets, :status) in @terminal_statuses and
-         not Keyword.has_key?(sets, :terminated_at) do
-      now = DateTime.utc_now() |> DateTime.truncate(:second)
-      from(s in query, update: [set: [terminated_at: coalesce(s.terminated_at, ^now)]])
-    else
-      query
-    end
-  end
-
-  # `destroying` is the one transition a write may not take off a live row
-  # (ADR 0058 stage 9a). Every other stamp is abandonable: a reader that finds
-  # `parking` or `resuming` with no live lease is looking at an owner that
-  # died, and three sites clear it on sight so the machine can be used again.
-  # `destroying` is the opposite statement — somebody asked for this machine to
-  # go away, and an owner dying halfway through does not withdraw the request.
-  # Since stage 9b stopped reading `reset_requested_at` and
-  # `teardown_requested_at`, this column is the only record of that intent.
-  #
-  # Enforced here rather than only at the callers because the write that would
-  # lose it is not a clearing write at all. `Machines.Park`'s finalize writes
-  # `status: "suspended", transition: nil` on a row it stamped `parking`, and a
-  # teardown fence committing *during* the suspend — the fence takes the
-  # advisory lock, the park holds only its lease — lands on that row between the
-  # stamp and the finalize. Under 9a the fence columns also caught it; since 9b
-  # nothing but this does. So the park still finalizes (the
-  # machine really is suspended and the row must say so) and the stamp rides
-  # through, for the driver to finish.
-  #
-  # **Three writes deliberately pass.** A write that names `transition:
-  # "destroying"` is a re-stamp, which is how a second destroy records its own
-  # reason. A write that moves the row to a terminal status is the destroy
-  # finishing, and clearing the stamp there is the finalize. And a stamp on a
-  # row that is *already* terminal is not intent but leftovers —
-  # `Destroy.clear_stale_transition/2`'s tidying of a row some older writer
-  # retired without an epoch — so the guard reads the row's status, not only
-  # the write's.
-  #
-  # The columns leave `sets` when it fires, because Ecto raises on a field set
-  # twice; `stamp_terminated_at/2` avoids the same collision by checking the
-  # caller did not name the column at all.
-  defp preserve_destroying(query, sets) do
-    if preserving?(sets) do
-      query =
-        from(s in query,
-          update: [
-            set: [
-              transition:
-                fragment(
-                  "CASE WHEN ? = ? AND ? NOT IN ('terminated', 'failed') THEN ? ELSE ? END",
-                  s.transition,
-                  ^@destroying,
-                  s.status,
-                  s.transition,
-                  type(^Keyword.get(sets, :transition), :string)
-                )
-            ]
-          ]
-        )
-
-      {preserve_reason(query, sets), Keyword.drop(sets, [:transition, :transition_reason])}
-    else
-      {query, sets}
-    end
-  end
-
-  # **Only when the caller named it.** A write that names `transition` alone —
-  # `Resume.stamp/2` is the one today — used to leave `transition_reason`
-  # untouched, because `update_all` writes the columns it is given and no
-  # others. The first draft of `preserve_destroying/2` moved *both* columns into
-  # `CASE` fragments unconditionally, so the reason's `ELSE` branch was a `nil`
-  # nobody had asked for: a stamp that named one column silently erased the
-  # other (protocol review, promoted to a blocker). The guard is the caller's
-  # own key, so this preserves a stamp without inventing a write.
-  defp preserve_reason(query, sets) do
-    if Keyword.has_key?(sets, :transition_reason) do
-      from(s in query,
-        update: [
-          set: [
-            transition_reason:
-              fragment(
-                "CASE WHEN ? = ? AND ? NOT IN ('terminated', 'failed') THEN ? ELSE ? END",
-                s.transition,
-                ^@destroying,
-                s.status,
-                s.transition_reason,
-                type(^Keyword.get(sets, :transition_reason), :string)
-              )
-          ]
-        ]
-      )
-    else
-      query
-    end
-  end
-
-  # A write is at risk of losing the stamp when it names `transition` as
-  # something other than `destroying` and does not retire the row. A write that
-  # names neither column touches neither, and a write that names only
-  # `transition_reason` cannot orphan a stamp it is not moving.
-  defp preserving?(sets) do
-    Keyword.has_key?(sets, :transition) and
-      Keyword.get(sets, :transition) != @destroying and
-      Keyword.get(sets, :status) not in @terminal_statuses
-  end
-
-  # **`refuse_fenced: true`** additionally requires **no `destroying` stamp** —
-  # the fence, since stage 9b stopped reading the two columns 9a stamped beside
-  # it — and it is opt-in for the same reason `nest:` is: everywhere else the
-  # fence is not this write's business.
-  #
-  # `Destroy` writes a terminal status onto a row it has just fenced, and
-  # `Park`'s finalize is allowed to land on a fence that arrived mid-operation
-  # (stage 6b decided that). What cannot be allowed is the third case, and it
-  # arrived with stage 7b: a *provision* finishing onto a row somebody asked to
-  # be reset while the machine was being built. `Conversations.update_sandbox/2`
-  # refused exactly that — it rolled back with `:sandbox_reset_pending` unless the
-  # write was terminal — and it was the only thing refusing it, so a bracket that
-  # wrote `ready` through `cas_update/4` without this would have handed a
-  # conversation a machine the reset reconciler was about to delete.
-  #
-  # **Either fence, where `update_sandbox/2` once read only the reset one**
-  # (7b round 1, behaviour review). A `ready` finalize landing on a
-  # *teardown*-fenced row hands a conversation a machine somebody has asked to
-  # be destroyed, which `SandboxReaper.sweep_fenced_teardowns/0` then finishes
-  # underneath it. Both fences stamp `destroying`, so one condition refuses
-  # both, and `Provision.admissible/1` reads the same one, so the two ends of
-  # the bracket agree about what a fence means.
-  defp refuse_fenced(query, false), do: query
-
-  defp refuse_fenced(query, true) do
-    from s in query,
-      where: is_nil(s.transition) or s.transition != ^@destroying
-  end
-
-  # Only on the refusal path, so the write itself stays one statement. Without
-  # it a revival and a takeover are the same zero rows, and an owner told
-  # `:stale` would go looking for a successor that never existed.
-  #
-  # The order is the order the write applies them, so the reason names the
-  # first thing that refused: not the holder, then retired, then fenced.
-  defp zero_row_reason(sandbox_id, epoch, opts) do
-    case Repo.one(
-           from s in held_by(sandbox_id, epoch),
-             select: map(s, [:status, :transition])
-         ) do
-      nil ->
-        :stale
-
-      %{status: status} when status in @terminal_statuses ->
-        :retired
-
-      row ->
-        if Keyword.get(opts, :refuse_fenced, false) and fenced?(row),
-          do: :fenced,
-          else: :stale
-    end
-  end
-
-  # What `refuse_fenced/2` requires to be absent, read back in the same words
-  # so the diagnosis and the write cannot disagree about what a fence is.
-  defp fenced?(row), do: row.transition == @destroying
 
   # A struct is a map, so `is_map/1` and the `@spec` both let one through, and
   # `Enum.reduce_while/3` then raises `Protocol.UndefinedError` on it. Refused
