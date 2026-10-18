@@ -638,4 +638,13 @@ A PR sequence, each releasable alone:
   workspace: keeping the conversation's workspace across a loss needs the
   conversations to follow the rebuilt machine, which is step 4's. What
   network a conversation-less setup runs under (today the floor and the
-  broker CA are a conversation's) is step 5's.
+  broker CA are a conversation's) is step 5's, and `set_up/3` refuses until
+  its caller says the network is settled. Before step 4 calls the rebuild it
+  must move the old machine's conversations to the new one, tell their
+  servers, and point a terminate, the provisioning watchdog and admission at
+  the workspace's current sandbox; until then each reaches only the retired
+  row. Once a rebuild has run, a workspace holds a retired sandbox beside a
+  live one, which 3b's readers would misread (they give the retired row the
+  workspace's transition), so the release that wires it cannot be rolled
+  back below 3c; a rollback to 3a or v0.36, which read each sandbox's own
+  columns, stays safe.

@@ -807,8 +807,9 @@ defmodule Fountain.Machines.Lease do
 
   Refused, with nothing written, when the lease is not this epoch's
   (`:stale`), when somebody asked for the workspace's machine to be destroyed
-  (`:fenced`), or when the workspace already has a live sandbox other than
-  the old one (`:occupied`). A changeset error inserting the new row is
+  (`:fenced`), when the workspace already has a live sandbox other than
+  the old one (`:occupied`), or when the new machine would take the old
+  one's name (`:name_reused`). A changeset error inserting the new row is
   `{:error, changeset}`, after the old row's retirement, which the caller's
   transaction must therefore roll back: any `{:error, _}` is fatal to it.
 
@@ -833,11 +834,21 @@ defmodule Fountain.Machines.Lease do
          {:ok, old} <- locked_sandbox(old_sandbox_id),
          :ok <- refuse_fenced(workspace, true),
          :ok <- refuse_occupied(workspace, old),
+         :ok <- refuse_reused_name(old, attrs),
          :ok <- retire_predecessor(old),
          {:ok, next} <- insert_successor(workspace, old, attrs) do
+      # The workspace is provisioning again (ADR 0097, "Sandbox lost"), so the
+      # build's finalize settles it (`Workspaces.settle_provision/1`).
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
       {1, [workspace]} =
         Repo.update_all(from(w in Workspace, where: w.id == ^workspace.id, select: w),
-          set: [transition: "provisioning", transition_reason: "rebuild"]
+          set: [
+            transition: "provisioning",
+            transition_reason: "rebuild",
+            status: "provisioning",
+            updated_at: now
+          ]
         )
 
       _ = copy_to_sandboxes(workspace.id, nil)
@@ -854,6 +865,13 @@ defmodule Fountain.Machines.Lease do
        ),
        do: {:error, :occupied},
        else: :ok
+  end
+
+  # A successor under the old machine's name would be adopted by the create
+  # while the old one may still be going, and the reaper's pass over terminal
+  # rows destroys any listed machine a terminal row names.
+  defp refuse_reused_name(%Sandbox{machine_name: name}, attrs) do
+    if Map.get(attrs, :machine_name) == name, do: {:error, :name_reused}, else: :ok
   end
 
   defp retire_predecessor(%Sandbox{status: status}) when status in @terminal_statuses, do: :ok
@@ -916,7 +934,7 @@ defmodule Fountain.Machines.Lease do
           count
 
         workspace_id ->
-          if current?(Repo.get!(Sandbox, sandbox_id)) do
+          if current?(Repo.get(Sandbox, sandbox_id) || %Sandbox{status: "pending"}) do
             {1, _} =
               Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
 

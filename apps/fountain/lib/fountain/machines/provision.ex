@@ -406,10 +406,18 @@ defmodule Fountain.Machines.Provision do
      to the new row and clears the workspace's stamp.
 
   Options are `run/3`'s plus `:attrs` (required: the new machine's
-  `:machine_name`, optionally `:agent_id`) and `:provider`
-  (`:destroy`, the default, or `:already_gone`). Answers
+  `:machine_name`, which must not be the old one's, optionally `:agent_id`)
+  and `:provider` (`:destroy`, the default, or `:already_gone`). Answers
   `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
-  refusals and failures; the reservation's `:fleet_full` writes nothing.
+  refusals and failures, plus `Lease.succeed/3`'s; the reservation's
+  `:fleet_full` writes nothing.
+
+  **What step 4 must add before it calls this** (review of step 3c): the new
+  row is born with no conversation, and nothing here moves the conversations
+  bound to the old one, tells their servers (`machine_gone`), or points a
+  terminate, the provisioning watchdog or a turn admission addressed to the
+  old sandbox at its successor. Each of those reaches only the retired row
+  today.
   """
   @spec rebuild(Ecto.UUID.t(), pipeline(), keyword()) ::
           {:ok, :rebuilt, Sandbox.t(), term()}
@@ -438,7 +446,10 @@ defmodule Fountain.Machines.Provision do
       true ->
         attrs = opts |> Keyword.fetch!(:attrs) |> Map.new()
 
-        case Quotas.with_sandbox_reservation([provider: old.provider], fn ->
+        # The machine being replaced does not count against the slot its
+        # successor takes: the net change is none (`exclude:`, which still
+        # counts a row being destroyed).
+        case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
                Lease.succeed(old.id, epoch, attrs)
              end) do
           {:ok, %Sandbox{} = next} ->
@@ -462,9 +473,6 @@ defmodule Fountain.Machines.Provision do
       actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
     )
 
-    if old.status not in @terminal_statuses,
-      do: audit(old, "sandbox.destroyed", %{"reason" => "replaced"}, opts)
-
     if Keyword.get(opts, :provider, :destroy) == :destroy do
       destroy_attempt(
         old,
@@ -472,6 +480,10 @@ defmodule Fountain.Machines.Provision do
         :replaced
       )
     end
+
+    # After the provider call, as `Destroy` records it.
+    if old.status not in @terminal_statuses,
+      do: audit(old, "sandbox.destroyed", %{"reason" => "replaced"}, opts)
 
     :ok
   end

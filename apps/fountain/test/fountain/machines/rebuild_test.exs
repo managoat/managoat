@@ -141,8 +141,21 @@ defmodule Fountain.Machines.RebuildTest do
                Provision.rebuild(provisioning.id, &built/2, opts())
     end
 
-    test "a full fleet refuses it and writes nothing", ctx do
+    test "the machine it replaces does not count against its slot", ctx do
+      # Every slot taken, the old machine's included: the rebuild's net
+      # change is none, so it goes ahead.
       fill_fleet(0)
+
+      capture_log(fn ->
+        assert {:ok, :rebuilt, %Sandbox{status: "ready"}, :built} =
+                 Provision.rebuild(ctx.old.id, &built/2, opts())
+      end)
+    end
+
+    test "a full fleet refuses it and writes nothing", ctx do
+      # One more than the ceiling's worth besides the old machine.
+      fill_fleet(0)
+      insert_sandbox(status: "ready")
       reject(Managoat.Sandbox, :create, 2)
 
       assert {:error, :fleet_full} = Provision.rebuild(ctx.old.id, &built/2, opts())
@@ -152,6 +165,28 @@ defmodule Fountain.Machines.RebuildTest do
                1
 
       assert %Workspace{transition: nil, lease_node: nil} = workspace(ctx)
+    end
+
+    test "the workspace provisions again, and settles with the new machine", ctx do
+      capture_log(fn ->
+        assert {:error, :boom, %{}} =
+                 Provision.rebuild(ctx.old.id, fn _, _ -> {:error, :boom, %{}} end, opts())
+      end)
+
+      assert %Workspace{status: "failed"} = workspace(ctx)
+    end
+
+    test "the new machine may not take the old one's name", ctx do
+      reject(Managoat.Sandbox, :create, 2)
+
+      assert {:error, :name_reused} =
+               Provision.rebuild(
+                 ctx.old.id,
+                 &built/2,
+                 opts(attrs: %{machine_name: ctx.old.machine_name})
+               )
+
+      assert Repo.reload!(ctx.old).status == "ready"
     end
 
     test "a held lease is waited out and refused as somebody else's", ctx do
@@ -219,6 +254,16 @@ defmodule Fountain.Machines.RebuildTest do
   end
 
   describe "the setup seam" do
+    test "is refused until the caller says the network is settled", ctx do
+      pending = insert_sandbox(user_id: ctx.user.id, status: "pending")
+      reject(Managoat.Sandbox, :create, 2)
+
+      assert {:error, :network_unsettled} =
+               Machine.set_up(pending.id, %Setup{environment: nil, sprite_env: []})
+
+      assert Repo.reload!(pending).status == "pending"
+    end
+
     setup ctx do
       env = insert_env(user_id: ctx.user.id, setup_script: "echo hi")
       pending = insert_sandbox(user_id: ctx.user.id, status: "pending")
@@ -247,7 +292,8 @@ defmodule Fountain.Machines.RebuildTest do
       end)
 
       capture_log(fn ->
-        assert {:ok, :provisioned, :set_up} = Machine.set_up(ctx.pending.id, ctx.setup)
+        assert {:ok, :provisioned, :set_up} =
+                 Machine.set_up(ctx.pending.id, ctx.setup, network: :floored)
       end)
 
       assert_received :env_file
@@ -265,7 +311,8 @@ defmodule Fountain.Machines.RebuildTest do
       reject(Fountain.Conversations, :log!, 1)
 
       capture_log(fn ->
-        assert {:error, {:setup_exit, 3}, %{}} = Machine.set_up(ctx.pending.id, ctx.setup)
+        assert {:error, {:setup_exit, 3}, %{}} =
+                 Machine.set_up(ctx.pending.id, ctx.setup, network: :floored)
       end)
 
       assert Repo.reload!(ctx.pending).status == "failed"
