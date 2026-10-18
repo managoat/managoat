@@ -67,7 +67,9 @@ defmodule Fountain.Machines.Lease do
   greater of the two, so the workspace's never goes backwards either.
 
   Only the workspace's **current** sandbox is copied: its live one, or, when
-  it has none, the sandbox written. Today a workspace has one sandbox, so that
+  it has none, the sandbox written (with several retired ones and no live
+  one, which no release yet makes, which of them the boot sweep copies is
+  not defined). Today a workspace has one sandbox, so that
   is every write; a later release that rebuilds a lost machine in the same
   workspace leaves a retired sandbox beside a live one, and a write to the
   retired row (a release after a destroy, say) must not overwrite the live
@@ -474,8 +476,20 @@ defmodule Fountain.Machines.Lease do
   end
 
   # The boot sweep's copy: every workspace's current sandbox onto it, once
-  # `sweep_boot/0` has cleared the sandbox rows.
-  defp copy_current_to_workspaces, do: Repo.update_all(copy_query(), [])
+  # `sweep_boot/0` has cleared the sandbox rows, where the two differ (there
+  # is a workspace per launch, and most agree).
+  defp copy_current_to_workspaces do
+    Repo.update_all(
+      from([w, sandbox: s] in copy_query(),
+        where:
+          fragment("? IS DISTINCT FROM ?", w.lease_node, s.lease_node) or
+            fragment("? IS DISTINCT FROM ?", w.transition, s.transition) or
+            fragment("? IS DISTINCT FROM ?", w.transition_reason, s.transition_reason) or
+            w.lease_epoch < s.lease_epoch
+      ),
+      []
+    )
+  end
 
   # A sandbox's four columns onto its workspace, where it is the workspace's
   # current sandbox (see the moduledoc): live, or the workspace has no live

@@ -11,7 +11,9 @@ defmodule Fountain.Workspaces do
   is a boot-time sweep over every account and says so.
 
   **Nothing deletes an implicit workspace yet**, except account deletion
-  (`delete_for_account/1`, which keeps one whose machine survived it): the
+  (`delete_for_account/1`, which keeps one whose machine survived it, and
+  nothing removes that ownerless row afterwards; nor the ones a rollback to
+  v0.36.x leaves, whose account deletion nilifies every workspace): the
   ADR ends one with its conversation, and that is step 4's lifecycle work. Until
   then a row is left per launch and per fresh-sandbox wake, as a sandbox row
   is, including the `provisioning` ones a lost wake race leaves, which nothing
@@ -170,13 +172,14 @@ defmodule Fountain.Workspaces do
   **The pointers are cleared first, conversations then sandboxes, and only
   then are the workspaces deleted**, rather than left to the foreign key's
   `ON DELETE SET NULL`, which would lock the workspace's row before its
-  sandbox's. Every other transaction that locks more than one of the three
-  takes them in that order: the teardown fence locks the conversation, then
-  the sandbox, then copies onto the workspace, and `Fountain.Machines.Lease`
-  writes the sandbox before the workspace. A deletion that went the other way
-  could deadlock against a lease release on a machine it had just destroyed
-  (review of step 3a, reproduced). The delete re-checks that no live sandbox
-  has appeared. Not audited: `account.deleted`, recorded by
+  sandbox's. That is the order of the machine-layer writers it can race: the
+  teardown fence locks the conversation, then the sandbox, then copies onto
+  the workspace, and `Fountain.Machines.Lease` writes the sandbox before the
+  workspace. A deletion that went the other way could deadlock against a lease
+  release on a machine it had just destroyed (review of step 3a, reproduced).
+  The user row's own delete, straight after, still cascades in the foreign
+  keys' order, as it did before workspaces. The delete re-checks that no live
+  sandbox has appeared. Not audited: `account.deleted`, recorded by
   `Fountain.Accounts.Deletion` outside the transaction, is the record.
   """
   @spec delete_for_account(Ecto.UUID.t()) :: :ok
