@@ -662,7 +662,17 @@ defmodule Fountain.Machines.Machine do
     if Repo.in_transaction?() do
       {:error, :provider_transaction_open}
     else
-      sandbox_id |> Provision.rebuild(fun, opts) |> provision_refusal(sandbox_id)
+      # `:stale` is the succession finding its lease superseded between the
+      # claim and the write (`Lease.succeed/3`): somebody else has the
+      # machine, which is `:superseded`'s answer. Translated here only, so
+      # `fail_provision/2`'s own answers are unchanged.
+      sandbox_id
+      |> Provision.rebuild(fun, opts)
+      |> case do
+        {:error, :stale} -> {:error, :superseded}
+        other -> other
+      end
+      |> provision_refusal(sandbox_id)
     end
   end
 
@@ -906,11 +916,8 @@ defmodule Fountain.Machines.Machine do
   defp provision_refusal({:ok, _outcome} = ok, _sandbox_id), do: ok
   defp provision_refusal({:ok, _outcome, _result} = ok, _sandbox_id), do: ok
 
-  # `:stale` is a rebuild's succession finding its lease superseded between
-  # the claim and the write (`Lease.succeed/3`); no other provision path
-  # answers it raw.
   defp provision_refusal({:error, reason}, sandbox_id)
-       when reason in [:machine_busy, :superseded, :stale] do
+       when reason in [:machine_busy, :superseded] do
     Logger.info(
       "machine #{sandbox_id}: provisioning is another owner's (#{inspect(reason)}); standing down"
     )

@@ -809,7 +809,8 @@ defmodule Fountain.Machines.Lease do
   (`:stale`), when somebody asked for the workspace's machine to be destroyed
   (`:fenced`), when the workspace already has a live sandbox other than
   the old one (`:occupied`), or when the new machine would take the old
-  one's name (`:name_reused`). A changeset error inserting the new row is
+  one's name, or any name a sandbox of the workspace has had
+  (`:name_reused`). A changeset error inserting the new row is
   `{:error, changeset}`, after the old row's retirement, which the caller's
   transaction must therefore roll back: any `{:error, _}` is fatal to it.
 
@@ -867,11 +868,18 @@ defmodule Fountain.Machines.Lease do
        else: :ok
   end
 
-  # A successor under the old machine's name would be adopted by the create
-  # while the old one may still be going, and the reaper's pass over terminal
-  # rows destroys any listed machine a terminal row names.
-  defp refuse_reused_name(%Sandbox{machine_name: name}, attrs) do
-    if Map.get(attrs, :machine_name) == name, do: {:error, :name_reused}, else: :ok
+  # A successor under a name any of the workspace's machines has had would be
+  # adopted by the create while the old one may still be going, and the
+  # reaper's pass over terminal rows destroys any listed machine a terminal
+  # row names.
+  defp refuse_reused_name(%Sandbox{workspace_id: workspace_id}, attrs) do
+    name = Map.get(attrs, :machine_name)
+
+    if Repo.exists?(
+         from s in Sandbox, where: s.workspace_id == ^workspace_id and s.machine_name == ^name
+       ),
+       do: {:error, :name_reused},
+       else: :ok
   end
 
   defp retire_predecessor(%Sandbox{status: status}) when status in @terminal_statuses, do: :ok
