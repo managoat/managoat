@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Unbuilt: a workspace (user, environment, vault, fixed at create) owns the sandbox and its lifecycle; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Unbuilt: a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds, and an explicit one parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: draft
 adr: "0097"
@@ -12,8 +12,11 @@ date: 2026-10-18
 # 0097 — A workspace owns the sandbox, and conversations run in it
 
 **Status:** Proposed, 2026-10-18. Nothing here is built. The design points
-were chosen by the maintainer; the calls marked **(open)** were made while
-drafting and are his to confirm. If accepted, it amends
+were chosen by the maintainer, including four calls made in review on
+2026-10-18 (the ceiling parks an explicit workspace, the owner is keyed by
+workspace, a delete terminates live conversations, gemini's config home);
+the calls still marked **(open)** were made while drafting and are his to
+confirm. If accepted, it amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -62,7 +65,8 @@ is never shared between users.
 
 The workspace owns the sandbox: it is provisioned from the workspace's
 environment and vault, parked as [0017](0017-suspend-idle-sandboxes.md)
-describes, and destroyed when the workspace is deleted. A workspace has at
+describes, and destroyed when the workspace is deleted. One owner process
+and one lease per workspace drive all of it (see The owner). A workspace has at
 most one non-terminal sandbox at a time, and over its life it may have a
 succession of them (see Sandbox lost).
 
@@ -108,9 +112,21 @@ gets a sandbox of its own as today; fan-out stays a sandbox each.
 
 Each conversation on a workspace runs its own adapter process with its own
 runtime config directory, under `~/.managoat/c/<conversation_id>/`:
-`CLAUDE_CONFIG_DIR` for claude, `CODEX_HOME` for codex, and for gemini a
-per-conversation `HOME` under its existing `/tmp` home **(open: whether
-gemini-cli honours a config-dir variable instead)**. Skills, the agent's
+`CLAUDE_CONFIG_DIR` for claude, `CODEX_HOME` for codex, and
+`GEMINI_CLI_HOME` for gemini, which drops gemini's `HOME=/tmp`. gemini-cli
+0.59.0, the version `Managoat.Runtimes.Gemini` pins, resolves its home
+through `homedir()`, which returns `GEMINI_CLI_HOME` when it is set
+([`packages/core/src/utils/paths.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.59.0/packages/core/src/utils/paths.ts#L17-L28)),
+and builds every user-level path (`settings.json`, `skills`, `tmp`, the
+project registry) from it in `Storage.getGlobalGeminiDir()`
+([`packages/core/src/config/storage.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.59.0/packages/core/src/config/storage.ts#L54-L60));
+its configuration reference documents the variable for "keeping CLI state
+isolated". `HOME=/tmp` was set because the rename of
+`~/.gemini/projects.json.tmp` fails across `/home/sprite`'s ACL boundary
+(`Managoat.Runtimes.Layout`). Whether that failure follows the gemini config
+home to `~/.managoat/c/<id>` is unmeasured; if it does, the gemini config
+home lives under `/tmp/managoat/c/<id>` instead, still set through
+`GEMINI_CLI_HOME`, and `HOME` stays the image's own. Skills, the agent's
 instructions file, MCP configuration, the runtime session and the inference
 credentials are written there, not under the shared `~/.claude` or
 `~/.codex`. Claude's MCP servers move out of the project-scope
@@ -138,10 +154,10 @@ process.
   is implicit, in which case the workspace and its sandbox are destroyed as
   today.
 - **Deleting a workspace** terminates every live conversation on it
-  (transcripts kept) and destroys the sandbox, through
-  `Machines.Destroy` with one `sandbox.destroyed` and one `workspace.deleted`
-  audit event carrying the caller **(open: terminate rather than refuse with
-  409)**.
+  (transcripts kept) and destroys the sandbox, through the workspace's owner
+  (`Machines.Destroy`), with one `sandbox.destroyed` and one
+  `workspace.deleted` audit event carrying the caller. It is not refused
+  while conversations are live.
 - **Provisioning is lazy.** Creating a workspace writes the row; the first
   prompt of the first conversation on it provisions the sandbox from the
   workspace's environment, and every later conversation attaches its adapter
@@ -155,26 +171,63 @@ process.
   that conversation's session (`session/load`); the others stay unattached
   until they are prompted. A workspace with a sandbox and no live
   conversation is parked by the reaper on the same idle bound.
-- **Sandbox lost.** When the machine is gone (provider death, a failed
-  resume, or the max-lifetime ceiling), every conversation on the workspace
-  keeps its transcript and has its runtime session cleared, the workspace
-  stays, and the next prompt in any of them provisions a new sandbox from the
-  workspace's environment. The max-lifetime ceiling destroys the sandbox, not
-  the workspace, on a non-implicit workspace **(open)**; on an implicit one it
-  ends the conversation's machine as today. The agents lose their runtime
-  memory and the disk's contents, as #649 described; nothing is replayed.
+- **Sandbox lost.** When the machine is gone (provider death or a failed
+  resume), every conversation on the workspace keeps its transcript and has
+  its runtime session cleared, the workspace stays, and the next prompt in
+  any of them provisions a new sandbox from the workspace's environment. The
+  agents lose their runtime memory and the disk's contents, as #649
+  described; nothing is replayed.
+- **The max-lifetime ceiling** (`SANDBOX_MAX_LIFETIME_HOURS`, off by default)
+  splits by kind. On an implicit workspace it destroys the machine, as
+  today. On an explicit workspace it **parks** the machine: the disk and the
+  runtime sessions are kept, and the next prompt wakes it. 0017 destroys at
+  the ceiling because it fires on a conversation that never stops being
+  busy, with a detachable session still running, and a park would leave that
+  exec burning unattended; so on an explicit workspace the ceiling first
+  ends every running turn as interrupted, then parks **(open: interrupt the
+  running turns, rather than wait for them)**. The clock restarts from the
+  wake (`last_resumed_at`), as 0017 measures it.
+
+  So **an explicit workspace's sandbox has no hard lifetime ceiling.** It
+  lives until the workspace is deleted or the sandbox is lost. Nothing in
+  Managoat bounds how many parked sandboxes accumulate: the fleet ceiling
+  counts only compute and excludes `suspended` rows by design (0017), and
+  there is no per-account cap ([0005](0005-platform-shared-sprites-token.md),
+  2026-10-13). What bounds them is the number of workspaces callers create
+  and keep, and the provider: its storage billing for a suspended machine
+  and any account-level machine cap, which 0017 already names as the trigger
+  for a retention bound. **(open: whether explicit workspaces need a count
+  limit per account, or parked ones a retention bound, before this ships;
+  this draft proposes neither.)**
 - **Account deletion** deletes the account's workspaces with their sandboxes.
 
 ### The owner
 
-[0058](0058-the-machine-has-one-owner.md)'s owner stays per sandbox row: the
-`Machine` process is registered under the sandbox id and its lease and epoch
-live on the `sandboxes` row, because a workspace has a succession of
-sandboxes and an epoch belongs to one of them **(open: keyed by sandbox, not
-by workspace)**. What moves to the workspace is the binding: a conversation
-is bound to its workspace, and through it to the workspace's current
-sandbox. `detach` ends the machine only for an implicit workspace; on any
-other it is `:detached`. `Machines.Occupancy`, which still reads a machine as
+[0058](0058-the-machine-has-one-owner.md)'s owner is keyed by **workspace**:
+one `Fountain.Machines.Machine` process per active workspace, registered in
+`Fountain.MachineRegistry` under the workspace id, and one lease on the
+`workspaces` row. `lease_epoch`, `lease_node`, `transition` and
+`transition_reason` move from `sandboxes` to `workspaces`, and the
+per-sandbox advisory lock becomes a per-workspace one. The owner survives a
+rebuild: re-provisioning after a loss is the owner's own transition
+(`provisioning` on the workspace row), which retires the old sandbox row and
+inserts the next under one epoch, so no second owner ever claims the new
+machine and no epoch belongs to only one sandbox. The `sandboxes` row stays
+the record of one machine (provider name, status and its timestamps), and
+the owner is still the only writer of its status, now as a compare-and-set
+on the workspace's epoch.
+
+Everything 0058 says about the lease carries over with "workspace" for
+"sandbox": `Lease.live?/1`, the boot sweep, `destroying` as the one durable
+transition (driven by `SandboxReaper.sweep_fenced_teardowns/0` over
+workspace rows), `Machines.Reads` admission (0039) under the workspace lock,
+and the quota count of a `resuming` transition. An implicit workspace has
+the same owner, so there is still one owner per conversation in the
+implicit case.
+
+A conversation is bound to its workspace, and through it to the workspace's
+current sandbox. `detach` ends the machine only for an implicit workspace;
+on any other it is `:detached`. `Machines.Occupancy`, which still reads a machine as
 a set of conversations, becomes the real answer to "is anyone mid-turn" for
 the park. `machine_gone` tells every conversation bound to the machine.
 Admission does not cap turns per workspace; the fleet ceiling counts
@@ -253,17 +306,29 @@ directory" or `cwd` when this is built.
   for implicit workspaces only. The 422s for `sandbox_mode: "persistent"` and
   `sandbox_id` stay. "No conversation sees another's files" becomes "no
   conversation sees another's files unless the caller put both in one
-  workspace". "The max-lifetime ceiling destroys every machine" stays true;
-  for an explicit workspace it destroys the machine, not the workspace.
-- **[0058](0058-the-machine-has-one-owner.md).** Owner, lease, transitions and
-  verbs stand, keyed by sandbox. The binding layer that 0073 collapsed comes
-  back one level up: the conversation binds to a workspace, and `detach` keeps
-  the machine for a non-implicit one. There is still no `attach` verb on the
-  machine and no refcount: the workspace, not a count of conversations,
-  decides whether the machine lives.
+  workspace". "The max-lifetime ceiling destroys every machine; it used to
+  park a home" is reversed for explicit workspaces: the ceiling parks an
+  explicit workspace's machine and destroys an implicit one's.
+- **[0058](0058-the-machine-has-one-owner.md).** "A sandbox has one owner ...
+  registered under the sandbox id and backed by a lease on the `sandboxes`
+  row" becomes "a workspace has one owner, registered under the workspace id
+  and backed by a lease on the `workspaces` row". The transitions, the
+  epoch compare-and-set, the boot sweep, the durable `destroying` and the
+  verb table stand, keyed by workspace; `provision` gains the rebuild of a
+  lost machine under the same owner, and `machine_gone` tells every bound
+  conversation instead of one. The binding layer that 0073 collapsed comes
+  back one level up: the conversation binds to a workspace, and `detach`
+  keeps the machine for a non-implicit one. There is still no `attach` verb
+  and no refcount: the workspace, not a count of conversations, decides
+  whether the machine lives. `Policy.reclaim_action/2` takes the workspace's
+  kind.
 - **[0017](0017-suspend-idle-sandboxes.md).** The idle clock is the
   workspace's (last turn end of any conversation), and a wake loads one
-  conversation's session.
+  conversation's session. "Every machine is one conversation's, so there is
+  no case where the ceiling parks instead of destroying" stops holding: the
+  ceiling table gets back the row 0073 removed, as "explicit workspace:
+  park" beside "implicit workspace: destroy", and an explicit workspace's
+  machine has no hard lifetime.
 - **[0039](0039-sandbox-files-over-the-api.md).** The reads are also
   addressed by workspace, and "a sandbox belongs to exactly one conversation"
   holds only for implicit workspaces.
@@ -285,6 +350,7 @@ directory" or `cwd` when this is built.
 | Shared `CODEX_HOME`, the Codex auth binding (`409 codex_inference_conflict`) and the SQLite relaunch (#1910) | Stays gone. Each Codex conversation has its own `CODEX_HOME` |
 | Skills record keyed by runtime | Stays gone. Skills live in each conversation's config home; the machine's record is not needed for them |
 | Home checkpoint at park | Stays gone |
+| A home parked at the max-lifetime ceiling | Returns for explicit workspaces: the ceiling parks, and the machine has no hard lifetime |
 | Reset door (`DELETE /api/sandboxes/:id`) | Stays gone. Deleting the workspace, or creating another, is the reset |
 | `sandbox_id` attach | Stays refused; `workspace_id` replaces it |
 | A child landing on the parent's home | Stays gone. A child gets a sandbox of its own |
@@ -302,6 +368,12 @@ directory" or `cwd` when this is built.
   process; a busy workspace uses more memory than one conversation did.
 - A lost sandbox costs every conversation on the workspace its session and
   its disk at once, where it used to cost one.
+- An explicit workspace's machine has no hard lifetime: Managoat's own
+  bounds park it and never destroy it, so parked machines accumulate with
+  the workspaces callers keep.
+- The lease move is a change to 0058's protocol, so it needs the adversarial
+  review 0058 asks for (#2262), and the migration must carry any
+  `destroying` stamp from a sandbox row to its workspace.
 - `Machines.Occupancy` stops being degenerate, and the park reads it for real.
 - New API surface: `/api/workspaces` (create, list, show, delete, and the four
   file reads), two launch fields, the SDK and CLI for them, and a manual page.
@@ -323,35 +395,45 @@ one-agent-per-runtime rule have no code left to remove.
 | Area | Lib lines | Test lines |
 |---|---|---|
 | Schema, `Fountain.Workspaces` context, migration and backfill | 500–750 | 450–650 |
-| Machines: `detach` keep rule, join a live machine, one provision per workspace | 300–600 | 800–1,400 |
+| Machines: owner and lease moved to the workspace (registry key, advisory lock, epoch compare-and-set across two tables, boot sweep, `destroying` driver, reads admission), rebuild under one owner, `detach` keep rule | 1,800–3,100 | 3,800–4,400 |
 | Conversations: launch, split provision into machine and conversation steps, wake and re-provision across siblings, terminate, cwd | 900–1,600 | 2,000–3,500 |
-| Park, idle clock, max lifetime, reaper | 150–300 | 400–700 |
+| Park, idle clock, the ceiling parking an explicit workspace, reaper | 200–400 | 450–800 |
 | Runtimes: layout from a config root, `skills_root/1`, Claude MCP config, per-conversation auth paths | 250–450 | 400–700 |
 | Skills record on the conversation | 100–200 | 250–400 |
 | Sandbox key rules | 60–150 | 200–350 |
 | Files routes by workspace | 80–160 | 200–350 |
 | API, schemas, SDK, CLI | 850–1,400 | 1,000–1,650 |
-| **Total** | **about 3.2k–5.6k** | **about 5.7k–9.7k** |
+| **Total** | **about 4.7k–8.2k** | **about 8.8k–12.8k** |
 
-Plus about 1–1.5k lines of manual. Keying the owner by workspace instead of
-by sandbox would add about 1.5–2.5k lib and 3k test lines. The riskiest part
-is the re-provision handoff between a workspace's conversations in `Wake`;
-the `ConversationServer` size ratchet means that logic goes in helper
-modules.
+Plus about 1–1.5k lines of manual. Keying the owner by workspace accounts
+for about 1.5–2.5k lib and 3k test lines of that: the machine layer
+addresses its row by `sandbox_id` throughout (about 725 references in lib,
+463 in test). It also takes some weight off `Wake`, because a rebuild after
+a loss becomes the owner's own transition rather than a handoff between
+conversation servers; the estimate does not subtract that. The riskiest
+parts are the lease move and the re-provision across a workspace's
+conversations; the `ConversationServer` size ratchet means that logic goes
+in helper modules.
 
 A PR sequence, each releasable alone:
 
 1. Per-conversation config homes and `cwd`, on today's one-conversation
    machines (runtimes, skills record, Claude MCP config, launch field). No
    workspace yet; proves the 1.2 s and memory cost in production.
-2. Schema, implicit workspaces and the backfill: every sandbox gets one, and
-   nothing reads them yet.
-3. The machine and conversation lifecycle reads the workspace: `detach`, the
-   idle clock, Sandbox lost, the reaper. Still only implicit workspaces, so
-   behaviour is unchanged; adversarial review per 0058.
-4. `/api/workspaces`, `workspace_id` on launch, the sandbox-key and `none`
+2. Schema, implicit workspaces and the backfill: every sandbox gets one,
+   with the lease columns on `workspaces`, and nothing reads them yet.
+3. The owner and lease move to the workspace: registry key, advisory lock,
+   compare-and-set, boot sweep, the `destroying` driver and reads admission,
+   with the migration carrying in-flight stamps. Implicit workspaces only, so
+   there is one owner per conversation as today and behaviour is unchanged.
+   Likely two or three PRs, as 0058's own stages were, each with adversarial
+   review.
+4. The lifecycle reads the workspace: rebuild after a loss under the owner,
+   `detach`, the idle clock, the ceiling's park for an explicit workspace,
+   the reaper. Still unreachable without the API.
+5. `/api/workspaces`, `workspace_id` on launch, the sandbox-key and `none`
    refusals, the file routes, the SDK regeneration.
-5. CLI and the manual page.
+6. CLI and the manual page.
 
 ## Alternatives considered
 
@@ -368,8 +450,20 @@ A PR sequence, each releasable alone:
   `bwrap` per conversation). The clients ask for one machine; a shared disk
   that is also isolated is a contradiction, and the work is large. A caller
   who wants isolation omits `workspace_id`.
-- **Keying the machine owner by workspace.** One process would span a
-  succession of sandbox rows, each with its own lease epoch, for no gain over
-  binding through the workspace's current sandbox.
+- **Keying the owner by sandbox, binding through the workspace's current
+  sandbox.** About 1.5–2.5k lib lines cheaper, but every rebuild after a loss
+  would hand the workspace to a new owner, and the conversation servers
+  would have to agree among themselves which of them provisions the next
+  machine. One owner per workspace makes the rebuild one transition.
+- **Destroying an explicit workspace's machine at the ceiling**, as 0073
+  does for every machine. It would turn an operator's backstop into a
+  periodic wipe of a disk the caller kept on purpose.
 - **Attach by `sandbox_id`.** A sandbox row does not outlive a loss, so a
   client holding one would be stranded on the first provider death.
+
+## History
+
+- 2026-10-18 — Proposed (#2984). In review the maintainer decided that the
+  ceiling parks an explicit workspace, that the owner and lease are keyed by
+  workspace, that deleting a workspace terminates its live conversations,
+  and that gemini's config home is set with `GEMINI_CLI_HOME`.
