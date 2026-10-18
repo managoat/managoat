@@ -641,11 +641,17 @@ defmodule Fountain.Machines.Machine do
   @doc """
   Rebuild the lost machine behind `sandbox_id` in its workspace, under one
   lease: `Fountain.Machines.Provision.rebuild/3`, inline on the caller, as
-  `provision/3` is and for its reasons. Not called by anything yet (ADR 0097:
-  step 4 wires it to the lifecycle). Its answers are `provision/3`'s, plus
-  `{:ok, :rebuilt, sandbox, result}`.
+  `provision/3` is and for its reasons. Called by a conversation's server
+  whose machine is gone (ADR 0097 step 4, `Fountain.Conversations.FreshProvision`);
+  every live conversation of the workspace follows the new machine. `fun` is
+  the pipeline, or a function of the new row answering it. Its answers are
+  `provision/3`'s, plus `{:ok, :rebuilt, sandbox, result}`.
   """
-  @spec rebuild(String.t(), Provision.pipeline(), keyword()) ::
+  @spec rebuild(
+          String.t(),
+          Provision.pipeline() | (Sandbox.t() -> Provision.pipeline()),
+          keyword()
+        ) ::
           {:ok, :rebuilt, Sandbox.t(), term()}
           | {:ok, :already_terminal | :claimed_elsewhere}
           | {:ok, :already_terminal | :claimed_elsewhere, term()}
@@ -658,7 +664,8 @@ defmodule Fountain.Machines.Machine do
              | term()}
           | {:error, term(), term()}
   def rebuild(sandbox_id, fun, opts)
-      when is_binary(sandbox_id) and is_function(fun, 2) and is_list(opts) do
+      when is_binary(sandbox_id) and (is_function(fun, 2) or is_function(fun, 1)) and
+             is_list(opts) do
     if Repo.in_transaction?() do
       {:error, :provider_transaction_open}
     else

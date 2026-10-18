@@ -43,11 +43,48 @@ defmodule Fountain.Conversations.FreshProvision do
   @foreign_provision_owner [:configuration_changed, :sandbox_reset_pending]
 
   @doc """
+  Rebuild the lost machine of `conv`'s workspace, and answer
+  `handle_continue(:provision)` (ADR 0097, "Sandbox lost"; step 4).
+
+  `sandbox` is the conversation's machine, and it is terminal: the wake that
+  started this server found it gone and retired it, or somebody else retired
+  it while the conversation slept. Its workspace is kept, so the next machine
+  is built there, under the workspace's one owner and lease
+  (`Machine.rebuild/3`), by this server's own pipeline, and every live
+  conversation of the workspace follows it in the succession's commit.
+
+  `{:follow, state, sandbox}` is the answer for a conversation whose
+  workspace already has a live machine, because another conversation's
+  prompt rebuilt it first (or is rebuilding it, which is waited out): the
+  server reattaches to that machine instead, as a wake onto it would. A
+  conversation with no workspace to rebuild in stops, as a server started on
+  a terminal row always has.
+  """
+  @spec rebuild(map(), map(), map(), map() | nil, map() | nil, map()) ::
+          {:noreply, map()} | {:stop, :normal, map()} | {:follow, map(), map()}
+  def rebuild(state, conv, sandbox, agent, env, secrets) do
+    case Fountain.Conversations.Rebuild.target(conv, sandbox, agent) do
+      :rebuild ->
+        run(state, conv, sandbox, agent, env, secrets, rebuild: true)
+
+      :follow ->
+        Fountain.Conversations.Rebuild.follow(state, conv)
+
+      :none ->
+        Logger.warning(
+          "ConversationServer started for terminal conv #{conv.id} (#{sandbox.status})"
+        )
+
+        Fountain.Conversations.Rebuild.not_rebuilt(state, conv)
+    end
+  end
+
+  @doc """
   Provision a machine for `conv` and answer `handle_continue(:provision)`.
   """
-  @spec run(map(), map(), map(), map() | nil, map() | nil, map()) ::
-          {:noreply, map()} | {:stop, :normal, map()}
-  def run(state, conv, sandbox, agent, env, secrets) do
+  @spec run(map(), map(), map(), map() | nil, map() | nil, map(), keyword()) ::
+          {:noreply, map()} | {:stop, :normal, map()} | {:follow, map(), map()}
+  def run(state, conv, sandbox, agent, env, secrets, opts \\ []) do
     Fountain.Telemetry.span(
       [:fresh_provision],
       %{
@@ -57,31 +94,37 @@ defmodule Fountain.Conversations.FreshProvision do
         provider: Conversations.sandbox_provider_atom(sandbox),
         runtime: conv.runtime || (agent && agent.runtime) || "claude"
       },
-      fn -> {do_run(state, conv, sandbox, agent, env, secrets), %{}} end
+      fn -> {do_run(state, conv, sandbox, agent, env, secrets, opts), %{}} end
     )
   end
 
-  defp do_run(state, conv, sandbox, agent, env, secrets) do
+  defp do_run(state, conv, sandbox, agent, env, secrets, opts) do
     try do
-      do_run_inner(state, conv, sandbox, agent, env, secrets)
+      do_run_inner(state, conv, sandbox, agent, env, secrets, opts)
     rescue
       exception ->
         stack = __STACKTRACE__
         msg = Exception.format(:error, exception, stack)
         Logger.error("provision raised an unhandled exception:\n#{msg}")
 
-        ConversationServer.fail_machine(sandbox.id, :provision_raised, conv.id)
-
-        ActorStatus.fail(state, %{
+        metadata = %{
           reason: Exception.message(exception),
           stack: Exception.format_stacktrace(stack) |> String.slice(0, 2000)
-        })
+        }
 
-        {:stop, :normal, state}
+        if Keyword.get(opts, :rebuild, false) do
+          # The succession may have moved the conversation to a new row:
+          # the failure lands there (`Rebuild.failed/4`, review of step 4b).
+          Fountain.Conversations.Rebuild.failed(state, conv, :provision_raised, metadata)
+        else
+          ConversationServer.fail_machine(sandbox.id, :provision_raised, conv.id)
+          ActorStatus.fail(state, metadata)
+          {:stop, :normal, state}
+        end
     end
   end
 
-  defp do_run_inner(state, conv, sandbox, agent, env, secrets) do
+  defp do_run_inner(state, conv, sandbox, agent, env, secrets, opts) do
     skills = (agent && agent.skills) || []
     # conv.runtime is validated-required and outlives the agent; the agent
     # fallback covers rows predating it. The mount logs what it skipped.
@@ -95,7 +138,8 @@ defmodule Fountain.Conversations.FreshProvision do
       env: env,
       secrets: secrets,
       skills: skills,
-      runtime: runtime
+      runtime: runtime,
+      rebuild?: Keyword.get(opts, :rebuild, false)
     }
 
     provision_machine(ctx)
@@ -137,15 +181,25 @@ defmodule Fountain.Conversations.FreshProvision do
       ctx
 
     result =
-      Machine.provision(
-        sandbox.id,
-        &pipeline(ctx, &1, &2),
-        actor: "system:conversation_server",
-        conversation_id: conv.id,
-        on_claim: &announce_and_check(state, sandbox, &1)
-      )
+      if ctx.rebuild? do
+        Fountain.Conversations.Rebuild.machine(ctx, &pipeline/3)
+      else
+        Machine.provision(
+          sandbox.id,
+          &pipeline(ctx, &1, &2),
+          actor: "system:conversation_server",
+          conversation_id: conv.id,
+          on_claim: &announce_and_check(state, sandbox, &1)
+        )
+      end
 
     case result do
+      # The rebuild's own answers: the workspace's machine is somebody
+      # else's to build or already built, or there is no room for one
+      # (`Fountain.Conversations.Rebuild`).
+      {:rebuild, answer} ->
+        answer
+
       {:ok, :provisioned, %{state: provisioned, conv: conv}} ->
         # What the config home was built with, known from the agent rather
         # than from anything the build discovered. Recorded once the machine

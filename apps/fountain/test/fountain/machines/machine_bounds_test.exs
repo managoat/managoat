@@ -148,8 +148,23 @@ defmodule Fountain.Machines.MachineBoundsTest do
     # already waited half an hour for; giving up early would leave a stuck
     # server alive with a live row, the #394 ordering inverted. Pinned by value
     # in "a provision's ladder" above.
-    "busy_wait_ms: @retire_wait_ms"
+    "busy_wait_ms: @retire_wait_ms",
+    # A server rebuilding its workspace's lost machine waits for another
+    # conversation's rebuild of the same workspace, which holds the lease for
+    # a whole provision, rather than standing down and dropping its prompt
+    # (ADR 0097 step 4, `Conversations.Rebuild`). Pinned under the provision
+    # deadline below.
+    "busy_wait_ms: follow_wait_ms()"
   ]
+
+  test "a rebuild's wait for the workspace sits inside the provision deadline" do
+    assert Fountain.Conversations.Rebuild.follow_wait_ms() >
+             Fountain.Machines.Provision.busy_wait_ms()
+
+    assert Fountain.Conversations.Rebuild.follow_wait_ms() <
+             Fountain.Conversations.ProvisionWatchdog.deadline_ms(),
+           "a server waiting out a co-tenant's rebuild would be killed by its own watchdog"
+  end
 
   # A bound passed as an option, in any of the spellings a protocol takes.
   #

@@ -183,9 +183,15 @@ defmodule Fountain.Conversations.ProvisionWatchdog do
   end
 
   # ownership: the two ids are the ones the ConversationServer was started
-  # with, and it established ownership of both at init. The watchdog reads and
-  # writes no row it was not handed.
-  defp expire(%{conv_id: conv_id, sandbox_id: sandbox_id} = state) do
+  # with, and it established ownership of both at init. The machine is the
+  # one the conversation is bound to now, which is the one its server is
+  # building: a server started on a lost row rebuilds its workspace's machine
+  # and the conversation follows the new row (ADR 0097 step 4), so the row it
+  # was started on is already retired and retiring it again bounds nothing.
+  defp expire(%{conv_id: conv_id} = state) do
+    sandbox_id = current_machine(state)
+    state = %{state | sandbox_id: sandbox_id}
+
     retired =
       Machine.fail_provision(sandbox_id,
         actor: "system:provision_watchdog",
@@ -292,6 +298,21 @@ defmodule Fountain.Conversations.ProvisionWatchdog do
         })
 
         :done
+    end
+  end
+
+  # The conversation's current machine, if it is in the same workspace as the
+  # one the server was started on; otherwise the one it was started on.
+  # ownership: see `expire/1`.
+  defp current_machine(%{conv_id: conv_id, sandbox_id: started_on}) do
+    with %{sandbox_id: current} when is_binary(current) and current != started_on <-
+           Fountain.Conversations._unsafe_get_conversation(conv_id),
+         %{workspace_id: workspace_id} when is_binary(workspace_id) <-
+           started_on && Fountain.Conversations._unsafe_get_sandbox(started_on),
+         %{workspace_id: ^workspace_id} <- Fountain.Conversations._unsafe_get_sandbox(current) do
+      current
+    else
+      _ -> started_on
     end
   end
 

@@ -374,7 +374,16 @@ defmodule Fountain.Conversations.Wake do
   # to belong to; the prompt door always passes what the request decoded.
   def wake_conversation_for(conv_id, initial_prompt, purpose, images \\ []) do
     with {:ok, conv, agent, runtime_module} <- preflight(conv_id) do
-      case reuse_verdict(conv, purpose) do
+      case conv |> reuse_verdict(purpose) |> own_server(conv) do
+        {:handed_over, pid} ->
+          # A concurrent wake of this conversation got there first and its
+          # server holds the machine (a rebuild holds the workspace's lease
+          # for minutes, ADR 0097). The prompt is the winner's, as in the
+          # start races below.
+          PromptDelivery.hand_over(pid, initial_prompt, images)
+          # ownership: conv established tenant-scoped above.
+          {:ok, Conversations._unsafe_get_conversation!(conv.id)}
+
         {:reuse, sandbox_id, observed} ->
           # Reuse provisions nothing, so the fresh-path gates below never ran
           # here (#313). Same checks. Reusing a
@@ -451,6 +460,19 @@ defmodule Fountain.Conversations.Wake do
               # that decides rather than at the door — the door still waits for
               # the registry, which is what #800 fixed.
               cond do
+                # A co-tenant's prompt is building the shared machine (a
+                # rebuild, ADR 0097): this prompt waits for it, then reaches it
+                # as any wake would. "Two prompts into a workspace with no
+                # sandbox rebuild it once; the second waits."
+                purpose == :work and provisioning_owner_live?(sandbox_id) and shared?(conv) ->
+                  case Fountain.Conversations.Rebuild.await_settled(sandbox_id) do
+                    :settled ->
+                      wake_conversation_for(conv.id, initial_prompt, purpose, images)
+
+                    :timeout ->
+                      {:error, :sandbox_unavailable}
+                  end
+
                 provisioning_owner_live?(sandbox_id) ->
                   Logger.info(
                     "conv #{conv.id}: sandbox #{sandbox_id} is being provisioned by an owner " <>
@@ -536,6 +558,18 @@ defmodule Fountain.Conversations.Wake do
     end
   end
 
+  # A machine refused as busy whose owner is this conversation's own server:
+  # another wake of this conversation started it, and it is the one to hand
+  # the prompt to rather than a 503.
+  defp own_server({:error, :sandbox_unavailable} = refused, conv) do
+    case ConversationServer.whereis(conv.id) do
+      pid when is_pid(pid) -> {:handed_over, pid}
+      nil -> refused
+    end
+  end
+
+  defp own_server(verdict, _conv), do: verdict
+
   # What every wake checks before it touches a provider: the row, its status,
   # the saved allowance, the agent and the runtime. Database reads only.
   #
@@ -615,7 +649,7 @@ defmodule Fountain.Conversations.Wake do
   # it is counted against the ceiling of the provider it will run on (#2667):
   # a parked machine's own, or for a fresh one the agent's, as
   # `create_fresh_sandbox_and_start/5` resolves it.
-  defp check_machine(%Conversation{sandbox_id: sandbox_id}, agent) do
+  defp check_machine(%Conversation{sandbox_id: sandbox_id} = conv, agent) do
     # ownership: the conversation's own machine.
     case sandbox_id && Conversations._unsafe_get_sandbox(sandbox_id) do
       %Sandbox{transition: "destroying", status: status} when status not in @terminal_statuses ->
@@ -628,7 +662,13 @@ defmodule Fountain.Conversations.Wake do
         Fountain.Quotas.check_fleet_ceiling(provider: provider, exclude: sandbox_id)
 
       _ ->
-        check_fresh_machine(sandbox_id, agent)
+        case sandbox_id && Fountain.Conversations.Rebuild.wake_target(conv, agent) do
+          {:rebuild, sandbox} ->
+            Fountain.Quotas.check_fleet_ceiling(provider: sandbox.provider, exclude: sandbox.id)
+
+          _fresh ->
+            check_fresh_machine(sandbox_id, agent)
+        end
     end
   end
 
@@ -761,7 +801,111 @@ defmodule Fountain.Conversations.Wake do
     {:error, :not_running}
   end
 
+  # A conversation whose machine is gone keeps its workspace (ADR 0097 step 4):
+  # its server is started on the lost row and rebuilds the workspace's machine
+  # there (`Conversations.Rebuild`). A conversation with no workspace to keep
+  # gets a fresh implicit one, as every wake did before.
   defp create_fresh_sandbox_and_start(conv, agent, runtime_module, initial_prompt, images) do
+    case Fountain.Conversations.Rebuild.wake_target(conv, agent) do
+      {:rebuild, sandbox} ->
+        rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images)
+
+      :fresh ->
+        fresh_sandbox_and_start(conv, agent, runtime_module, initial_prompt, images)
+    end
+  end
+
+  # The server is started on the conversation's own row, which names the
+  # workspace, and it builds the next machine itself, under the workspace's
+  # owner, moving every live conversation of the workspace to it in one commit
+  # (`Machine.rebuild/3`). So there is no row of this wake's to reserve, repoint
+  # or clean up, and the start race #717 compensated for has nothing to leave
+  # behind: a wake that loses it hands its prompt to the winner.
+  #
+  # A row the probe found gone at the provider is retired first, through its
+  # owner, with the provider step skipped, so the server meets a terminal row
+  # and rebuilds rather than reattaching to nothing. A row stranded mid-provision
+  # (nobody building it, `pending` or `starting`) is provisioned again in place
+  # by the server, which discards whatever half-built machine it left.
+  #
+  # ownership: conv is the caller's own tenant-scoped row, established by
+  # wake_conversation_for/3 above; the sandbox is its own.
+  defp rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images) do
+    with :ok <- check_saved_inference(conv, agent),
+         :ok <- retire_lost(sandbox),
+         :ok <- room_for(sandbox),
+         {:ok, marked} <- mark_waking(conv, sandbox) do
+      case start_conversation_server(conv, sandbox.id, runtime_module, initial_prompt, images) do
+        {:error, {:already_started, winner_pid}} ->
+          PromptDelivery.hand_over(winner_pid, initial_prompt, images)
+          # ownership: as above.
+          {:ok, Conversations._unsafe_get_conversation!(conv.id)}
+
+        {:error, _} = error ->
+          _ = unmark_waking(marked, conv)
+          error
+
+        other ->
+          other
+      end
+    end
+  end
+
+  # The marker a server started on a terminal row reads as "a wake asked for
+  # a rebuild" (`Rebuild.target/3`): the conversation `pending`, as a fresh
+  # wake has always set it, before the server starts, so a crash restart of
+  # the same server, with no prompt, does not build a machine. A stranded row
+  # being provisioned again in place needs none.
+  defp mark_waking(conv, %Sandbox{status: status}) when status in ["pending", "starting"],
+    do: {:ok, conv}
+
+  defp mark_waking(%Conversation{status: "pending"} = conv, _sandbox), do: {:ok, conv}
+
+  defp mark_waking(conv, _sandbox),
+    do: Conversations.update_conversation(conv, %{status: "pending"})
+
+  # A start that failed outright leaves the conversation as it found it.
+  defp unmark_waking(%Conversation{status: "pending"}, %Conversation{status: "pending"}), do: :ok
+
+  defp unmark_waking(_marked, %Conversation{status: status} = conv) do
+    if ConversationServer.whereis(conv.id),
+      do: :ok,
+      else: restore_status(conv, status)
+  end
+
+  defp restore_status(conv, status) do
+    # ownership: as above.
+    Conversations.update_conversation(Conversations._unsafe_get_conversation!(conv.id), %{
+      status: status
+    })
+  end
+
+  defp retire_lost(%Sandbox{status: status} = sandbox) when status in ["ready", "suspended"] do
+    case mark_old_sandbox_terminated(sandbox.id) do
+      {:ok, _} -> :ok
+      :ok -> :ok
+      {:error, _} -> {:error, :sandbox_unavailable}
+    end
+  end
+
+  defp retire_lost(%Sandbox{}), do: :ok
+
+  # The rebuild reserves its slot itself, inside the owner's succession; this
+  # is the same check made synchronous, so a full fleet is the wake's answer
+  # rather than a stage event after it. A row provisioned again in place
+  # already holds its slot.
+  # A workspace that already has a live machine (a co-tenant's rebuild) needs
+  # no new slot: its server follows that machine.
+  defp room_for(%Sandbox{status: status, provider: provider, id: id} = sandbox)
+       when status in @terminal_statuses or status in ["ready", "suspended"] do
+    if Fountain.Conversations.Rebuild.workspace_has_other_live?(sandbox),
+      do: :ok,
+      else: Fountain.Quotas.check_fleet_ceiling(provider: provider, exclude: id)
+  end
+
+  defp room_for(%Sandbox{}), do: :ok
+
+  defp fresh_sandbox_and_start(conv, agent, runtime_module, initial_prompt, images) do
     # The sandbox being replaced is excluded: it is retired immediately below,
     # so counting it would block a wake that leaves concurrency unchanged.
     # Waking a dormant conversation provisions a fresh sprite, so it is subject
@@ -796,15 +940,15 @@ defmodule Fountain.Conversations.Wake do
                  user_id: conv.user_id
                }
 
-               # A fresh implicit workspace for the fresh machine (ADR 0097,
-               # step 2), not the conversation's old one: the old sandbox is
-               # still live until the new server is up (see below), and a
-               # concurrent wake reserves a machine of its own, so a shared
-               # workspace would trip the live-workspace index on both. The
-               # conversation moves to it with `sandbox_id`. Keeping one
-               # workspace across a lost machine is step 4's rebuild. Under the
-               # fleet lock, unlike the launch's: one more insert, whose foreign
-               # key checks the sandbox insert takes anyway.
+               # A fresh implicit workspace for the fresh machine (ADR 0097):
+               # this conversation has no workspace to keep (none, or an
+               # implicit one whose resolution has moved; see
+               # `Conversations.Rebuild`), and the old sandbox is still live
+               # until the new server is up (see below), so a shared workspace
+               # would trip the live-workspace index. The conversation moves
+               # to it with `sandbox_id`. Under the fleet lock, unlike the
+               # launch's: one more insert, whose foreign key checks the
+               # sandbox insert takes anyway.
                with {:ok, workspace} <- Fountain.Workspaces.insert_implicit(attrs) do
                  Fountain.Machines.Provision.reserve(Map.put(attrs, :workspace_id, workspace.id))
                end

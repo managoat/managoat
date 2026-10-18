@@ -154,7 +154,10 @@ defmodule Fountain.ConversationsReadStateTest do
     test "the loser terminates its own sandbox row instead of stranding it" do
       user = insert_verified_user()
       agent = insert_agent(user_id: user.id)
-      conv = insert_conversation(user_id: user.id, agent: agent, status: "idle")
+      # A row from before workspaces: the fresh-sandbox path (a kept
+      # workspace's wake reserves no row of its own, ADR 0097 step 4).
+      sandbox = insert_sandbox(user_id: user.id, workspace_id: nil)
+      conv = insert_conversation(user_id: user.id, agent: agent, sandbox: sandbox, status: "idle")
 
       stub_server_start(fn _sup, _spec ->
         {:error, {:already_started, self()}}

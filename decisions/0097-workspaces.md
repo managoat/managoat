@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 to 3 and half of 4 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; ending, parking and the ceiling read the workspace, the rebuild after a loss not yet wired): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 to 4 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -22,9 +22,10 @@ to say so, and the rebuild of a lost machine under that owner and the seam
 for an owner to set a machine up with no conversation (3c), neither of which
 anything calls yet. Step 4 is two PRs: the first (4a) makes ending a
 conversation, the park, the reaper and the ceiling read the workspace, and
-amends 0073 and 0017; the second (4b), the rebuild after a loss, is not
-built. Explicit workspaces exist only in tests until step 5. The rest is not
-built; the Cost section sets out the work and its order. It amends
+amends 0073 and 0017; the second (4b) wires the rebuild after a loss into
+the wake, with every conversation of the workspace following the new
+machine. Explicit workspaces exist only in tests until step 5. The rest is
+not built; the Cost section sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -681,3 +682,27 @@ A PR sequence, each releasable alone:
   no change: the server's verdict and the park's recheck already read every
   conversation on the machine (`Occupancy`), and the reaper already parked a
   machine with no live server.
+- 2026-10-18 — Step 4b built: a prompt that meets a lost machine (gone at the
+  provider, terminal, or stranded mid-provision with nobody building it)
+  keeps the conversation's workspace. The wake retires a machine the provider
+  reports gone and starts the conversation's server on its row; the server
+  rebuilds through `Machine.rebuild/3` with its own pipeline aimed at the new
+  row, and every live conversation of the workspace is moved to the new row
+  in the succession's commit (runtime session cleared, skills record
+  emptied), the old machine's turns having been ended first, and each moved
+  conversation's server told `machine_gone`. This replaces step 2's fresh
+  implicit workspace per wake, except for an implicit workspace that no
+  longer matches what a launch would resolve (the agent's provider, the
+  conversation's environment and vault), which still gets a fresh one, as
+  today's wake re-resolves them. A second conversation's prompt waits for the
+  rebuild (up to ten minutes) and reattaches to the new machine; a stranded
+  row is provisioned again in place. Only a wake asks for a rebuild: it sets
+  the conversation `pending` first, so a server restarted after a crash on a
+  terminal row stops as before. Each moved conversation's transcript is told
+  the machine was lost, a turn admitted on the old machine mid-rebuild is
+  ended with the move, and a failure after the succession fails the
+  conversation where it now is. `ProvisionWatchdog` retires the
+  conversation's current machine in the same workspace, and a terminate
+  reaches it through the conversation's binding. An explicit workspace a
+  rebuild set back to `provisioning` settles with the build. Once this has
+  rebuilt a machine, a rollback must not go to a release with 3b and not 3c.

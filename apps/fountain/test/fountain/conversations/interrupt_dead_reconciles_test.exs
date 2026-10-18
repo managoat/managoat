@@ -58,7 +58,7 @@ defmodule Fountain.Conversations.InterruptDeadReconcilesTest do
            )
   end
 
-  test "the same dead-sandbox shape still provisions fresh for a plain prompt (:work)" do
+  test "the same dead-sandbox shape still builds a machine for a plain prompt (:work)" do
     user = insert_verified_user()
     agent = insert_agent(user_id: user.id)
     sandbox = insert_sandbox(user_id: user.id, status: "terminated")
@@ -73,14 +73,17 @@ defmodule Fountain.Conversations.InterruptDeadReconcilesTest do
 
     owner = self()
 
-    stub_server_start(fn _supervisor, _child_spec ->
-      send(owner, :start_child_called)
+    stub_server_start(fn _supervisor, child_spec ->
+      send(owner, {:start_child_called, child_spec})
       {:ok, spawn(fn -> Process.sleep(:infinity) end)}
     end)
 
-    assert {:ok, woken} = Wake.wake_conversation(conv.id)
-    assert_received :start_child_called
-    assert woken.sandbox_id != sandbox.id
+    assert {:ok, _woken} = Wake.wake_conversation(conv.id)
+    assert_received {:start_child_called, child_spec}
+
+    # Its workspace is kept (ADR 0097 step 4): the server is started on the
+    # conversation's own row and rebuilds the machine there.
+    assert child_spec |> inspect() |> String.contains?(sandbox.id)
   end
 
   # Three independent reviews of the first cut of this PR found the same gap:
