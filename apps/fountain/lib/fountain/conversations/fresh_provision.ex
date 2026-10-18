@@ -499,9 +499,14 @@ defmodule Fountain.Conversations.FreshProvision do
       %{adapter: adapter, skills: skills} = after_floor.()
 
       try do
-        with :ok <- Provisioning.install_packages(handle, env, sprite_env, conv_id),
-             :ok <- Provisioning.clone_repositories(handle, env, secrets, sprite_env, conv_id),
-             :ok <- Provisioning.run_setup_script(handle, env, sprite_env, conv_id),
+        setup = %Fountain.Machines.Setup{
+          environment: env,
+          sprite_env: sprite_env,
+          secrets: secrets,
+          conversation_id: conv_id
+        }
+
+        with :ok <- Fountain.Machines.Setup.run(handle, setup),
              :ok <- if(adapter, do: await_step(adapter), else: :ok) do
           if skills, do: _ = await_step(skills)
           :ok

@@ -81,6 +81,19 @@ defmodule Fountain.Machines.Lease do
   machine as this one left it. `Fountain.Workspaces._unsafe_reconcile_live/0`
   carries the other way at boot, for the stamps such a release writes.
 
+  ## The workspace's current sandbox (step 3c)
+
+  A workspace has at most one live sandbox, and over its life a succession of
+  them (`succeed/3`, the rebuild of a lost machine). Its `transition` and
+  `transition_reason` are about its **current** sandbox: the live one, or,
+  when it has none, any of its retired ones. A retired sandbox beside a live
+  successor is not current: it reads no transition (its lease fields still
+  name the workspace's holder, who is working on the successor), a write to
+  it never touches the workspace's two columns, and a fence on the workspace
+  is not its business (`refuse_fenced`). Without that rule a protocol tidying
+  a stale stamp off the retired row (`Destroy.clear_stale_transition`, say)
+  would clear the successor's.
+
   ## A sandbox with no workspace
 
   Every live sandbox has one: every sandbox is born with one, and the boot
@@ -253,13 +266,24 @@ defmodule Fountain.Machines.Lease do
             fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_epoch, w.lease_epoch),
           lease_node:
             fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_node, w.lease_node),
+          # The workspace's transition is its current sandbox's (see the
+          # moduledoc): a retired sandbox beside a live one reads none.
           transition:
-            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition),
+            fragment(
+              "CASE WHEN ? IS NULL THEN ? WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
+              w.id,
+              s.transition,
+              s.status,
+              s.workspace_id,
+              w.transition
+            ),
           transition_reason:
             fragment(
-              "CASE WHEN ? IS NULL THEN ? ELSE ? END",
+              "CASE WHEN ? IS NULL THEN ? WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
               w.id,
               s.transition_reason,
+              s.status,
+              s.workspace_id,
               w.transition_reason
             )
       }
@@ -289,7 +313,7 @@ defmodule Fountain.Machines.Lease do
 
         case locked(Sandbox, sandbox_id, mode) do
           nil -> nil
-          %Sandbox{} = sandbox -> overlay(sandbox, workspace)
+          %Sandbox{} = sandbox -> overlay(sandbox, workspace, current?(sandbox))
         end
     end
   end
@@ -313,7 +337,9 @@ defmodule Fountain.Machines.Lease do
     end
   end
 
-  defp overlay(%Sandbox{} = sandbox, %Workspace{} = w) do
+  defp overlay(sandbox, workspace, current? \\ true)
+
+  defp overlay(%Sandbox{} = sandbox, %Workspace{} = w, true) do
     %{
       sandbox
       | lease_epoch: w.lease_epoch,
@@ -323,9 +349,32 @@ defmodule Fountain.Machines.Lease do
     }
   end
 
+  defp overlay(%Sandbox{} = sandbox, %Workspace{} = w, false),
+    do: %{
+      sandbox
+      | lease_epoch: w.lease_epoch,
+        lease_node: w.lease_node,
+        transition: nil,
+        transition_reason: nil
+    }
+
   # No workspace: the sandbox's own columns are its only record, as they were
   # before ADR 0097 (see the moduledoc).
-  defp overlay(%Sandbox{} = sandbox, nil), do: sandbox
+  defp overlay(%Sandbox{} = sandbox, nil, _current?), do: sandbox
+
+  # Whether `sandbox` is its workspace's current one (see the moduledoc): live,
+  # or retired with no live sibling.
+  defp current?(%Sandbox{status: status}) when status not in @terminal_statuses, do: true
+  defp current?(%Sandbox{workspace_id: nil}), do: true
+
+  defp current?(%Sandbox{workspace_id: workspace_id, id: id}) do
+    not Repo.exists?(
+      from o in Sandbox,
+        where:
+          o.workspace_id == ^workspace_id and o.id != ^id and
+            o.status not in @terminal_statuses
+    )
+  end
 
   @doc """
   What a protocol makes of a sandbox `claim/2` refused as
@@ -596,8 +645,9 @@ defmodule Fountain.Machines.Lease do
     with {:ok, workspace} <- held_workspace(sandbox_id, epoch),
          {:ok, sandbox} <- locked_sandbox(sandbox_id),
          :ok <- refuse_revival(sandbox, sets),
-         :ok <- refuse_fenced(workspace, Keyword.get(opts, :refuse_fenced, false)) do
-      write(sandbox, workspace, sets)
+         current? = current?(sandbox),
+         :ok <- refuse_fenced(workspace, current? and Keyword.get(opts, :refuse_fenced, false)) do
+      write(sandbox, workspace, sets, current?)
     end
   end
 
@@ -651,29 +701,35 @@ defmodule Fountain.Machines.Lease do
   defp refuse_fenced(%Workspace{transition: @destroying}, true), do: {:error, :fenced}
   defp refuse_fenced(%Workspace{}, _refuse?), do: :ok
 
-  defp write(%Sandbox{} = sandbox, %Workspace{} = workspace, sets) do
+  # A retired sandbox beside a live successor is not current: its write lands
+  # on its own row only, and leaves the workspace's transition, which is the
+  # successor's, where it is.
+  defp write(%Sandbox{} = sandbox, %Workspace{} = workspace, sets, current?) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     {workspace_sets, sandbox_sets} = Keyword.split(sets, @workspace_fields)
-    workspace_sets = if preserving?(workspace, sandbox, sets), do: [], else: workspace_sets
+
+    workspace_sets =
+      if not current? or preserving?(workspace, sandbox, sets), do: [], else: workspace_sets
+
     workspace = written_workspace(workspace, workspace_sets)
 
     # The copy ("Written twice"), in the statement that writes the machine's
     # own columns.
+    copy =
+      [lease_epoch: workspace.lease_epoch, lease_node: workspace.lease_node] ++
+        if current?,
+          do: [transition: workspace.transition, transition_reason: workspace.transition_reason],
+          else: []
+
     sets =
       sandbox_sets
       |> stamp_terminated_at(sandbox, now)
-      |> Keyword.merge(
-        updated_at: now,
-        lease_epoch: workspace.lease_epoch,
-        lease_node: workspace.lease_node,
-        transition: workspace.transition,
-        transition_reason: workspace.transition_reason
-      )
+      |> Keyword.merge([updated_at: now] ++ copy)
 
     {1, [written]} =
       Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id, select: s), set: sets)
 
-    {:ok, overlay(written, workspace)}
+    {:ok, overlay(written, workspace, current?)}
   end
 
   defp written_workspace(workspace, []), do: workspace
@@ -734,6 +790,128 @@ defmodule Fountain.Machines.Lease do
   end
 
   @doc """
+  Replace the machine behind `old_sandbox_id` with a new one in the same
+  workspace, under `epoch`: the rebuild of a lost machine as one transition
+  of one owner (ADR 0097, "The owner").
+
+  In one transaction, which **must be the caller's** (`Machines.Provision`
+  runs it inside `Quotas.with_sandbox_reservation/2`, so the new row takes
+  its fleet slot in the same commit): the workspace's row locked where it
+  holds `epoch` with a holder, then the old sandbox's; the old sandbox
+  retired (`terminated`, unless it already is); a new `pending` sandbox
+  inserted from `attrs`, in the workspace, with the workspace's user,
+  environment, vault and provider; the workspace stamped `provisioning`
+  (reason `rebuild`) and its lease copied onto the new row. So the new
+  machine is born under the lease that retired the old one: no second owner
+  ever claims it, and no epoch belongs to only one sandbox.
+
+  Refused, with nothing written, when the lease is not this epoch's
+  (`:stale`), when somebody asked for the workspace's machine to be destroyed
+  (`:fenced`), when the workspace already has a live sandbox other than
+  the old one (`:occupied`), or when the new machine would take the old
+  one's name, or any name a sandbox of the workspace has had
+  (`:name_reused`). A changeset error inserting the new row is
+  `{:error, changeset}`, after the old row's retirement, which the caller's
+  transaction must therefore roll back: any `{:error, _}` is fatal to it.
+
+  `attrs` names the new machine: `:machine_name` (required) and `:agent_id`.
+  """
+  @spec succeed(Ecto.UUID.t(), epoch(), map()) ::
+          {:ok, Sandbox.t()}
+          | {:error,
+             :stale | :fenced | :occupied | :transaction_open | Ecto.Changeset.t() | term()}
+  def succeed(old_sandbox_id, epoch, attrs) when is_binary(old_sandbox_id) and is_map(attrs) do
+    guarded(old_sandbox_id, true, fn ->
+      cond do
+        not Repo.in_transaction?() -> {:error, :transaction_open}
+        not taken_epoch?(epoch) -> {:error, :stale}
+        true -> locked_succeed(old_sandbox_id, epoch, attrs)
+      end
+    end)
+  end
+
+  defp locked_succeed(old_sandbox_id, epoch, attrs) do
+    with {:ok, workspace} <- held_workspace(old_sandbox_id, epoch),
+         {:ok, old} <- locked_sandbox(old_sandbox_id),
+         :ok <- refuse_fenced(workspace, true),
+         :ok <- refuse_occupied(workspace, old),
+         :ok <- refuse_reused_name(old, attrs),
+         :ok <- retire_predecessor(old),
+         {:ok, next} <- insert_successor(workspace, old, attrs) do
+      # The workspace is provisioning again (ADR 0097, "Sandbox lost"), so the
+      # build's finalize settles it (`Workspaces.settle_provision/1`).
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {1, [workspace]} =
+        Repo.update_all(from(w in Workspace, where: w.id == ^workspace.id, select: w),
+          set: [
+            transition: "provisioning",
+            transition_reason: "rebuild",
+            status: "provisioning",
+            updated_at: now
+          ]
+        )
+
+      _ = copy_to_sandboxes(workspace.id, nil)
+      {:ok, overlay(Repo.get!(Sandbox, next.id), workspace)}
+    end
+  end
+
+  defp refuse_occupied(%Workspace{id: workspace_id}, %Sandbox{id: old_id}) do
+    if Repo.exists?(
+         from s in Sandbox,
+           where:
+             s.workspace_id == ^workspace_id and s.id != ^old_id and
+               s.status not in @terminal_statuses
+       ),
+       do: {:error, :occupied},
+       else: :ok
+  end
+
+  # A successor under a name any of the workspace's machines has had would be
+  # adopted by the create while the old one may still be going, and the
+  # reaper's pass over terminal rows destroys any listed machine a terminal
+  # row names.
+  defp refuse_reused_name(%Sandbox{workspace_id: workspace_id}, attrs) do
+    name = Map.get(attrs, :machine_name)
+
+    if Repo.exists?(
+         from s in Sandbox, where: s.workspace_id == ^workspace_id and s.machine_name == ^name
+       ),
+       do: {:error, :name_reused},
+       else: :ok
+  end
+
+  defp retire_predecessor(%Sandbox{status: status}) when status in @terminal_statuses, do: :ok
+
+  defp retire_predecessor(%Sandbox{} = old) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    {1, _} =
+      Repo.update_all(from(s in Sandbox, where: s.id == ^old.id),
+        set: [status: "terminated", terminated_at: old.terminated_at || now, updated_at: now]
+      )
+
+    :ok
+  end
+
+  defp insert_successor(%Workspace{} = workspace, %Sandbox{} = old, attrs) do
+    %Sandbox{}
+    |> Sandbox.changeset(%{
+      machine_name: Map.get(attrs, :machine_name),
+      agent_id: Map.get(attrs, :agent_id, old.agent_id),
+      status: "pending",
+      provider: workspace.provider,
+      environment_id: workspace.environment_id,
+      vault_id: workspace.vault_id,
+      user_id: workspace.user_id,
+      workspace_id: workspace.id
+    })
+    |> Ecto.Changeset.validate_required([:workspace_id])
+    |> Repo.insert()
+  end
+
+  @doc """
   Set the machine's `transition` and `transition_reason`, for the two writers
   of them outside the owner: the teardown fence's `destroying` stamp
   (`Machines.Destroy.stamp_intent!/2`) and registration's clearing of an
@@ -764,10 +942,17 @@ defmodule Fountain.Machines.Lease do
           count
 
         workspace_id ->
-          {1, _} =
-            Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
+          if current?(Repo.get(Sandbox, sandbox_id) || %Sandbox{status: "pending"}) do
+            {1, _} =
+              Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
 
-          copy_to_sandboxes(workspace_id, sandbox_id)
+            copy_to_sandboxes(workspace_id, sandbox_id)
+          else
+            {count, _} =
+              Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox_id), set: sets)
+
+            count
+          end
       end
 
     if count > 0 and Keyword.get(opts, :touch, false) do
@@ -813,11 +998,20 @@ defmodule Fountain.Machines.Lease do
         {id, nil} ->
           where(query, [s, w], w.id == ^id and s.status not in @terminal_statuses)
 
+        # The sandbox written, when it is current: live, or with no live
+        # sibling (see the moduledoc).
         {id, also} ->
           where(
             query,
             [s, w],
-            w.id == ^id and (s.status not in @terminal_statuses or s.id == ^also)
+            w.id == ^id and
+              (s.status not in @terminal_statuses or
+                 (s.id == ^also and
+                    not exists(
+                      from(o in Sandbox,
+                        where: o.workspace_id == ^id and o.status not in @terminal_statuses
+                      )
+                    )))
           )
       end
 

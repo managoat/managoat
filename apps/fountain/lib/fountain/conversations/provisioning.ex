@@ -1027,15 +1027,21 @@ defmodule Fountain.Conversations.Provisioning do
     Fountain.RuntimeDispatch.install(handle, runtime, sprite_env)
   end
 
-  defp publish_stage(conv_id, stage, status, meta \\ %{}) do
-    Conversations.publish_stage(conv_id, stage, status, meta)
-  end
+  # A machine-level step run with no conversation (`Fountain.Machines.Setup`,
+  # ADR 0097) has no stream to publish its stages or output to.
+  defp publish_stage(conv_id, stage, status, meta \\ %{})
+  defp publish_stage(nil, _stage, _status, _meta), do: :ok
+
+  defp publish_stage(conv_id, stage, status, meta),
+    do: Conversations.publish_stage(conv_id, stage, status, meta)
 
   # Stamp the output with the stage that was active when it was emitted
   # so the LiveView (and any API consumer) can group output under its
   # owning stage without inferring it from event interleaving. The clone
   # step's, which arrives whole once a clone is over; `exec_streamed/6` is
   # what writes the packages and setup stages' as it arrives.
+  defp log_output(nil, _stage, _output), do: :ok
+
   defp log_output(conv_id, stage, output) when is_binary(output) and output != "" do
     Conversations.log!(%{
       conversation_id: conv_id,

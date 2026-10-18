@@ -639,6 +639,85 @@ defmodule Fountain.Machines.Machine do
   end
 
   @doc """
+  Rebuild the lost machine behind `sandbox_id` in its workspace, under one
+  lease: `Fountain.Machines.Provision.rebuild/3`, inline on the caller, as
+  `provision/3` is and for its reasons. Not called by anything yet (ADR 0097:
+  step 4 wires it to the lifecycle). Its answers are `provision/3`'s, plus
+  `{:ok, :rebuilt, sandbox, result}`.
+  """
+  @spec rebuild(String.t(), Provision.pipeline(), keyword()) ::
+          {:ok, :rebuilt, Sandbox.t(), term()}
+          | {:ok, :already_terminal | :claimed_elsewhere}
+          | {:ok, :already_terminal | :claimed_elsewhere, term()}
+          | {:error,
+             :fenced
+             | :occupied
+             | :name_reused
+             | :fleet_full
+             | {:not_rebuildable, String.t()}
+             | term()}
+          | {:error, term(), term()}
+  def rebuild(sandbox_id, fun, opts)
+      when is_binary(sandbox_id) and is_function(fun, 2) and is_list(opts) do
+    if Repo.in_transaction?() do
+      {:error, :provider_transaction_open}
+    else
+      # `:stale` is the succession finding its lease superseded between the
+      # claim and the write (`Lease.succeed/3`): somebody else has the
+      # machine, which is `:superseded`'s answer. Translated here only, so
+      # `fail_provision/2`'s own answers are unchanged.
+      sandbox_id
+      |> Provision.rebuild(fun, opts)
+      |> case do
+        {:error, :stale} -> {:error, :superseded}
+        other -> other
+      end
+      |> provision_refusal(sandbox_id)
+    end
+  end
+
+  @doc """
+  Build the machine behind `sandbox_id` with no conversation on it: the
+  machine-level steps of `setup` (`Fountain.Machines.Setup`) as the pipeline
+  of `Fountain.Machines.Provision.run/3`, inline on the caller.
+
+  **The seam explicit workspaces will use** (ADR 0097, "An explicit workspace
+  is provisioned on create"; step 5). Nothing calls it yet. The owner's
+  lease, the create, the `ready` or `failed` finalize, the workspace's status
+  and the audit event are the bracket's, exactly as for a conversation's
+  provision; what it adds is that no `ConversationServer` is involved. The
+  actor defaults to `"system:machine"`.
+
+  **Refused unless the caller says the machine's network is settled**
+  (`network: :floored`), answering `{:error, :network_unsettled}` with
+  nothing done. Every step here runs packages and clones, with clone tokens,
+  on whatever network the machine has, and the broker floor and CA are a
+  conversation's today (ADR 0095); step 5 decides what an explicit
+  workspace's setup runs under, and this keeps the door from being wired
+  before it has.
+  """
+  @spec set_up(String.t(), Fountain.Machines.Setup.t(), keyword()) ::
+          {:ok, :provisioned, :set_up}
+          | {:ok, :already_terminal | :claimed_elsewhere}
+          | {:error, :network_unsettled | term()}
+          | {:error, term(), term()}
+  def set_up(sandbox_id, %Fountain.Machines.Setup{} = setup, opts \\ [])
+      when is_binary(sandbox_id) and is_list(opts) do
+    case Keyword.pop(opts, :network) do
+      {:floored, opts} -> set_up_floored(sandbox_id, setup, opts)
+      {_unsettled, _opts} -> {:error, :network_unsettled}
+    end
+  end
+
+  defp set_up_floored(sandbox_id, setup, opts) do
+    provision(
+      sandbox_id,
+      Fountain.Machines.Setup.pipeline(setup),
+      Keyword.put_new(opts, :actor, "system:machine")
+    )
+  end
+
+  @doc """
   Confirm the machine behind `sandbox_id` is still this server's to attach to:
   `Fountain.Machines.Provision.confirm_up/2`. Inline, as `provision/3`.
 

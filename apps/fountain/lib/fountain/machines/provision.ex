@@ -157,6 +157,7 @@ defmodule Fountain.Machines.Provision do
   alias Fountain.Conversations.Lifecycle
   alias Fountain.Conversations.Sandbox
   alias Fountain.Machines.Lease
+  alias Fountain.Quotas
   alias Fountain.Repo
 
   require Logger
@@ -371,6 +372,120 @@ defmodule Fountain.Machines.Provision do
     else
       under_claim(sandbox_id, opts, &fail_under_lease(&1, &2, opts))
     end
+  end
+
+  @doc """
+  Rebuild a lost machine in its workspace, under one lease: the owner's own
+  `provisioning` transition on the workspace (ADR 0097, "The owner", and its
+  amendment of 0058: "`provision` gains the rebuild of a lost machine under
+  the same owner").
+
+  **Not wired to anything yet** (step 3c builds the primitive; step 4's
+  lifecycle calls it when a prompt meets a workspace whose machine is gone).
+  Today a wake that needs a fresh machine reserves a fresh implicit workspace
+  instead (`Wake`), which this replaces once the conversations of a
+  workspace follow its machine.
+
+  The steps, under one claim of the workspace's lease through the old
+  sandbox:
+
+  1. Revalidate: a machine somebody asked to destroy is not rebuilt
+     (`:fenced`), and nor is one still being provisioned
+     (`{:not_rebuildable, status}`).
+  2. **Succeed** (`Lease.succeed/3`), inside the fleet reservation of the
+     workspace's provider: retire the old row, insert the next `pending` one
+     in the same workspace, stamp the workspace `provisioning`, in one
+     commit. The reservation is the new row, as for any provision.
+  3. After that commit: the old row's running turns ended, its
+     `sandbox.destroyed` (`replaced`) recorded when it was still live, and
+     its machine destroyed at the provider, best effort, unless `provider:
+     :already_gone` says the caller already found it gone. A machine that will
+     not go is the reaper's terminal-row pass's.
+  4. **Build** the new row exactly as `run/3` does, from the create on, under
+     the same epoch: `fun` is the pipeline, and `ready` or `failed` is written
+     to the new row and clears the workspace's stamp.
+
+  Options are `run/3`'s plus `:attrs` (required: the new machine's
+  `:machine_name`, which must not be the old one's, optionally `:agent_id`)
+  and `:provider` (`:destroy`, the default, or `:already_gone`). Answers
+  `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
+  refusals and failures, plus `Lease.succeed/3`'s; the reservation's
+  `:fleet_full` writes nothing.
+
+  **What step 4 must add before it calls this** (review of step 3c): the new
+  row is born with no conversation, and nothing here moves the conversations
+  bound to the old one, tells their servers (`machine_gone`), or points a
+  terminate, the provisioning watchdog or a turn admission addressed to the
+  old sandbox at its successor. Each of those reaches only the retired row
+  today.
+  """
+  @spec rebuild(Ecto.UUID.t(), pipeline(), keyword()) ::
+          {:ok, :rebuilt, Sandbox.t(), term()}
+          | {:error, term()}
+          | {:error, term(), term()}
+  def rebuild(old_sandbox_id, fun, opts)
+      when is_binary(old_sandbox_id) and is_function(fun, 2) and is_list(opts) do
+    _actor = Keyword.fetch!(opts, :actor)
+    _attrs = Keyword.fetch!(opts, :attrs)
+
+    if Repo.in_transaction?() do
+      {:error, :transaction_open}
+    else
+      under_claim(old_sandbox_id, opts, &rebuild_under_lease(&1, &2, fun, opts))
+    end
+  end
+
+  defp rebuild_under_lease(%Sandbox{} = old, epoch, fun, opts) do
+    cond do
+      old.transition == "destroying" and old.status not in @terminal_statuses ->
+        {:error, :fenced}
+
+      old.status in @provisionable ->
+        {:error, {:not_rebuildable, old.status}}
+
+      true ->
+        attrs = opts |> Keyword.fetch!(:attrs) |> Map.new()
+
+        # The machine being replaced does not count against the slot its
+        # successor takes: the net change is none (`exclude:`, which still
+        # counts a row being destroyed).
+        case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
+               Lease.succeed(old.id, epoch, attrs)
+             end) do
+          {:ok, %Sandbox{} = next} ->
+            retired_predecessor(old, opts)
+
+            case build(next, epoch, false, fun, opts) do
+              {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
+              other -> other
+            end
+
+          {:error, _} = refused ->
+            refused
+        end
+    end
+  end
+
+  # The old machine, once the succession has committed: its turns ended, its
+  # destroy recorded, and the machine itself asked to go.
+  defp retired_predecessor(%Sandbox{} = old, opts) do
+    Fountain.Machines.Admission.end_turns_on(old.id, "machine_destroyed",
+      actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
+    )
+
+    if Keyword.get(opts, :provider, :destroy) == :destroy do
+      destroy_attempt(
+        old,
+        Managoat.Sandbox.build_handle(Conversations.sandbox_provider_atom(old), old.machine_name),
+        :replaced
+      )
+    end
+
+    # After the provider call, as `Destroy` records it.
+    if old.status not in @terminal_statuses,
+      do: audit(old, "sandbox.destroyed", %{"reason" => "replaced"}, opts)
+
+    :ok
   end
 
   @doc """
