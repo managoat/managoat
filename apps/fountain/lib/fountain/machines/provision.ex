@@ -470,24 +470,46 @@ defmodule Fountain.Machines.Provision do
           actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
         )
 
-        # The machine being replaced does not count against the slot its
-        # successor takes: the net change is none (`exclude:`, which still
-        # counts a row being destroyed).
-        case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
-               succeed_and_follow(old, epoch, attrs)
-             end) do
-          {:ok, {%Sandbox{} = next, moved}} ->
-            retired_predecessor(old, opts)
-            tell_moved(old, moved, opts)
-
-            case build(next, epoch, false, pipeline_for(fun, next), opts) do
-              {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
-              other -> other
-            end
-
-          {:error, _} = refused ->
-            refused
+        # A workspace that already has a live machine is occupied before it is
+        # full: a co-tenant's rebuild took the slot, and this caller follows
+        # it rather than being told the fleet is full (review of step 4b).
+        # `Lease.succeed/3` re-checks it under the locks.
+        with :ok <- unoccupied(old) do
+          reserve_and_build(old, epoch, attrs, fun, opts)
         end
+    end
+  end
+
+  defp unoccupied(%Sandbox{workspace_id: workspace_id, id: id}) do
+    if Repo.exists?(
+         from(s in Sandbox,
+           where:
+             s.workspace_id == ^workspace_id and s.id != ^id and
+               s.status not in ^@terminal_statuses
+         )
+       ),
+       do: {:error, :occupied},
+       else: :ok
+  end
+
+  defp reserve_and_build(%Sandbox{} = old, epoch, attrs, fun, opts) do
+    # The machine being replaced does not count against the slot its
+    # successor takes: the net change is none (`exclude:`, which still
+    # counts a row being destroyed).
+    case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
+           succeed_and_follow(old, epoch, attrs)
+         end) do
+      {:ok, {%Sandbox{} = next, moved}} ->
+        retired_predecessor(old, opts)
+        tell_moved(old, moved, opts)
+
+        case build(next, epoch, false, pipeline_for(fun, next), opts) do
+          {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
+          other -> other
+        end
+
+      {:error, _} = refused ->
+        refused
     end
   end
 
@@ -526,6 +548,29 @@ defmodule Fountain.Machines.Provision do
     with {:ok, %Sandbox{} = next} <- Lease.succeed(old.id, epoch, attrs) do
       now = DateTime.utc_now() |> DateTime.truncate(:second)
 
+      # A turn admitted on the old machine after its turns were ended above,
+      # and before this lock (a co-tenant's server still on it), would move
+      # with its conversation and strand `running` there: its server's own
+      # ending is refused by the moved binding. Ended here, under the lock and
+      # in the move's commit, as interrupted; no audit row, which may not be
+      # written inside a transaction (review of step 4b).
+      {stranded, _} =
+        Repo.update_all(
+          from(t in Fountain.Conversations.Turn,
+            where: t.conversation_id in ^moving and t.status == "running"
+          ),
+          set: [status: "interrupted", ended_at: now, orphaned_at: now]
+        )
+
+      if stranded > 0,
+        do: Logger.warning("machine #{old.id}: ended #{stranded} turn(s) admitted mid-rebuild")
+
+      _ =
+        Repo.update_all(
+          from(c in Conversation, where: c.id in ^moving and c.status == "running"),
+          set: [status: "idle"]
+        )
+
       _ =
         Repo.update_all(from(c in Conversation, where: c.id in ^moving),
           set: [
@@ -546,16 +591,34 @@ defmodule Fountain.Machines.Provision do
   # the lost machine closes what it holds and stops, and the conversation's
   # next prompt reaches the new machine through the ordinary wake. The
   # rebuilding conversation is not told; its server is the one doing this.
+  #
+  # Each one's transcript is told here, whether or not it has a live server
+  # (review of step 4b): the server's own `gone/5` finds its conversation
+  # already moved and says nothing, and a conversation with no server would
+  # otherwise learn of the lost memory only from the agent.
   defp tell_moved(%Sandbox{} = old, moved, opts) do
-    moved
-    |> Enum.reject(&(&1 == Keyword.get(opts, :conversation_id)))
-    |> Fountain.Conversations.MachineEvents.tell_cotenants(
-      old.id,
-      "reclaimed",
-      "rebuilt",
+    message =
       "The sandbox was lost and a new one is being built. Send another prompt to " <>
         "continue — the transcript above is kept, but the agent starts a fresh session " <>
         "and will not remember the earlier turns."
+
+    others = Enum.reject(moved, &(&1 == Keyword.get(opts, :conversation_id)))
+
+    Enum.each(others, fn conv_id ->
+      Conversations.publish_stage(conv_id, "sandbox", "done", %{
+        event: "reclaimed",
+        reason: "rebuilt",
+        by: "machine_owner",
+        message: message
+      })
+    end)
+
+    Fountain.Conversations.MachineEvents.tell_cotenants(
+      others,
+      old.id,
+      "reclaimed",
+      "rebuilt",
+      message
     )
   end
 

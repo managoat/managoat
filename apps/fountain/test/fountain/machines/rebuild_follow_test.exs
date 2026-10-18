@@ -155,6 +155,45 @@ defmodule Fountain.Machines.RebuildFollowTest do
     assert Repo.reload!(ctx.theirs).runtime_session_id == "session-#{ctx.theirs.id}"
   end
 
+  test "a turn admitted after the old turns were ended moves interrupted, not running", ctx do
+    test = self()
+
+    # A co-tenant's server admits a turn on the old machine in the window
+    # between the turns being ended and the succession's lock.
+    stub(Fountain.Machines.Admission, :end_turns_on, fn _id, _why, _opts ->
+      turn = insert_turn(ctx.theirs, %{status: "running", started_at: DateTime.utc_now()})
+      {:ok, _} = Fountain.Conversations.update_conversation(ctx.theirs, %{status: "running"})
+      send(test, {:admitted, turn})
+      :ok
+    end)
+
+    capture_log(fn ->
+      assert {:ok, :rebuilt, _next, :built} =
+               Provision.rebuild(ctx.old.id, fn _h, _e -> {:ok, :built} end, opts(ctx))
+    end)
+
+    assert_received {:admitted, turn}
+    assert %Turn{status: "interrupted"} = Repo.reload!(turn)
+    assert Repo.reload!(ctx.theirs).status == "idle"
+  end
+
+  test "a workspace whose machine was rebuilt is occupied before the fleet is full", ctx do
+    capture_log(fn ->
+      assert {:ok, :rebuilt, _next, :built} =
+               Provision.rebuild(ctx.old.id, fn _h, _e -> {:ok, :built} end, opts(ctx))
+    end)
+
+    fill_fleet(0)
+    insert_sandbox(status: "ready")
+
+    assert {:error, :occupied} =
+             Provision.rebuild(
+               ctx.old.id,
+               fn _h, _e -> flunk("built twice") end,
+               opts(ctx, conversation_id: ctx.theirs.id)
+             )
+  end
+
   test "a second rebuild of a workspace that has its machine is refused as occupied", ctx do
     capture_log(fn ->
       assert {:ok, :rebuilt, _next, :built} =

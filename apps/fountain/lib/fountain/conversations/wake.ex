@@ -833,17 +833,45 @@ defmodule Fountain.Conversations.Wake do
   defp rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images) do
     with :ok <- check_saved_inference(conv, agent),
          :ok <- retire_lost(sandbox),
-         :ok <- room_for(sandbox) do
+         :ok <- room_for(sandbox),
+         {:ok, marked} <- mark_waking(conv, sandbox) do
       case start_conversation_server(conv, sandbox.id, runtime_module, initial_prompt, images) do
         {:error, {:already_started, winner_pid}} ->
           PromptDelivery.hand_over(winner_pid, initial_prompt, images)
           # ownership: as above.
           {:ok, Conversations._unsafe_get_conversation!(conv.id)}
 
+        {:error, _} = error ->
+          _ = unmark_waking(marked, conv)
+          error
+
         other ->
           other
       end
     end
+  end
+
+  # The marker a server started on a terminal row reads as "a wake asked for
+  # a rebuild" (`Rebuild.target/3`): the conversation `pending`, as a fresh
+  # wake has always set it, before the server starts, so a crash restart of
+  # the same server, with no prompt, does not build a machine. A stranded row
+  # being provisioned again in place needs none.
+  defp mark_waking(conv, %Sandbox{status: status}) when status in ["pending", "starting"],
+    do: {:ok, conv}
+
+  defp mark_waking(%Conversation{status: "pending"} = conv, _sandbox), do: {:ok, conv}
+
+  defp mark_waking(conv, _sandbox),
+    do: Conversations.update_conversation(conv, %{status: "pending"})
+
+  # A start that failed outright leaves the conversation as it found it.
+  defp unmark_waking(%Conversation{status: "pending"}, %Conversation{status: "pending"}), do: :ok
+
+  defp unmark_waking(_marked, %Conversation{status: status} = conv) do
+    # ownership: as above.
+    Conversations.update_conversation(Conversations._unsafe_get_conversation!(conv.id), %{
+      status: status
+    })
   end
 
   defp retire_lost(%Sandbox{status: status} = sandbox) when status in ["ready", "suspended"] do
@@ -860,9 +888,14 @@ defmodule Fountain.Conversations.Wake do
   # is the same check made synchronous, so a full fleet is the wake's answer
   # rather than a stage event after it. A row provisioned again in place
   # already holds its slot.
-  defp room_for(%Sandbox{status: status, provider: provider, id: id})
-       when status in @terminal_statuses or status in ["ready", "suspended"],
-       do: Fountain.Quotas.check_fleet_ceiling(provider: provider, exclude: id)
+  # A workspace that already has a live machine (a co-tenant's rebuild) needs
+  # no new slot: its server follows that machine.
+  defp room_for(%Sandbox{status: status, provider: provider, id: id} = sandbox)
+       when status in @terminal_statuses or status in ["ready", "suspended"] do
+    if Fountain.Conversations.Rebuild.workspace_has_other_live?(sandbox),
+      do: :ok,
+      else: Fountain.Quotas.check_fleet_ceiling(provider: provider, exclude: id)
+  end
 
   defp room_for(%Sandbox{}), do: :ok
 

@@ -696,7 +696,12 @@ A PR sequence, each releasable alone:
   conversation's environment and vault), which still gets a fresh one, as
   today's wake re-resolves them. A second conversation's prompt waits for the
   rebuild (up to ten minutes) and reattaches to the new machine; a stranded
-  row is provisioned again in place. `ProvisionWatchdog` retires the
+  row is provisioned again in place. Only a wake asks for a rebuild: it sets
+  the conversation `pending` first, so a server restarted after a crash on a
+  terminal row stops as before. Each moved conversation's transcript is told
+  the machine was lost, a turn admitted on the old machine mid-rebuild is
+  ended with the move, and a failure after the succession fails the
+  conversation where it now is. `ProvisionWatchdog` retires the
   conversation's current machine in the same workspace, and a terminate
   reaches it through the conversation's binding. An explicit workspace a
   rebuild set back to `provisioning` settles with the build. Once this has

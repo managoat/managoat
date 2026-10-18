@@ -18,7 +18,15 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
     user = insert_verified_user()
     agent = insert_agent(user_id: user.id)
     sandbox = insert_sandbox(user_id: user.id, status: Keyword.get(opts, :status, "terminated"))
-    conv = insert_conversation(user_id: user.id, agent: agent, sandbox: sandbox, status: "idle")
+
+    # `pending`: what the wake sets before it starts a server to rebuild.
+    conv =
+      insert_conversation(
+        user_id: user.id,
+        agent: agent,
+        sandbox: sandbox,
+        status: Keyword.get(opts, :conv_status, "pending")
+      )
 
     conv =
       conv |> Ecto.Changeset.change(runtime_session_id: "old-session") |> Repo.update!()
@@ -49,6 +57,55 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       assert Repo.get(Workspace, old.workspace_id).status == "ready"
     end
 
+    test "a server restarted with no wake asking does not build a machine", _ctx do
+      # A crash restart replays the child spec, with no prompt: the
+      # conversation is `idle`, not marked by a wake.
+      {_user, _agent, conv, _old} = lost_conversation(conv_status: "idle")
+      stub_happy_sprite()
+      reject(&Managoat.Sandbox.Sprites.create/2)
+
+      {_pid, ref, _} = start_server(conv)
+      assert :normal = assert_stopped(ref)
+    end
+
+    test "a create that fails after the succession fails the conversation where it now is",
+         _ctx do
+      {_user, _agent, conv, old} = lost_conversation()
+      stub_happy_sprite()
+      stub(Managoat.Sandbox.Sprites, :create, fn _name, _opts -> {:error, :boom} end)
+
+      {_pid, ref, _} = start_server(conv)
+      assert :normal = assert_stopped(ref)
+
+      moved = Repo.reload!(conv)
+      assert moved.sandbox_id != old.id
+      assert moved.status == "failed"
+      assert Repo.get!(Sandbox, moved.sandbox_id).status == "failed"
+
+      assert Enum.any?(
+               Conversations._unsafe_list_log_events(conv.id),
+               &(&1.kind == "stage" and &1.stage == "provision" and &1.state == "failed")
+             )
+    end
+
+    test "a co-tenant moved by the rebuild is told on its own transcript", _ctx do
+      {user, agent, conv, old} = lost_conversation()
+      explicit_workspace!(old)
+
+      other =
+        insert_conversation(user_id: user.id, agent: agent, sandbox: old, status: "idle")
+
+      stub_happy_sprite()
+      {_pid, _ref, :alive} = start_server(conv)
+
+      assert Repo.reload!(other).sandbox_id == Repo.reload!(conv).sandbox_id
+
+      assert Enum.any?(Conversations._unsafe_list_log_events(other.id), fn e ->
+               e.kind == "stage" and e.stage == "sandbox" and
+                 Jason.decode!(e.data)["reason"] == "rebuilt"
+             end)
+    end
+
     test "an ended conversation's server still stops (#394)", _ctx do
       {_user, _agent, conv, _old} = lost_conversation()
       {:ok, _} = Conversations.update_conversation(conv, %{status: "failed"})
@@ -60,7 +117,7 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
     end
 
     test "follows a co-tenant's rebuilt machine instead of building a second", _ctx do
-      {user, agent, conv, old} = lost_conversation()
+      {user, agent, conv, old} = lost_conversation(conv_status: "idle")
       explicit_workspace!(old)
       stub_happy_sprite()
 
@@ -106,8 +163,29 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       assert {:rebuild, _} = Rebuild.wake_target(conv, agent)
     end
 
+    test "a wake meeting its own conversation's server mid-rebuild hands it the prompt", _ctx do
+      {_user, _agent, conv, old} = lost_conversation(status: "ready", conv_status: "idle")
+      test = self()
+
+      server =
+        spawn(fn ->
+          receive do
+            {:"$gen_cast", {:initial_prompt, prompt, _images}} -> send(test, {:handed, prompt})
+          end
+        end)
+
+      # The rebuilding server holds the workspace's lease and is registered.
+      stub(Fountain.Machines.Machine, :busy?, fn _ -> true end)
+      stub(ConversationServer, :whereis, fn id -> if id == conv.id, do: server end)
+      stub_server_start(fn _sup, _spec -> flunk("no second server") end)
+
+      assert {:ok, _} = Wake.wake_conversation(conv.id, "hello")
+      assert_receive {:handed, "hello"}
+      assert Repo.reload!(old).status == "ready"
+    end
+
     test "retires a machine the provider reports gone, then starts the server on it", _ctx do
-      {_user, _agent, conv, old} = lost_conversation(status: "ready")
+      {_user, _agent, conv, old} = lost_conversation(status: "ready", conv_status: "idle")
       test = self()
       stub(Managoat.Sandbox.Sprites, :get, fn _ -> {:error, :not_found} end)
 
@@ -121,6 +199,8 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       assert_received {:spec, spec}
       assert spec |> inspect() |> String.contains?(old.id)
       assert Repo.reload!(old).status == "terminated"
+      # The wake's marker for the server it started.
+      assert Repo.reload!(conv).status == "pending"
     end
   end
 

@@ -105,8 +105,16 @@ defmodule Fountain.Conversations.Rebuild do
   conversation's rebuild has moved it to, or `:none` (no workspace to rebuild
   in), which stops the server as a terminal row always has.
   """
-  @spec target(map(), Sandbox.t()) :: :rebuild | :follow | :none
-  def target(conv, %Sandbox{} = sandbox) do
+  #
+  # **Only a wake asks for a rebuild** (review of step 4b): it sets the
+  # conversation `pending` before it starts the server
+  # (`Wake.rebuild_and_start`), the status a fresh wake has always given it.
+  # A server restarted from its child spec after a crash, which carries no
+  # prompt, finds an `idle` conversation on a terminal row and stops, as it
+  # did before, rather than building a machine nobody asked for. And the
+  # workspace must still be one a wake keeps (`kept?/3`), re-read here.
+  @spec target(map(), Sandbox.t(), map() | nil) :: :rebuild | :follow | :none
+  def target(conv, %Sandbox{} = sandbox, agent) do
     cond do
       # A conversation that has ended takes no machine (#394: a server
       # restarted onto a row its watchdog failed, with the conversation, must
@@ -114,10 +122,41 @@ defmodule Fountain.Conversations.Rebuild do
       conv.status in @terminal_statuses -> :none
       conv.sandbox_id != sandbox.id and moved_within?(conv, sandbox) -> :follow
       conv.sandbox_id != sandbox.id -> :none
-      is_nil(sandbox.workspace_id) -> :none
-      is_nil(Repo.get(Workspace, sandbox.workspace_id)) -> :none
-      true -> :rebuild
+      conv.status != "pending" -> :none
+      kept_workspace?(conv, sandbox, agent) -> :rebuild
+      true -> :none
     end
+  end
+
+  # ownership: the conversation's own machine's workspace.
+  defp kept_workspace?(_conv, %Sandbox{workspace_id: nil}, _agent), do: false
+
+  defp kept_workspace?(conv, %Sandbox{workspace_id: workspace_id}, agent) do
+    case Repo.get(Workspace, workspace_id) do
+      %Workspace{implicit: false} = workspace -> workspace.user_id == conv.user_id
+      %Workspace{} = workspace when not is_nil(agent) -> kept?(workspace, conv, agent)
+      _ -> false
+    end
+  end
+
+  @doc """
+  What a server whose terminal row will not be rebuilt says before it stops:
+  nothing for a conversation no wake asked for (a restart), and the prompt
+  reported as not run for one a wake did (its workspace went, or no longer
+  matches), so the next prompt takes a fresh machine.
+  """
+  @spec not_rebuilt(map(), map()) :: {:stop, :normal, map()}
+  def not_rebuilt(state, conv) do
+    if conv.status == "pending" do
+      Output.publish_stage(state.conversation_id, "provision", "failed", %{
+        reason: "workspace_not_kept",
+        retryable: true
+      })
+
+      Fountain.Conversations.Wake.report_unrun_prompt(state.conversation_id, :machine_lost)
+    end
+
+    {:stop, :normal, state}
   end
 
   # ownership: the server's own conversation's current machine.
@@ -141,21 +180,21 @@ defmodule Fountain.Conversations.Rebuild do
   def machine(%{state: state, conv: conv, sandbox: old} = ctx, pipeline) do
     provider = Conversations.sandbox_provider_atom(old)
 
-    with {:ok, name} <- Conversations.mint_machine_name(provider, conv.user_id, nil) do
-      old.id
-      |> Machine.rebuild(
-        fn next -> fn handle, epoch -> pipeline.(aim(ctx, next), handle, epoch) end end,
-        actor: "system:conversation_server",
-        conversation_id: conv.id,
-        attrs: %{machine_name: name, agent_id: conv.agent_id},
-        # A terminal row: whoever retired it destroyed its machine, or the
-        # reaper's pass over terminal rows does.
-        provider: if(old.status in @terminal_statuses, do: :already_gone, else: :destroy),
-        busy_wait_ms: follow_wait_ms(),
-        on_claim: fn _interrupted? -> announce(state, provider) end
-      )
-      |> answer(state, conv)
-    end
+    {:ok, name} = Conversations.mint_machine_name(provider, conv.user_id, nil)
+
+    old.id
+    |> Machine.rebuild(
+      fn next -> fn handle, epoch -> pipeline.(aim(ctx, next), handle, epoch) end end,
+      actor: "system:conversation_server",
+      conversation_id: conv.id,
+      attrs: %{machine_name: name, agent_id: conv.agent_id},
+      # A terminal row: whoever retired it destroyed its machine, or the
+      # reaper's pass over terminal rows does.
+      provider: if(old.status in @terminal_statuses, do: :already_gone, else: :destroy),
+      busy_wait_ms: follow_wait_ms(),
+      on_claim: fn _interrupted? -> announce(state, provider) end
+    )
+    |> answer(state, conv)
   end
 
   defp announce(state, provider) do
@@ -206,7 +245,53 @@ defmodule Fountain.Conversations.Rebuild do
     {:rebuild, {:stop, :normal, state}}
   end
 
+  # Everything else with no pipeline state to unwind. After the succession
+  # (a create that failed, a refusal before it), the conversation is bound
+  # to the failed new row, so it is failed there, as a fresh provision's
+  # failure fails it, rather than against the old row, which the binding
+  # check would refuse silently (review of step 4b). Before it (a fence, a
+  # lease lost, a database fault) nothing moved: the prompt is reported as
+  # not run and the conversation stays resumable, as a refused wake left it.
+  defp answer({:error, reason}, state, conv) do
+    # ownership: the server's own conversation.
+    current = Conversations._unsafe_get_conversation(conv.id)
+
+    if current && current.sandbox_id != state.sandbox_id do
+      Fountain.Conversations.ActorStatus.fail(
+        %{conversation_id: conv.id, sandbox_id: current.sandbox_id},
+        %{reason: inspect(reason)}
+      )
+    else
+      Logger.warning("conv #{conv.id}: machine not rebuilt: #{inspect(reason)}")
+
+      Output.publish_stage(state.conversation_id, "provision", "failed", %{
+        reason: to_string_reason(reason),
+        retryable: true
+      })
+
+      Fountain.Conversations.Wake.report_unrun_prompt(conv.id, reason)
+    end
+
+    {:rebuild, {:stop, :normal, state}}
+  end
+
   defp answer(other, _state, _conv), do: other
+
+  @doc "Whether `sandbox`'s workspace has a live machine other than it."
+  @spec workspace_has_other_live?(Sandbox.t()) :: boolean()
+  def workspace_has_other_live?(%Sandbox{workspace_id: nil}), do: false
+
+  def workspace_has_other_live?(%Sandbox{workspace_id: workspace_id, id: id}) do
+    import Ecto.Query, only: [from: 2]
+
+    Repo.exists?(
+      from(s in Sandbox,
+        where:
+          s.workspace_id == ^workspace_id and s.id != ^id and
+            s.status not in ^@terminal_statuses
+      )
+    )
+  end
 
   @doc """
   Wait, up to `follow_wait_ms/0`, while the machine behind `sandbox_id` is
@@ -299,4 +384,5 @@ defmodule Fountain.Conversations.Rebuild do
 
   defp to_string_reason(reason) when is_binary(reason), do: reason
   defp to_string_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp to_string_reason(reason), do: inspect(reason)
 end

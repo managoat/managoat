@@ -63,7 +63,7 @@ defmodule Fountain.Conversations.FreshProvision do
   @spec rebuild(map(), map(), map(), map() | nil, map() | nil, map()) ::
           {:noreply, map()} | {:stop, :normal, map()} | {:follow, map(), map()}
   def rebuild(state, conv, sandbox, agent, env, secrets) do
-    case Fountain.Conversations.Rebuild.target(conv, sandbox) do
+    case Fountain.Conversations.Rebuild.target(conv, sandbox, agent) do
       :rebuild ->
         run(state, conv, sandbox, agent, env, secrets, rebuild: true)
 
@@ -75,7 +75,7 @@ defmodule Fountain.Conversations.FreshProvision do
           "ConversationServer started for terminal conv #{conv.id} (#{sandbox.status})"
         )
 
-        {:stop, :normal, state}
+        Fountain.Conversations.Rebuild.not_rebuilt(state, conv)
     end
   end
 
