@@ -94,6 +94,7 @@ defmodule Fountain.Conversations.SpriteEnv do
 
     sprite_env =
       with_legacy_names(runtime_module.default_env(agent, env_credentials) || []) ++
+        config_env(runtime_module, Keyword.get(opts, :config_home)) ++
         Fountain.Conversations.CodexChatGPT.env(runtime_module, env_credentials) ++
         with_legacy_names(
           CallbackKey.env(Keyword.fetch!(opts, :callback_token)) ++
@@ -292,6 +293,18 @@ defmodule Fountain.Conversations.SpriteEnv do
       pair -> [pair]
     end)
   end
+
+  # The variable that points the runtime at the conversation's config home
+  # (ADR 0097): `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, or the
+  # `acp` runtime's `MANAGOAT_SKILLS_DIR`. A path, not a credential, so it is
+  # not registered for redaction. Before the tenant's own variables, so an
+  # `env_vars` entry naming the same variable wins, as it always could for
+  # `HOME`; that moves the runtime off the files Managoat writes, which is the
+  # tenant's choice.
+  defp config_env(_runtime_module, nil), do: []
+
+  defp config_env(runtime_module, home),
+    do: with_legacy_names(Managoat.Runtimes.config_env(runtime_module, home))
 
   # The overridable half of the broker's pairs, and the half that is not.
   # Split by key rather than by position: `:brokered` is whatever

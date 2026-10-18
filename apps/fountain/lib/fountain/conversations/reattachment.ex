@@ -5,7 +5,8 @@ defmodule Fountain.Conversations.Reattachment do
 
   alias Fountain.Conversations
   alias Fountain.Conversations.ActorStatus
-  alias Fountain.Conversations.{Connection, Egress, Output, Pending, Provisioning, TurnMachine}
+  alias Fountain.Conversations.{ConfigHome, Connection, Egress, Output, Pending, Provisioning}
+  alias Fountain.Conversations.TurnMachine
   alias Fountain.Machines.Machine
 
   # How long after it started a turn whose prompt never reached the agent is
@@ -19,15 +20,12 @@ defmodule Fountain.Conversations.Reattachment do
            step(state, "reattach_config", fn ->
              write_config(handle, state, agent, conv, sprite_env)
            end) do
-      # Deliberately unchecked, and the reattach carries on either way. Since
-      # ADR 0058 stage 8b the skills record is written through
-      # `Machine.record_skills/2`, which takes the machine's advisory lock, so a
-      # reattach that meets contention on it answers `:sandbox_unavailable`
-      # after the lock's 5 s timeout: the skills are on the disk, and the row's
-      # record stays as it was until a later reattach writes
-      # it. That is a record lagging the disk, not a failed reattach, and
-      # refusing the reattach over it would be the worse trade (round 1,
-      # protocol review).
+      # Deliberately unchecked, and the reattach carries on either way: a
+      # reconciliation that fails, or whose record write does, leaves the
+      # skills on the disk and the conversation's record as it was until a
+      # later reattach writes it. That is a record lagging the disk, not a
+      # failed reattach, and refusing the reattach over it would be the worse
+      # trade (round 1, protocol review).
       _ =
         step(state, "reattach_skills", fn ->
           Fountain.Conversations.Skills.mount(handle, conv, agent, sprite_env)
@@ -37,12 +35,12 @@ defmodule Fountain.Conversations.Reattachment do
         step(state, "reattach_adapter", fn ->
           Provisioning.prepare_runtime_sprite(
             handle,
+            conv,
             runtime(conv, agent),
             state.runtime_module,
             agent,
             sprite_env,
-            state.inference_source,
-            state.user_id
+            state.inference_source
           )
         end)
       end
@@ -55,9 +53,10 @@ defmodule Fountain.Conversations.Reattachment do
   # another they were most of a reattach's own time (#2562). The env file and
   # broker readiness decide the answer:
   #
-  # - The runtime config rewrite keeps `.mcp.json` current with the agent's
-  #   resolved servers after the callback token rotated (#2152). Best effort:
-  #   the turn's own failure says more than a refused wake would.
+  # - The runtime config rewrite keeps the config home's MCP servers current
+  #   with the agent's resolved servers after the callback token rotated
+  #   (#2152). Best effort: the turn's own failure says more than a refused
+  #   wake would.
   # - Broker trust and transport readiness are required before network work.
   # - The env file is required.
   #
@@ -68,12 +67,17 @@ defmodule Fountain.Conversations.Reattachment do
     [
       fn ->
         step(state, "reattach_config_runtime", fn ->
-          write_runtime_config(handle, state, agent)
+          write_runtime_config(handle, state, agent, conv)
         end)
       end,
       fn ->
         step(state, "reattach_config_instructions", fn ->
-          Provisioning.write_instructions(handle, runtime(conv, agent), agent)
+          Provisioning.write_instructions(
+            handle,
+            runtime(conv, agent),
+            agent,
+            Fountain.Conversations.ConfigHome.home(conv)
+          )
         end)
       end,
       fn ->
@@ -97,11 +101,12 @@ defmodule Fountain.Conversations.Reattachment do
     end)
   end
 
-  defp write_runtime_config(handle, state, agent) do
+  defp write_runtime_config(handle, state, agent, conv) do
     Provisioning.write_runtime_config(
       handle,
       state.runtime_module,
-      agent
+      agent,
+      Fountain.Conversations.ConfigHome.home(conv)
     )
     |> best_effort("runtime config write on wake")
   end
@@ -185,6 +190,9 @@ defmodule Fountain.Conversations.Reattachment do
         prompt: running_turn.prompt,
         mode: :continue,
         session_id: conv.runtime_session_id,
+        # Unused by an attached peer, which does no session setup; named so
+        # its state says where the session runs (ADR 0097).
+        cwd: ConfigHome.cwd(conv),
         attach: running_turn.acp_prompt_id,
         # A reattached peer answers `session/request_permission` exactly like a
         # fresh one — the adapter in the sprite is mid-turn and still asking.

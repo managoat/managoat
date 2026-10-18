@@ -7,8 +7,10 @@ defmodule Fountain.Machines.Binding do
   homes were removed (#2676) every machine is built for one conversation and
   the binding is made when the launch reserves both rows
   (`Launch.start_conversation/2`), so the protocol here is the other half:
-  `detach` ends it. Beside it is the record of the skills the disk carries.
-  `Fountain.Machines.Machine.detach/2` and `record_skills/2` are the doors.
+  `detach` ends it. `Fountain.Machines.Machine.detach/2` is the door. The
+  record of the skills the disk carries used to be here too; since config
+  homes (ADR 0097 step 1) it is the conversation's
+  (`Fountain.Conversations.Skills`).
 
   ## Detach
 
@@ -37,18 +39,9 @@ defmodule Fountain.Machines.Binding do
   caller with no adapter to close passes `destroy: true` and the protocol
   runs `Fountain.Machines.Destroy` itself, answering `{:ok, :destroyed}`.
 
-  ## The skills record
-
-  `record_skills/2` is the one write of `applied_skills`, the record of which
-  skills the disk carries. A machine carries one conversation and so one
-  runtime (ADR 0073), so the record is one list. Its caller is `Fountain.Conversations.Skills.mount/3`, after the
-  reconciliation on a wake succeeded. It runs **inline**, under the machine's
-  advisory lock, and is refused only on a terminal or missing row.
-
   ## Vocabulary
 
-  `detach/2` answers the fence's words; `record_skills/2`
-  answers `:sandbox_unavailable` for a row that is gone. Beside them are
+  `detach/2` answers the fence's words. Beside them are
   `:machine_busy` (a live lease, waited out), `:detach_expired` (a caller that
   left) and `:transaction_open` (the caller's bug), which the door translates.
   """
@@ -248,37 +241,6 @@ defmodule Fountain.Machines.Binding do
   @spec held_by_other?(Ecto.UUID.t(), Ecto.UUID.t()) :: boolean()
   def held_by_other?(sandbox_id, conv_id) when is_binary(sandbox_id) and is_binary(conv_id) do
     sandbox_id |> Occupancy.bindings() |> Occupancy.held_by_other?(conv_id)
-  end
-
-  # ── the skills record ─────────────────────────────────────────────────────
-
-  @doc """
-  Record `skills` as what the machine's skills root now carries, replacing
-  `applied_skills` under the lock. Refused with
-  `{:error, :sandbox_unavailable}` on a terminal or missing row. Takes the
-  machine's advisory lock unless the caller is already in a transaction.
-  """
-  @spec record_skills(Ecto.UUID.t(), [map()]) :: {:ok, Sandbox.t()} | {:error, term()}
-  def record_skills(sandbox_id, skills) when is_binary(sandbox_id) and is_list(skills) do
-    if Repo.in_transaction?() do
-      locked_record_skills(sandbox_id, skills)
-    else
-      Conversations.with_sandbox_lock(sandbox_id, fn ->
-        locked_record_skills(sandbox_id, skills)
-      end)
-    end
-  end
-
-  defp locked_record_skills(sandbox_id, skills) do
-    current = Repo.one(from s in Sandbox, where: s.id == ^sandbox_id, lock: "FOR UPDATE")
-
-    if is_nil(current) or current.status in @terminal_statuses do
-      {:error, :sandbox_unavailable}
-    else
-      current
-      |> Sandbox.changeset(%{applied_skills: skills})
-      |> Repo.update()
-    end
   end
 
   # ── the deadline ──────────────────────────────────────────────────────────

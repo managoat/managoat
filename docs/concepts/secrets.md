@@ -184,7 +184,8 @@ agent's process keeps running. A rotated environment or vault secret reaches
 a turn that is already running. A rotated inference credential reaches the
 next turn.
 
-Codex reads its API key from `~/.codex/auth.json`, not from its environment.
+Codex reads its API key from `$CODEX_HOME/auth.json`, in the conversation's
+config home, not from its environment.
 That file holds a placeholder, so it stays as it is and the broker's rules
 carry the new key.
 

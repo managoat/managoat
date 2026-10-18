@@ -538,6 +538,37 @@ func TestCreateConversationOmitsThePermissionPolicyWhenUnset(t *testing.T) {
 	}
 }
 
+// --cwd rides as `cwd`, the in-sandbox working directory, and is omitted
+// when unset so the server keeps the runtime's default.
+func TestCreateConversationCarriesTheCwdOnlyWhenSet(t *testing.T) {
+	for _, cwd := range []string{"/home/sprite/work/app", ""} {
+		t.Run(cwd, func(t *testing.T) {
+			var body map[string]any
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"data":{"id":"conv-1"}}`))
+			}))
+			defer srv.Close()
+
+			api := acpTestAPI(t, srv.URL)
+			api.cwd = cwd
+
+			if _, _, err := api.CreateConversation(context.Background(), "agent-1", acp.SessionOptions{}); err != nil {
+				t.Fatalf("CreateConversation: %v", err)
+			}
+			got, present := body["cwd"]
+			if cwd == "" && present {
+				t.Errorf("cwd was sent without --cwd: %v", got)
+			}
+			if cwd != "" && got != cwd {
+				t.Errorf("cwd = %v, want %q", got, cwd)
+			}
+		})
+	}
+}
+
 func TestParsePermissionPolicy(t *testing.T) {
 	cases := []struct {
 		flag string

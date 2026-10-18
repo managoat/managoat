@@ -558,6 +558,14 @@ defmodule FountainWeb.Schemas do
               "null means it runs the agent's model. Each turn's model_selection records " <>
               "the model that turn actually asked for."
         },
+        cwd: %Schema{
+          type: :string,
+          description:
+            "The working directory the conversation's agent runs in, inside its sandbox: " <>
+              "the cwd it was launched with, or its runtime's default (/home/sprite for " <>
+              "claude, codex and acp, /tmp/gemini-workspace for gemini). Fixed for the " <>
+              "conversation's life."
+        },
         runtime: %Schema{
           type: :string,
           description:
@@ -771,6 +779,19 @@ defmodule FountainWeb.Schemas do
           enum: ~w(owner none),
           description:
             "none omits the sandbox Managoat credential on provision and every wake. Requires a fresh ephemeral sandbox; unavailable on attach or policy-changing channel resume."
+        },
+        cwd: %Schema{
+          type: :string,
+          nullable: true,
+          maxLength: 1024,
+          description:
+            "The working directory the agent runs in, inside the sandbox: an absolute path " <>
+              "under /home/sprite (or under /tmp for a gemini agent), outside " <>
+              "/home/sprite/.managoat. Created if missing, and fixed for the conversation's " <>
+              "life. Omitted or null runs the runtime's default (/home/sprite for claude, " <>
+              "codex and acp, /tmp/gemini-workspace for gemini). Anything else is refused " <>
+              "with 422 validation_failed and errors.cwd. On a channel_id resume it must " <>
+              "name the directory the resumed conversation runs in, or be omitted."
         },
         permission_policy: %Schema{
           allOf: [PermissionPolicy],

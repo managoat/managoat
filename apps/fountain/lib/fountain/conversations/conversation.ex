@@ -112,6 +112,18 @@ defmodule Fountain.Conversations.Conversation do
     # sent it. Written by the turn machine; nil until a turn reports one.
     field :session_config_options, {:array, :map}
 
+    # ADR 0097 step 1. `cwd` is the launch's working directory, nil for the
+    # runtime's default; `config_home` is the directory the runtime keeps its
+    # configuration in, set at launch and nil on a conversation from before
+    # config homes. Both are fixed for the conversation's life, and read only
+    # through `Fountain.Conversations.ConfigHome`.
+    field :cwd, :string
+    field :config_home, :string
+    # The skills the conversation's config home carries, as the last
+    # reconciliation left it (`Fountain.Conversations.Skills`). Moved here
+    # from `sandboxes.applied_skills` with config homes; not in `changeset/2`.
+    field :applied_skills, {:array, :map}
+
     # Which shape of the agent this conversation launched under, like the
     # snapshotted `runtime`. The live agent row still drives the sandbox. Not
     # only provenance: `Skills.previous_skills/1` reads the version's skills to
@@ -156,6 +168,20 @@ defmodule Fountain.Conversations.Conversation do
     end
   end
 
+  # The working directory and the config home are where the runtime's
+  # session lives; moving either would strand it.
+  defp validate_layout_immutable(changeset) do
+    if changeset.data.__meta__.state == :loaded do
+      Enum.reduce([:cwd, :config_home], changeset, fn field, acc ->
+        if Map.has_key?(acc.changes, field),
+          do: add_error(acc, field, "cannot change after launch"),
+          else: acc
+      end)
+    else
+      changeset
+    end
+  end
+
   def changeset(conv, attrs) do
     conv
     |> cast(attrs, [
@@ -180,9 +206,14 @@ defmodule Fountain.Conversations.Conversation do
       :permission_policy,
       :model,
       :agent_session_config,
-      :labels
+      :labels,
+      :cwd,
+      :config_home
     ])
     |> validate_required([:runtime, :status, :sandbox_id, :user_id])
+    |> validate_length(:cwd, max: 1024)
+    |> validate_length(:config_home, max: 1024)
+    |> validate_layout_immutable()
     |> Fountain.Changeset.validate_ids([
       :parent_conversation_id,
       :callback_api_key_id,

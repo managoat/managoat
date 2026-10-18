@@ -2132,6 +2132,8 @@ export interface components {
             agent_version_id?: string | null;
             /** @description The external channel key this conversation is bound to, if it was created with one. */
             channel_id?: string | null;
+            /** @description The working directory the conversation's agent runs in, inside its sandbox: the cwd it was launched with, or its runtime's default (/home/sprite for claude, codex and acp, /tmp/gemini-workspace for gemini). Fixed for the conversation's life. */
+            cwd?: string;
             /** @description How many conversations started this one: 0 for a start from outside any sandbox, and the starting conversation's depth plus one for a start from inside one. A start deeper than `CONVERSATION_MAX_DEPTH` is refused with 422 `conversation_depth_exceeded`. */
             readonly depth?: number;
             /**
@@ -2203,6 +2205,8 @@ export interface components {
             channel_id?: string | null;
             /** @description Your own name for the first prompt. Ignored when the request carries no `prompt`. An immediate `channel_id` resume does not deliver the prompt; send the value with it on the prompts route.Managoat stores it on the turn the prompt opens and sends it on that turn's `started` stage event, beside the `turn_id`, so a client can bind its work item to the exact turn without inferring it from turn order. Use the event to find a candidate turn and the turn itself to confirm it: the event's copy has been through event redaction, and the turn's is what you sent. It is a correlation and not an idempotency key: a second prompt with the same value opens a second turn that carries it too. Make it unique within the conversation. */
             client_request_id?: string | null;
+            /** @description The working directory the agent runs in, inside the sandbox: an absolute path under /home/sprite (or under /tmp for a gemini agent), outside /home/sprite/.managoat. Created if missing, and fixed for the conversation's life. Omitted or null runs the runtime's default (/home/sprite for claude, codex and acp, /tmp/gemini-workspace for gemini). Anything else is refused with 422 validation_failed and errors.cwd. On a channel_id resume it must name the directory the resumed conversation runs in, or be omitted. */
+            cwd?: string | null;
             /**
              * Format: uuid
              * @description Optional environment to provision from instead of the agent's own; the conversation stays pinned to it across wakes. Must be owned by the caller (404 otherwise) and satisfy the agent's allowed_environment_ids when that allowlist is set (422 environment_not_allowed). Part of the channel_id resume key.
@@ -8943,7 +8947,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.diff": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the agent's working directory (`/home/sprite` for claude and codex, `/tmp/gemini-workspace` for gemini). Confined to those directories: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
                 path?: string;
                 /** @description Diff the index (`--cached`). */
                 staged?: boolean;
@@ -9046,7 +9050,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.show": {
         parameters: {
             query: {
-                /** @description In-sandbox path, absolute or relative to the agent's working directory (`/home/sprite` for claude and codex, `/tmp/gemini-workspace` for gemini). Confined to those directories: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
                 path: string;
                 /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
                 max_bytes?: number;
@@ -9145,7 +9149,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.index": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the agent's working directory (`/home/sprite` for claude and codex, `/tmp/gemini-workspace` for gemini). Confined to those directories: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
                 path?: string;
             };
             header?: never;
@@ -9242,7 +9246,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.git_status": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the agent's working directory (`/home/sprite` for claude and codex, `/tmp/gemini-workspace` for gemini). Confined to those directories: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
                 path?: string;
                 /** @description What to do about untracked paths: collapse an untracked directory to one entry (`normal`), list every file under it (`all`), or leave them out (`no`). */
                 untracked?: "normal" | "all" | "no";

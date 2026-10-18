@@ -133,7 +133,8 @@ defmodule Fountain.Conversations.TurnLaunch do
                     token: ConversationKey.token(state)
                   }
                 ),
-              additional_directories: repository_directories(state),
+              additional_directories:
+                repository_directories(state) ++ cwd_git_directory(conv, state.handle),
               model: TurnMachine.acp_model(conv, agent),
               config: TurnMachine.acp_session_config(turn),
               permission_policy: policy,
@@ -343,4 +344,16 @@ defmodule Fountain.Conversations.TurnLaunch do
   end
 
   defp repository_directories(_state), do: []
+
+  # A launch's own cwd (ADR 0097) is codex's workspace, so it is writable
+  # already; its `.git` is not, for the same reason a clone's is not above.
+  # A cwd that is a checkout the setup script made would otherwise refuse
+  # every commit. Nothing for the runtime's default cwd, which is as before.
+  # Codex only, whose sandbox is the reason; a `.git` that is not there (a
+  # cwd that is no checkout) is ignored by codex, as a missing clone is.
+  defp cwd_git_directory(%{runtime: "codex", cwd: cwd}, handle)
+       when is_binary(cwd) and cwd != "",
+       do: [Managoat.Sandbox.host_path(handle, Path.join(cwd, ".git"))]
+
+  defp cwd_git_directory(_conv, _handle), do: []
 end

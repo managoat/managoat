@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Step 2 built, the rest not (schema and implicit workspaces, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 and 2 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces, unread): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -12,10 +12,12 @@ date: 2026-10-18
 # 0097 — A workspace owns the sandbox, and conversations run in it
 
 **Status:** Accepted, 2026-10-18, by the maintainer, in review on #2984.
-Step 2 of the Cost section's sequence is built: the `workspaces` table, and
-an implicit workspace beside every live sandbox that has an owner, which
-nothing reads yet. The rest, step 1 included, is not built; the Cost section
-sets out the work and its order. It amends
+Steps 1 and 2 of the Cost section's sequence are built: a config home and
+working directory per conversation, with `cwd` on launch, on today's
+one-conversation machines (step 1); and the `workspaces` table, with an
+implicit workspace beside every live sandbox that has an owner, which
+nothing reads yet (step 2). The rest is not built; the Cost section sets out
+the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -136,16 +138,23 @@ project registry) from it in `Storage.getGlobalGeminiDir()`
 ([`packages/core/src/config/storage.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.59.0/packages/core/src/config/storage.ts#L54-L60));
 its configuration reference documents the variable for "keeping CLI state
 isolated". `HOME=/tmp` was set because the rename of
-`~/.gemini/projects.json.tmp` fails across `/home/sprite`'s ACL boundary
-(`Managoat.Runtimes.Layout`). Whether that failure follows the gemini config
-home to `~/.managoat/c/<id>` is unmeasured; if it does, the gemini config
-home lives under `/tmp/managoat/c/<id>` instead, still set through
-`GEMINI_CLI_HOME`, and `HOME` stays the image's own. Skills, the agent's
+`~/.gemini/projects.json.tmp` failed across `/home/sprite`'s ACL boundary.
+Measured on a sprite on 2026-10-18 (sprite `0.0.2-beta.7`, gemini-cli 0.59.0
+and the image's 0.63.0), the failure does not follow the config home:
+`session/new` under `GEMINI_CLI_HOME=~/.managoat/c/<id>` wrote
+`projects.json` cleanly with `/home/sprite` and a folder under it as cwd,
+while the image's own `~/.gemini`, a directory of the image's lower overlay
+layer, kept collecting empty `.tmp` files. So the gemini config home is
+`~/.managoat/c/<id>` like the others, and `HOME` stays the image's own.
+Skills, the agent's
 instructions file, MCP configuration, the runtime session and the inference
 credentials are written there, not under the shared `~/.claude` or
 `~/.codex`. Claude's MCP servers move out of the project-scope
-`<cwd>/.mcp.json` they are written to today, which two conversations in one
-folder would overwrite, into the config home. The record of which skills are
+`<cwd>/.mcp.json` they were written to, which two conversations in one
+folder would overwrite, into the config home as user-scope servers: the
+`mcpServers` of `$CLAUDE_CONFIG_DIR/.claude.json`, which the CLI reads as
+"User config" and `claude-agent-acp` starts (its `settingSources` include
+`user`); measured with Claude CLI 2.1.296 and the adapter's 0.81.2 pin. The record of which skills are
 on disk moves from the machine (`sandboxes.applied_skills`) to the
 conversation. Implicit workspaces use the same layout, so there is one code
 path.
@@ -565,3 +574,14 @@ A PR sequence, each releasable alone:
   implicit workspace and moves the conversation to it, since the old
   sandbox is still live while the new one is reserved. A live sandbox with
   no owner gets no workspace; nothing is audited for an implicit one.
+- 2026-10-18 — Step 1 built: every conversation launched since has its own
+  config home, `conversations.config_home`, and may name a `cwd` (stored
+  normalised, nil for the runtime's default, fixed for its life and checked
+  on a channel resume). A conversation from before it has no config home on
+  its row and keeps the shared directory its runtime used then
+  (`~/.claude`, `~/.codex`, gemini's `/tmp`), pointed at by the same
+  variable, rather than being moved on wake, where a reattached adapter may
+  still be running in it. `sandboxes.applied_skills` moved to
+  `conversations.applied_skills` (backfilled; the old column is dropped a
+  release later). Ending a conversation removes its config home from an
+  awake machine; a legacy home is never removed.

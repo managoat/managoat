@@ -57,14 +57,16 @@ stale between releases, and a stale allowlist costs more than a typo does.
 ## How the system prompt reaches the machine
 
 Managoat writes the system prompt into the runtime's user-level instructions
-file on the agent's sandbox. It writes it at provision, and again at each
-reattach.
+file, in the conversation's own config home on the sandbox,
+`~/.managoat/c/<conversation id>` (read
+[Where skills and prompts land](../catalog/runtimes/index.md#where-skills-and-prompts-land)).
+It writes it at provision, and again at each reattach.
 
 | Runtime | File |
 |---|---|
-| `claude` | `~/.claude/CLAUDE.md` |
-| `codex` | `~/.codex/AGENTS.md` |
-| `gemini` | `~/.gemini/GEMINI.md` |
+| `claude` | `~/.managoat/c/<id>/CLAUDE.md` |
+| `codex` | `~/.managoat/c/<id>/AGENTS.md` |
+| `gemini` | `~/.managoat/c/<id>/.gemini/GEMINI.md` |
 
 The `acp` runtime has no such file, and Managoat writes none. The command owns
 its own configuration.

@@ -17,8 +17,8 @@ then use the agent definition below.
 | Provider | `anthropic` |
 | Multi-provider | No |
 | Transport | ACP, through the pinned `claude-agent-acp` adapter |
-| Skills root | `/home/sprite/.claude/skills` |
-| System prompt | `~/.claude/CLAUDE.md` |
+| Skills root | `$CLAUDE_CONFIG_DIR/skills`, in the conversation's [config home](index.md#where-skills-and-prompts-land) |
+| System prompt | `$CLAUDE_CONFIG_DIR/CLAUDE.md` |
 | Credential | An OAuth token or an API key. Read [which one it uses](#which-credential-it-uses). |
 
 ## Why you would choose this one
@@ -164,9 +164,11 @@ at all proves the credential, the runtime and the sandbox.
 
 **Managoat provisions the MCP servers. It does not pass them for each
 session.** An upstream defect in `claude-agent-acp` breaks session-scoped MCP
-delivery. So Managoat writes `.mcp.json` into the sandbox and starts the
-project servers instead. The effect is the same and the mechanism is
-different. That matters when you debug why a raw ACP probe behaves one way and
+delivery. So Managoat writes them as user-scope servers, the `mcpServers` of
+`$CLAUDE_CONFIG_DIR/.claude.json` in the conversation's config home, and the
+CLI starts them from there. The effect is the same and the mechanism is
+different. A repository's own `.mcp.json` is the CLI's to decide about, as it
+would be on your machine. That matters when you debug why a raw ACP probe behaves one way and
 Managoat behaves another.
 
 ## Related

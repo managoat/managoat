@@ -109,16 +109,18 @@ defmodule Fountain.Conversations.ConversationServerConnectionsTest do
     refute Map.has_key?(linear, "auth")
     assert linear["headers"]["Authorization"] == "Bearer " <> placeholder
 
-    # What Claude's runtime writes into the sandbox from that document
-    # (`.mcp.json`) names the placeholder and not the token.
+    # What Claude's runtime writes into the sandbox from that document (the
+    # config home's `.claude.json`, ADR 0097) names the placeholder and not
+    # the token.
     Managoat.Runtimes.Claude.write_config(
       Managoat.Sandbox.Sprites.build_handle("test-sprite"),
-      %{mcp_servers: %{"linear" => linear}}
+      %{mcp_servers: %{"linear" => linear}},
+      "/home/sprite/.managoat/c/#{Ecto.UUID.generate()}"
     )
 
     assert [{_, mcp_json}] =
              Enum.filter(collect_writes([]), fn {path, _} ->
-               String.ends_with?(path, ".mcp.json")
+               String.contains?(path, ".claude.json.managoat.")
              end)
 
     assert mcp_json =~ placeholder

@@ -28,10 +28,10 @@ defmodule FountainWeb.SandboxFilesController do
     type: :string,
     required: false,
     description:
-      "In-sandbox path, absolute or relative to the agent's working directory " <>
-        "(`/home/sprite` for claude and codex, `/tmp/gemini-workspace` for gemini). " <>
-        "Confined to those directories: " <>
-        "anything else is `422 path_outside_sandbox`."
+      "In-sandbox path, absolute or relative to the conversation's working directory " <>
+        "(its launch's `cwd`, else `/home/sprite` for claude and codex and " <>
+        "`/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that " <>
+        "directory: anything else is `422 path_outside_sandbox`."
   ]
 
   @max_bytes_param [

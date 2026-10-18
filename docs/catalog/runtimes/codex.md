@@ -17,8 +17,8 @@ then use the agent definition below.
 | Provider | `openai` |
 | Multi-provider | No |
 | Transport | ACP, through the pinned `codex-acp` adapter |
-| Skills root | `/home/sprite/.codex/skills` |
-| System prompt | `~/.codex/AGENTS.md` |
+| Skills root | `$CODEX_HOME/skills`, in the conversation's [config home](index.md#where-skills-and-prompts-land) |
+| System prompt | `$CODEX_HOME/AGENTS.md` |
 | Credential | An OpenAI API key |
 
 ## Why you would choose this one
@@ -92,8 +92,9 @@ remain in place. A change during a running turn applies to the next turn.
 
 Codex applies a sandbox policy of its own **inside** the Managoat sandbox. The
 pinned `codex-acp` adapter sends that policy with each session. By default a
-command can write to the workspace, to the environment's repositories and to
-the temporary directories, and it cannot reach the network.
+command can write to the workspace (the conversation's working directory), to
+the environment's repositories and to the temporary directories, and it cannot
+reach the network.
 
 | What the adapter sends | Default |
 |---|---|
@@ -147,7 +148,7 @@ next prompt continues it.
 Try this route before full access, which removes both the sandbox and the
 approvals.
 
-`~/.codex/config.toml` does not widen it. The adapter sends an explicit
+`$CODEX_HOME/config.toml` does not widen it. The adapter sends an explicit
 per-session policy, and that policy wins over the file, in the same way the
 `CODEX_CONFIG` overlay wins over a `model_provider` written into it.
 
@@ -219,7 +220,7 @@ https-scheme proxy. It waits out the full connect timeout before it falls back
 to HTTP, which was about 300 seconds on every turn. Managoat
 carries across `OPENAI_BASE_URL`, the OpenAI-Organization and OpenAI-Project
 header mappings, and standalone web search. A conversation with no
-`OPENAI_API_KEY` keeps the built-in provider, which reads `~/.codex/auth.json`.
+`OPENAI_API_KEY` keeps the built-in provider, which reads `$CODEX_HOME/auth.json`.
 
 Managoat also sets `MODEL_PROVIDER` to that provider. The ACP adapter passes
 this variable to Codex when it resumes a conversation. Without it, a resumed
@@ -227,7 +228,7 @@ conversation went back to the built-in provider and to the WebSocket wait.
 
 Managoat reads only the `CODEX_CONFIG` overlay and `MODEL_PROVIDER` when it
 does this. A `model_provider` that your setup script writes into
-`~/.codex/config.toml` is not read, and the overlay wins over the file. An
+`$CODEX_HOME/config.toml` is not read, and the overlay wins over the file. An
 agent that reached a gateway that way now reaches the endpoint above instead.
 To keep your own provider, name it in `CODEX_CONFIG` or in `MODEL_PROVIDER`.
 Managoat leaves both alone.

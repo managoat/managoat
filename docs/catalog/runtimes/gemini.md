@@ -18,8 +18,8 @@ then use the agent definition below.
 | Provider | `google` |
 | Multi-provider | No |
 | Transport | ACP, through the CLI's own `--acp` flag |
-| Skills root | `/tmp/.gemini/skills` |
-| System prompt | `~/.gemini/GEMINI.md` |
+| Skills root | `$GEMINI_CLI_HOME/.gemini/skills`, in the conversation's [config home](index.md#where-skills-and-prompts-land) |
+| System prompt | `$GEMINI_CLI_HOME/.gemini/GEMINI.md` |
 | Credential | A Gemini API key, exported as `GEMINI_API_KEY` |
 
 ## Why you would choose this one

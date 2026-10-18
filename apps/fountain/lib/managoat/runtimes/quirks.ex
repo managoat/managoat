@@ -75,9 +75,11 @@ defmodule Managoat.Runtimes.Quirks do
       ACP defines a session-scoped channel for MCP servers (`session/new`'s
       `mcpServers`) and `Managoat.ACP.Peer` sends the agent's servers
       there correctly. claude-agent-acp never launches stdio servers passed
-      that way, so the session-scoped path delivers nothing. We write a
-      project `.mcp.json` plus `enableAllProjectMcpServers` instead, which the
-      CLI picks up through its `settingSources`.
+      that way, so the session-scoped path delivers nothing. We write them as
+      user-scope servers instead, the `mcpServers` of
+      `$CLAUDE_CONFIG_DIR/.claude.json` in the conversation's config home,
+      which the CLI picks up through its `settingSources` (a project
+      `.mcp.json` until ADR 0097).
       """,
       upstream: "https://github.com/agentclientprotocol/claude-agent-acp/issues/883",
       measured_against: """
@@ -90,10 +92,10 @@ defmodule Managoat.Runtimes.Quirks do
       yet re-probed: an `http`/`sse` entry over the session-scoped path,
       which is how a host delivers a hosted connector with headers.
       """,
-      implemented_by: {Managoat.Runtimes.Claude, :write_config, 2},
+      implemented_by: {Managoat.Runtimes.Claude, :write_config, 3},
       reprobe: """
       Run a conversation with an MCP server declared on the agent, with
-      `write_config/2` stubbed out, and check the model can call an
+      `write_config/3` stubbed out, and check the model can call an
       `mcp__<server>__*` tool. If it can, the session-scoped path works.
       Repeat with an `http` entry carrying a header before deleting anything:
       the file path is the only one measured for that shape.
@@ -101,7 +103,7 @@ defmodule Managoat.Runtimes.Quirks do
       delete_when: """
       `session/new`'s `mcpServers` launches stdio servers *and* connects
       `http`/`sse` entries. The first half is measured true on 0.75.1; the
-      second is not measured. Then drop `Claude.write_config/2`. The 0.75.1
+      second is not measured. Then drop `Claude.write_config/3`. The 0.75.1
       re-probe found both paths on to be harmless for a same-named server, so
       the deletion is a clean-up rather than an urgency — but it stays a
       deletion, not a permanent second path.
@@ -133,7 +135,7 @@ defmodule Managoat.Runtimes.Quirks do
       delete_when: """
       `session/load` stops appending a `$set` that replaces the transcript it
       is loading. Delete `Managoat.Runtimes.Gemini.SessionStore`, its call in
-      `Gemini.prepare_sandbox/3`, the per-turn `consolidate/2` call, and the
+      `Gemini.prepare_sandbox/4`, the per-turn `consolidate/3` call, and the
       mechanism section of `Managoat.Runtimes.ACP`'s moduledoc.
       """
     },
@@ -180,32 +182,6 @@ defmodule Managoat.Runtimes.Quirks do
       version that fills `usage` with zeroes while the real counts stay in
       `_meta.quota` would silently start billing nothing again, which is the
       failure this entry exists for.
-      """
-    },
-    %{
-      id: :home_on_tmp,
-      runtimes: ["gemini"],
-      summary: "gemini is moved to HOME=/tmp to dodge a failing rename",
-      why: """
-      gemini-cli aborts during init if it cannot rename
-      `$HOME/.gemini/projects.json.tmp` onto `projects.json`. The sprite user
-      appears to have write access to /home/sprite — `ls` and most writes go
-      through — but a rename across that ACL boundary errors out. It is moved
-      to /tmp, and every path Fountain writes for it follows.
-      """,
-      upstream: {:none, "sprite base-image filesystem permissions, ours to change"},
-      measured_against: "sprite base image as of 2026-08-22",
-      implemented_by: {Managoat.Runtimes.Layout, :home_env, 1},
-      reprobe: """
-      As the sprite user on a live sandbox: `touch /home/sprite/.probe.tmp &&
-      mv /home/sprite/.probe.tmp /home/sprite/.probe`. A clean rename means
-      the workaround is unnecessary.
-      """,
-      delete_when: """
-      The sprite user can rename across /home/sprite. Then both rows in
-      `Managoat.Runtimes.Layout` take the image's own home and `home_env/1`
-      returns `[]` for every runtime — no other change is needed, which is
-      the point of deriving the paths from it.
       """
     },
     %{
@@ -283,8 +259,8 @@ defmodule Managoat.Runtimes.Quirks do
       CLI 2.1.280 (adapter 0.81.2) defaults `showThinkingSummaries` to false,
       and the API then returns thinking with its display omitted. The adapter
       has no text to forward, so no `agent_thought_chunk` reaches the host
-      where 0.75.1 streamed dozens per turn. `Claude.write_config/2` writes the
-      setting into `~/.claude/settings.json` on every provision and wake.
+      where 0.75.1 streamed dozens per turn. `Claude.write_config/3` writes the
+      setting into `$CLAUDE_CONFIG_DIR/settings.json` on every provision and wake.
       """,
       upstream:
         {:none,
@@ -292,14 +268,14 @@ defmodule Managoat.Runtimes.Quirks do
       measured_against:
         "claude-agent-acp 0.81.2 (CLI 2.1.280), 2026-09-25, claude-haiku-4-5: " <>
           "0 thought chunks without the setting, 41 with it",
-      implemented_by: {Managoat.Runtimes.Claude, :write_config, 2},
+      implemented_by: {Managoat.Runtimes.Claude, :write_config, 3},
       reprobe: """
       Run a turn that thinks (a haiku turn asked to reason briefly) with an
       empty `settings.json`, and count `agent_thought_chunk` updates.
       """,
       delete_when: """
       The CLI streams thinking text to the adapter by default again, or no host
-      shows thinking. Then drop the setting from `Claude.write_config/2`.
+      shows thinking. Then drop the setting from `Claude.write_config/3`.
       """
     },
     %{

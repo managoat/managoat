@@ -24,7 +24,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
       inference_source: nil
     }
 
-    stub(Provisioning, :write_instructions, fn _handle, _runtime, _agent -> :ok end)
+    stub(Provisioning, :write_instructions, fn _handle, _runtime, _agent, _home -> :ok end)
     stub(Provisioning, :write_env_file, fn _handle, _env -> :ok end)
     stub(Skills, :mount, fn _handle, _conv, _agent, _sprite_env -> :ok end)
     stub(InferenceBinding, :reserve, fn _conv, _source -> :ok end)
@@ -36,7 +36,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
   test "the config and the CA are written at once", ctx do
     test_pid = self()
 
-    stub(Provisioning, :write_runtime_config, fn _handle, _module, _agent ->
+    stub(Provisioning, :write_runtime_config, fn _handle, _module, _agent, _home ->
       send(test_pid, {:config, self()})
       receive do: (:go -> :ok)
     end)
@@ -63,7 +63,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
 
   test "the wake's skills get the conversation's env, after the CA", ctx do
     test_pid = self()
-    stub(Provisioning, :write_runtime_config, fn _, _, _ -> :ok end)
+    stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
     stub(Egress, :install_ca, fn _, _, _ -> send(test_pid, :ca) && :ok end)
 
     stub(Skills, :mount, fn _handle, _conv, _agent, sprite_env ->
@@ -78,7 +78,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
   end
 
   test "a failed runtime config is logged but broker readiness refuses the wake", ctx do
-    stub(Provisioning, :write_runtime_config, fn _, _, _ -> {:error, :refused} end)
+    stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> {:error, :refused} end)
     stub(Egress, :install_ca, fn _, _, _ -> {:error, {:broker, :ca_install_exit, 1, ""}} end)
 
     log =
@@ -91,7 +91,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
   end
 
   test "a failed env file write is the reattach's answer", ctx do
-    stub(Provisioning, :write_runtime_config, fn _, _, _ -> :ok end)
+    stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
     stub(Egress, :install_ca, fn _, _, _ -> :ok end)
     stub(Provisioning, :write_env_file, fn _, _ -> {:error, :disk_full} end)
     reject(&Provisioning.prepare_runtime_sprite/7)

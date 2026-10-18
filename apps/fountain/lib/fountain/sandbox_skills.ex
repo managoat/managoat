@@ -102,12 +102,16 @@ defmodule Fountain.SandboxSkills do
     if remote?(selected) do
       mount(handle, runtime_module, skills, opts)
     else
-      root = runtime_module.skills_root()
+      home = Keyword.fetch!(opts, :config_home)
+      root = runtime_module.skills_root(home)
 
       with_skill_lock(handle, root, fn ->
         with :ok <-
                write_manifest(handle, Path.join(root, @manifest_name), named_manifest(selected)) do
-          Managoat.Runtimes.Skills.install(handle, selected, runtime: runtime_module)
+          Managoat.Runtimes.Skills.install(handle, selected,
+            runtime: runtime_module,
+            config_home: home
+          )
         end
       end)
     end
@@ -173,6 +177,9 @@ defmodule Fountain.SandboxSkills do
 
   Options:
 
+    * `:config_home` (required, here and in `mount/4` and `mount_fresh/4`) —
+      the conversation's config home (`Fountain.Conversations.ConfigHome`);
+      the skills root is the runtime's `skills_root/1` of it.
     * `:env` — the `{name, value}` pairs a GitHub install runs with: the
       conversation's proxy and CA variables (`Fountain.Broker.egress_env/1`).
       Without them a brokered sandbox cannot resolve the registry.
@@ -200,7 +207,7 @@ defmodule Fountain.SandboxSkills do
   end
 
   def reconcile(handle, runtime_module, skills, previous, opts) when is_atom(runtime_module) do
-    root = runtime_module.skills_root()
+    root = runtime_module.skills_root(Keyword.fetch!(opts, :config_home))
 
     with_skill_lock(handle, root, fn ->
       do_reconcile(handle, runtime_module, root, skills, previous, opts)
@@ -394,7 +401,8 @@ defmodule Fountain.SandboxSkills do
 
     with {:ok, remote, present} <- remote_to_install(handle, root, remote, managed, opts),
          {:ok, installed, failed} <- install_remote(handle, root, remote, managed, present, env),
-         {:ok, installed} <- install_inline(handle, runtime, root, inline, installed) do
+         {:ok, installed} <-
+           install_inline(handle, runtime, root, inline, installed, opts[:config_home]) do
       {:ok, Map.take(installed, Enum.map(normalize(selected), &identity/1)), failed}
     end
   end
@@ -473,13 +481,17 @@ defmodule Fountain.SandboxSkills do
     end
   end
 
-  defp install_inline(handle, runtime, root, inline, managed) do
+  defp install_inline(handle, runtime, root, inline, managed, home) do
     Enum.reduce_while(inline, {:ok, managed}, fn skill, {:ok, installed} ->
       next = Map.put(installed, identity(skill), names(skill))
 
       # Inline installs have an explicit destination: record it before writing.
       with :ok <- write_manifest(handle, Path.join(root, @manifest_name), next),
-           :ok <- Managoat.Runtimes.Skills.install(handle, [skill], runtime: runtime) do
+           :ok <-
+             Managoat.Runtimes.Skills.install(handle, [skill],
+               runtime: runtime,
+               config_home: home
+             ) do
         {:cont, {:ok, next}}
       else
         {:error, _} = error -> {:halt, error}

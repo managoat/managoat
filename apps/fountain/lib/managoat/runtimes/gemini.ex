@@ -27,6 +27,12 @@ defmodule Managoat.Runtimes.Gemini do
     ACP names the session, which is the whole reason the conversion was worth
     doing.
 
+  Every file is under the conversation's config home, which `config_env/1`
+  exports as `GEMINI_CLI_HOME` (ADR 0097): gemini-cli resolves its home
+  through it and keeps `.gemini/` (settings, skills, `GEMINI.md`, its chat
+  store, its project registry) under it. `HOME` stays the image's; it used to
+  be `/tmp`, which `Managoat.Runtimes.Layout` says why and why no longer.
+
   Auth: `GEMINI_API_KEY` exported into the sprite.
   """
 
@@ -41,12 +47,15 @@ defmodule Managoat.Runtimes.Gemini do
   # message (gemini walks up from cwd looking for .git, and /home/sprite's
   # perms trip it).  Also gives MemoryDiscovery a real workspace root
   # to anchor on instead of crawling /home. `Managoat.Runtimes.Layout` owns
-  # the path, and the ACP session runs in the same place because it reads
-  # the same row.
+  # the path, and a conversation that names no cwd of its own runs in the
+  # same place because it reads the same row.
   @workdir Layout.cwd(@runtime)
 
   @impl true
-  def skills_root, do: Layout.skills_root(@runtime)
+  def skills_root(home), do: Layout.skills_root(@runtime, home)
+
+  @impl true
+  def config_env(home), do: Layout.config_env(@runtime, home)
 
   @impl true
   def default_env(_agent, inference_credentials) do
@@ -57,15 +66,6 @@ defmodule Managoat.Runtimes.Gemini do
         key -> [{"GEMINI_API_KEY", key}]
       end
 
-    # gemini-cli aborts during init if it can't rename
-    # `~/.gemini/projects.json.tmp` → `projects.json`. The sprite user
-    # can write into /home/sprite/.gemini at first glance (ACLs let `ls`
-    # and most writes through), but rename across that boundary errors
-    # out. /tmp side-steps it cleanly. Mirrors the same fix we needed
-    # for opencode's `~/.opencode` access path. The path itself lives in
-    # `Managoat.Runtimes.Layout`, so the HOME gemini gets and the HOME
-    # Fountain writes its config under are the same one by construction.
-    #
     # GEMINI_CLI_TRUST_WORKSPACE: gemini-cli turns `security.folderTrust` on by
     # default from some release after 0.59.0, and the Sprites image ships its
     # own, newer CLI (0.63.0 on 2026-10-16), which wins over `@cli_package`.
@@ -74,34 +74,38 @@ defmodule Managoat.Runtimes.Gemini do
     # session ones included, silently never appeared. The workspace is the
     # agent's own sandbox, and trusting it grants nothing the agent's shell
     # does not already have.
-    base ++ [{"GEMINI_CLI_TRUST_WORKSPACE", "true"}] ++ Layout.home_env(@runtime)
+    base ++ [{"GEMINI_CLI_TRUST_WORKSPACE", "true"}]
   end
 
-  # Gemini reads user-scope MCP servers from `$HOME/.gemini/settings.json`,
-  # under `mcpServers` (camelCase, same shape as Claude). Because we run
-  # with HOME=/tmp, write there only — duplicating into /home/sprite
-  # was making gemini register every MCP tool twice on startup and
-  # spam the log with `Tool ... already registered. Overwriting.` lines.
-  @settings Path.join(Layout.config_root(@runtime), "settings.json")
+  @doc "The user-scope settings file under `home`, the conversation's config home."
+  @spec settings_path(String.t()) :: String.t()
+  def settings_path(home), do: Path.join(Layout.config_dir(@runtime, home), "settings.json")
 
+  # Gemini reads user-scope MCP servers from `<home>/.gemini/settings.json`,
+  # under `mcpServers` (camelCase, same shape as Claude). Written on every
+  # call, an empty map included, so an agent that drops a server drops it on
+  # its next wake. Only here: duplicating it into a second settings file had
+  # gemini register every MCP tool twice on startup and spam the log with
+  # `Tool ... already registered. Overwriting.` lines.
   @impl true
-  def write_config(_handle, nil), do: :ok
-  def write_config(_handle, %{mcp_servers: m}) when m == %{} or is_nil(m), do: :ok
-
-  def write_config(handle, %{mcp_servers: mcp_servers}) do
-    payload = Jason.encode!(%{"mcpServers" => mcp_servers}, pretty: true)
+  def write_config(handle, agent, home) do
+    payload = Jason.encode!(%{"mcpServers" => mcp_servers(agent)}, pretty: true)
+    path = settings_path(home)
 
     # Idempotent, so a transport blip on a fresh sprite is retried; a write
     # that still fails is reported, not swallowed — the agent would otherwise
     # start with none of its servers and no record of why.
     case Managoat.Sandbox.Retry.with_backoff(
-           fn -> Managoat.Sandbox.write_file(handle, @settings, payload) end,
+           fn -> Managoat.Sandbox.write_file(handle, path, payload) end,
            label: "gemini config write"
          ) do
       :ok -> :ok
-      {:error, reason} -> {:error, {:runtime_config, @settings, reason}}
+      {:error, reason} -> {:error, {:runtime_config, path, reason}}
     end
   end
+
+  defp mcp_servers(%{mcp_servers: servers}) when is_map(servers), do: servers
+  defp mcp_servers(_agent), do: %{}
 
   # The CLI the image would carry, for a sandbox that has none. Gemini speaks
   # ACP natively, so there is no adapter install to bring it; the Sprites and
@@ -111,11 +115,12 @@ defmodule Managoat.Runtimes.Gemini do
   # `Managoat.Runtimes.Quirks` were measured against. An image's own copy wins.
   @cli_package "@google/gemini-cli@0.59.0"
 
-  # Install the CLI when it is missing, then make sure the workspace exists
-  # and is a git repo; gemini's MemoryDiscovery is happy as long as it finds
-  # *some* .git when it walks up from cwd.
+  # Install the CLI when it is missing, then make sure the default workspace
+  # exists and is a git repo; gemini's MemoryDiscovery is happy as long as it
+  # finds *some* .git when it walks up from cwd. A conversation's own cwd is
+  # created by the host and never git-init'd: it may be where a clone lands.
   @impl true
-  def prepare_sandbox(handle, _agent, sprite_env) do
+  def prepare_sandbox(handle, _agent, sprite_env, _home) do
     script = """
     set -e
     if ! command -v gemini >/dev/null; then

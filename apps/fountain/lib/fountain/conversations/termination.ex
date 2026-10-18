@@ -93,6 +93,56 @@ defmodule Fountain.Conversations.Termination do
   end
 
   @doc """
+  Remove an ending conversation's config home from its machine, once its
+  adapter has stopped (ADR 0097): `Fountain.Conversations.ConfigHome.remove/2`,
+  best effort, from the live server's terminate path.
+
+  Only on a machine that is awake (`ready`): an exec on a parked one would
+  resume it to delete a directory, and the machine goes with the conversation
+  anyway. That is also why the dead-server path does not do this. Until a
+  machine can outlive a conversation (ADR 0097's later steps) the destroy that
+  follows removes the directory regardless; this is the path that keeps it
+  from being left behind once it does.
+
+  `state` is the server's: its `handle`, `sandbox_id` and `conversation_id`.
+
+  Run off the terminate path, in a supervised task, so a slow or idle
+  machine never holds the terminate up; `remove_config_home_now/1` is the
+  work itself.
+  """
+  @spec remove_config_home(map()) :: :ok
+  def remove_config_home(%{handle: nil}), do: :ok
+  def remove_config_home(%{sandbox_id: nil}), do: :ok
+
+  def remove_config_home(%{handle: _, sandbox_id: _, conversation_id: _} = state) do
+    target = Map.take(state, [:handle, :sandbox_id, :conversation_id])
+
+    case Task.Supervisor.start_child(Fountain.TaskSupervisor, fn ->
+           remove_config_home_now(target)
+         end) do
+      {:ok, _pid} -> :ok
+      _ -> :ok
+    end
+  end
+
+  @doc false
+  @spec remove_config_home_now(map()) :: :ok
+  def remove_config_home_now(%{handle: nil}), do: :ok
+  def remove_config_home_now(%{sandbox_id: nil}), do: :ok
+
+  def remove_config_home_now(%{handle: handle, sandbox_id: sandbox_id, conversation_id: conv_id}) do
+    # ownership: the conversation's own server, which established both rows
+    # at init.
+    with %Sandbox{status: "ready"} <- Conversations._unsafe_get_sandbox(sandbox_id),
+         # ownership: as above.
+         %Conversation{} = conv <- Conversations._unsafe_get_conversation(conv_id) do
+      Fountain.Conversations.ConfigHome.remove(handle, conv)
+    else
+      _ -> :ok
+    end
+  end
+
+  @doc """
   Destroy the machine of a conversation that is ending, through its owner
   (ADR 0058 stage 5).
 

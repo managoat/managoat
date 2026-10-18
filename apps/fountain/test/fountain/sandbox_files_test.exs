@@ -132,6 +132,17 @@ defmodule Fountain.SandboxFilesTest do
       assert SandboxFiles.cwd(Repo.reload!(sandbox)) == "/tmp/gemini-workspace"
     end
 
+    test "a conversation's own cwd is where paths resolve from, and a root (ADR 0097)", ctx do
+      agent = insert_agent(user_id: ctx.user.id, runtime: "claude")
+      sandbox = insert_sandbox(user_id: ctx.user.id, agent_id: agent.id, status: "ready")
+      conv = insert_conversation(user_id: ctx.user.id, agent: agent, sandbox: sandbox)
+      conv |> Ecto.Changeset.change(cwd: "/home/sprite/work/app") |> Repo.update!()
+
+      assert SandboxFiles.cwd(sandbox) == "/home/sprite/work/app"
+      assert {:ok, "/home/sprite/work/app/a.md"} = SandboxFiles.resolve_path(sandbox, "a.md")
+      assert SandboxFiles.roots(sandbox) == [@home, "/home/sprite/work/app"]
+    end
+
     test "a gemini sandbox works from its /tmp workspace and may read the home too", ctx do
       agent = insert_agent(user_id: ctx.user.id, runtime: "gemini")
       sandbox = insert_sandbox(user_id: ctx.user.id, status: "ready", agent_id: agent.id)

@@ -156,7 +156,7 @@ defmodule Fountain.Machines.ProvisionTest do
                Provision.run(
                  ctx.sandbox.id,
                  recording_pipeline(),
-                 opts(ready_attrs: [applied_skills: [%{"n" => 1}]])
+                 opts(ready_attrs: [provider_meta: %{"n" => 1}])
                )
 
       assert_received {:created, name, "pending", "provisioning"}
@@ -170,7 +170,7 @@ defmodule Fountain.Machines.ProvisionTest do
       ready = row(ctx)
       assert ready.status == "ready"
       assert ready.transition == nil
-      assert ready.applied_skills == [%{"n" => 1}]
+      assert ready.provider_meta == %{"n" => 1}
       assert_lease_released(ready)
     end
 

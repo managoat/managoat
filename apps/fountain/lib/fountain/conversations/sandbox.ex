@@ -56,15 +56,11 @@ defmodule Fountain.Conversations.Sandbox do
     # `reset_requested_at` and `teardown_requested_at` were the fence until
     # ADR 0058 stage 9a moved the intent onto the `destroying` stamp above.
     # Stage 9b-i stopped reading them and 9b-ii dropped the columns.
-    # The skill selection this machine was last reconciled to, so the next
-    # reconciliation knows which entries under its conversation's skills root
-    # are ours. `nil` is "unknown", not "none": the reconciliation then falls
-    # back to the conversation's Agent version
-    # (`Fountain.Conversations.Skills.previous_skills/1`). One list per machine,
-    # because a machine carries one conversation and so one runtime (ADR 0073);
-    # it was keyed by runtime while machines hosted mixed-runtime guests
-    # (#2514). Written through `Fountain.Machines.Machine.record_skills/2`.
-    field :applied_skills, {:array, :map}
+    # `applied_skills`, the record of the skills the machine's skills root
+    # carried, moved to the conversation with config homes (ADR 0097 step 1):
+    # skills live in a conversation's own config home. The column stays
+    # unmapped for a release so a rolling-back release still reads it, and
+    # a later migration drops it.
     # The machine owner's lease and its in-flight state (ADR 0058).
     # `lease_epoch` is monotonic and never reused; `lease_node` names the
     # process of this boot that holds the machine (ADR 0072); `transition` and
@@ -122,7 +118,6 @@ defmodule Fountain.Conversations.Sandbox do
       :provider_meta,
       :terminated_at,
       :last_resumed_at,
-      :applied_skills,
       :environment_id,
       :agent_id,
       :vault_id,

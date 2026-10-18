@@ -8,6 +8,8 @@ defmodule Fountain.SandboxSkillsTest do
   setup :verify_on_exit!
 
   @handle %Managoat.Sandbox.Handle{provider: :sprites, name: "skills-test"}
+  # A home DiskRuntime ignores, and the acp runtime's legacy one for the module case.
+  @home "/home/sprite/.claude"
 
   test "bundled/0 is the API skill, read from priv" do
     assert [%{"name" => "managoat", "content" => api}] = SandboxSkills.bundled()
@@ -25,7 +27,10 @@ defmodule Fountain.SandboxSkillsTest do
 
     stub(Managoat.Sandbox, :exec, fn _, _, _, _ -> {:ok, "", 0} end)
 
-    assert :ok = SandboxSkills.mount(@handle, "claude", [%{"name" => "mine", "content" => "# m"}])
+    assert :ok =
+             SandboxSkills.mount(@handle, "claude", [%{"name" => "mine", "content" => "# m"}],
+               config_home: Fountain.Conversations.ConfigHome.legacy_home("claude")
+             )
 
     assert_receive {:wrote, "/home/sprite/.claude/skills/managoat/SKILL.md"}
     assert_receive {:wrote, "/home/sprite/.claude/skills/mine/SKILL.md"}
@@ -45,9 +50,14 @@ defmodule Fountain.SandboxSkillsTest do
 
     stub(Managoat.Sandbox, :exec, fn _, _, _, _ -> {:ok, "", 0} end)
 
-    assert :ok = SandboxSkills.mount(@handle, "acp", [%{"name" => "mine", "content" => "# m"}])
+    assert :ok =
+             SandboxSkills.mount(@handle, "acp", [%{"name" => "mine", "content" => "# m"}],
+               config_home: Fountain.Conversations.ConfigHome.legacy_home("acp")
+             )
 
-    root = Fountain.CommandRuntime.skills_root()
+    root =
+      Fountain.CommandRuntime.skills_root(Fountain.Conversations.ConfigHome.legacy_home("acp"))
+
     assert_receive {:wrote, ^root <> "/managoat/SKILL.md"}
     assert_receive {:wrote, ^root <> "/mine/SKILL.md"}
   end
@@ -57,7 +67,7 @@ defmodule Fountain.SandboxSkillsTest do
     stub(Managoat.Sandbox, :write_file, fn _h, path, _b -> send(test, {:wrote, path}) && :ok end)
     stub(Managoat.Sandbox, :exec, fn _, _, _, _ -> {:ok, "", 0} end)
 
-    assert :ok = SandboxSkills.mount(@handle, Fountain.CommandRuntime, nil)
+    assert :ok = SandboxSkills.mount(@handle, Fountain.CommandRuntime, nil, config_home: @home)
     assert_receive {:wrote, "/home/sprite/.claude/skills/managoat/SKILL.md"}
   end
 
@@ -66,7 +76,11 @@ defmodule Fountain.SandboxSkillsTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, reason} = SandboxSkills.mount(@handle, "nonesuch", [])
+        assert {:error, reason} =
+                 SandboxSkills.mount(@handle, "nonesuch", [],
+                   config_home: Fountain.Conversations.ConfigHome.legacy_home("nonesuch")
+                 )
+
         assert reason =~ "unsupported runtime"
       end)
 
@@ -87,7 +101,11 @@ defmodule Fountain.SandboxSkillsTest do
       :ok
     end)
 
-    assert :ok = SandboxSkills.mount(@handle, "codex", nil)
+    assert :ok =
+             SandboxSkills.mount(@handle, "codex", nil,
+               config_home: Fountain.Conversations.ConfigHome.legacy_home("codex")
+             )
+
     assert_receive {:wrote, "/home/sprite/.codex/skills/managoat/SKILL.md"}
     assert_receive {:wrote, "/home/sprite/.codex/skills/.fountain-managed-skills"}
   end
@@ -97,7 +115,7 @@ defmodule Fountain.SandboxSkillsTest do
     A runtime whose skills root is a real directory on this machine, so the
     reconciliation can be measured against a filesystem rather than a mock.
     """
-    def skills_root, do: Process.get(:skills_test_root)
+    def skills_root(_home), do: Process.get(:skills_test_root)
   end
 
   describe "reconciliation on disk" do
@@ -144,14 +162,14 @@ defmodule Fountain.SandboxSkillsTest do
       root: root
     } do
       skills = [%{"name" => "mine", "content" => "# m"}]
-      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, skills)
+      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, skills, config_home: @home)
       reconciled = snapshot(root)
 
       File.rm_rf!(root)
       File.mkdir_p!(root)
       reject(&Managoat.Sandbox.exec/4)
 
-      assert :ok = SandboxSkills.mount_fresh(@handle, DiskRuntime, skills)
+      assert :ok = SandboxSkills.mount_fresh(@handle, DiskRuntime, skills, config_home: @home)
       assert snapshot(root) == reconciled
       assert Map.has_key?(reconciled, ".fountain-managed-skills")
     end
@@ -164,7 +182,8 @@ defmodule Fountain.SandboxSkillsTest do
                  @handle,
                  DiskRuntime,
                  [%{"source" => "owner/repo", "name" => "remote"}],
-                 env: env
+                 env: env,
+                 config_home: @home
                )
 
       assert [_] = fetches()
@@ -178,14 +197,24 @@ defmodule Fountain.SandboxSkillsTest do
       File.write!(Path.join(root, "personal/SKILL.md"), "My local skill")
 
       assert :ok =
-               SandboxSkills.mount(@handle, DiskRuntime, [
-                 %{"name" => "old", "content" => "Old skill"}
-               ])
+               SandboxSkills.mount(
+                 @handle,
+                 DiskRuntime,
+                 [
+                   %{"name" => "old", "content" => "Old skill"}
+                 ],
+                 config_home: @home
+               )
 
       assert :ok =
-               SandboxSkills.mount(@handle, DiskRuntime, [
-                 %{"name" => "new", "content" => "New skill"}
-               ])
+               SandboxSkills.mount(
+                 @handle,
+                 DiskRuntime,
+                 [
+                   %{"name" => "new", "content" => "New skill"}
+                 ],
+                 config_home: @home
+               )
 
       refute File.exists?(Path.join(root, "old"))
       assert File.read!(Path.join(root, "new/SKILL.md")) == "New skill"
@@ -206,7 +235,7 @@ defmodule Fountain.SandboxSkillsTest do
         Jason.encode!(%{Jason.encode!([nil, "fountain"]) => ["fountain"]})
       )
 
-      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [])
+      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [], config_home: @home)
 
       refute File.exists?(Path.join(root, "fountain"))
       assert File.exists?(Path.join(root, "managoat/SKILL.md"))
@@ -220,9 +249,18 @@ defmodule Fountain.SandboxSkillsTest do
       previous = [%{"name" => "legacy", "content" => "Old skill"}]
       selected = [%{"name" => "current", "content" => "Current skill"}]
 
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, selected, previous)
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, selected, previous,
+                 config_home: @home
+               )
+
       manifest = File.read!(Path.join(root, ".fountain-managed-skills"))
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, selected, previous)
+
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, selected, previous,
+                 config_home: @home
+               )
+
       assert File.read!(Path.join(root, ".fountain-managed-skills")) == manifest
       assert File.read!(Path.join(root, "current/SKILL.md")) == "Current skill"
       assert File.read!(Path.join(root, "personal/SKILL.md")) == "Keep my work"
@@ -246,7 +284,7 @@ defmodule Fountain.SandboxSkillsTest do
         File.write!(manifest, contents)
 
         assert {:error, :invalid_skill_manifest} =
-                 SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+                 SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
 
         assert File.read!(manifest) == contents
         assert File.read!(Path.join(root, "legacy/SKILL.md")) == "Old skill"
@@ -256,13 +294,13 @@ defmodule Fountain.SandboxSkillsTest do
       File.ln_s!(Path.join(root, "legacy/SKILL.md"), manifest)
 
       assert {:error, :invalid_skill_manifest} =
-               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
 
       File.rm!(manifest)
       File.mkdir!(manifest)
 
       assert {:error, :invalid_skill_manifest} =
-               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
 
       assert File.read!(Path.join(root, "legacy/SKILL.md")) == "Old skill"
     end
@@ -272,10 +310,15 @@ defmodule Fountain.SandboxSkillsTest do
       File.write!(Path.join(root, "legacy/SKILL.md"), "Old skill")
       previous = [%{"name" => "legacy", "content" => "Old skill"}]
 
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
+
       File.mkdir_p!(Path.join(root, "legacy"))
       File.write!(Path.join(root, "legacy/SKILL.md"), "Personal replacement")
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
+
       assert File.read!(Path.join(root, "legacy/SKILL.md")) == "Personal replacement"
     end
 
@@ -286,10 +329,16 @@ defmodule Fountain.SandboxSkillsTest do
       File.write!(Path.join(root, "legacy/SKILL.md"), "Old skill")
       previous = [%{"name" => "legacy", "content" => "Old skill"}]
       expect(Managoat.Sandbox, :write_file, fn _, _, _ -> {:error, :offline} end)
-      assert {:error, :offline} = SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+
+      assert {:error, :offline} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
+
       assert File.read!(Path.join(root, "legacy/SKILL.md")) == "Old skill"
       refute File.exists?(Path.join(root, ".fountain-managed-skills"))
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [], previous)
+
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], previous, config_home: @home)
+
       assert File.regular?(Path.join(root, ".fountain-managed-skills"))
       refute File.exists?(Path.join(root, "legacy"))
     end
@@ -308,9 +357,15 @@ defmodule Fountain.SandboxSkillsTest do
 
       for _retry <- 1..2 do
         assert {:error, :legacy_skill_ownership_unknown} =
-                 SandboxSkills.reconcile(@handle, DiskRuntime, [], [
-                   %{"source" => "owner/repo"}
-                 ])
+                 SandboxSkills.reconcile(
+                   @handle,
+                   DiskRuntime,
+                   [],
+                   [
+                     %{"source" => "owner/repo"}
+                   ],
+                   config_home: @home
+                 )
 
         refute File.exists?(Path.join(root, ".fountain-managed-skills"))
         assert File.dir?(Path.join(root, "unknown-remote"))
@@ -329,7 +384,9 @@ defmodule Fountain.SandboxSkillsTest do
       end)
 
       assert {:ok, []} =
-               SandboxSkills.reconcile(@handle, DiskRuntime, [], [%{"source" => "owner/repo"}])
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], [%{"source" => "owner/repo"}],
+                 config_home: @home
+               )
     end
 
     test "recovers unnamed legacy GitHub skills from the source lock", %{root: root} do
@@ -354,7 +411,9 @@ defmodule Fountain.SandboxSkillsTest do
       end)
 
       assert {:ok, []} =
-               SandboxSkills.reconcile(@handle, DiskRuntime, [], [%{"source" => "owner/repo"}])
+               SandboxSkills.reconcile(@handle, DiskRuntime, [], [%{"source" => "owner/repo"}],
+                 config_home: @home
+               )
 
       refute File.exists?(Path.join(root, "legacy-remote"))
       # Installed from a source this conversation never named.
@@ -375,7 +434,10 @@ defmodule Fountain.SandboxSkillsTest do
       # The failed fetch is returned, so the caller does not record it.
       ExUnit.CaptureLog.capture_log(fn ->
         assert {:ok, [^skill]} =
-                 SandboxSkills.reconcile(@handle, DiskRuntime, [skill], [skill], refresh: [skill])
+                 SandboxSkills.reconcile(@handle, DiskRuntime, [skill], [skill],
+                   refresh: [skill],
+                   config_home: @home
+                 )
       end)
 
       assert File.read!(Path.join(root, "remote/SKILL.md")) == "Already installed"
@@ -390,13 +452,20 @@ defmodule Fountain.SandboxSkillsTest do
       skill = %{"source" => "owner/repo"}
       proxy = [{"HTTPS_PROXY", "http://tok:c-x@broker:8443"} | env]
 
-      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [skill], env: proxy)
+      assert :ok =
+               SandboxSkills.mount(@handle, DiskRuntime, [skill], env: proxy, config_home: @home)
+
       assert [fetch_env] = fetches()
       assert {"HTTPS_PROXY", "http://tok:c-x@broker:8443"} in fetch_env
       assert File.read!(Path.join(root, "discovered/SKILL.md")) =~ "Remote skill"
 
       # A wake: the recorded directories are there, so no network.
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil, env: env)
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil,
+                 env: env,
+                 config_home: @home
+               )
+
       assert fetches() == []
       manifest = File.read!(Path.join(root, ".fountain-managed-skills"))
       assert manifest =~ "discovered" and manifest =~ "remote"
@@ -406,14 +475,21 @@ defmodule Fountain.SandboxSkillsTest do
       assert {:ok, []} =
                SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil,
                  refresh: [skill],
-                 env: env
+                 env: env,
+                 config_home: @home
                )
 
       assert [_] = fetches()
 
       # One of its directories went missing.
       File.rm_rf!(Path.join(root, "discovered"))
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil, env: env)
+
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil,
+                 env: env,
+                 config_home: @home
+               )
+
       assert [_] = fetches()
       assert File.exists?(Path.join(root, "discovered/SKILL.md"))
     end
@@ -426,7 +502,7 @@ defmodule Fountain.SandboxSkillsTest do
         %{"source" => "owner/repo", "name" => "discovered"}
       ]
 
-      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, skills, env: env)
+      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, skills, env: env, config_home: @home)
       assert [_] = fetches()
       assert File.exists?(Path.join(root, "remote/SKILL.md"))
       assert File.exists?(Path.join(root, "discovered/SKILL.md"))
@@ -436,13 +512,16 @@ defmodule Fountain.SandboxSkillsTest do
       File.mkdir_p!(Path.join(root, "personal"))
 
       assert :ok =
-               SandboxSkills.mount(@handle, DiskRuntime, [%{"source" => "owner/repo"}], env: env)
+               SandboxSkills.mount(@handle, DiskRuntime, [%{"source" => "owner/repo"}],
+                 env: env,
+                 config_home: @home
+               )
 
       manifest = File.read!(Path.join(root, ".fountain-managed-skills"))
       assert manifest =~ "discovered" and manifest =~ "remote"
       refute manifest =~ "personal"
 
-      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [])
+      assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [], config_home: @home)
       refute File.exists?(Path.join(root, "discovered"))
       refute File.exists?(Path.join(root, "remote"))
       assert File.dir?(Path.join(root, "personal"))
@@ -453,7 +532,10 @@ defmodule Fountain.SandboxSkillsTest do
       File.write!(Path.join(root, "discovered/SKILL.md"), "Personal")
 
       assert :ok =
-               SandboxSkills.mount(@handle, DiskRuntime, [%{"source" => "owner/repo"}], env: env)
+               SandboxSkills.mount(@handle, DiskRuntime, [%{"source" => "owner/repo"}],
+                 env: env,
+                 config_home: @home
+               )
 
       assert File.read!(Path.join(root, "discovered/SKILL.md")) =~ "Remote skill"
       refute File.read!(Path.join(root, ".fountain-managed-skills")) =~ "discovered"
@@ -470,14 +552,21 @@ defmodule Fountain.SandboxSkillsTest do
       end)
 
       ExUnit.CaptureLog.capture_log(fn ->
-        assert :ok = SandboxSkills.mount(@handle, DiskRuntime, [skill], env: env)
+        assert :ok =
+                 SandboxSkills.mount(@handle, DiskRuntime, [skill], env: env, config_home: @home)
       end)
 
       refute File.exists?(Path.join(root, "remote"))
       assert File.read!(Path.join(root, ".fountain-managed-skills")) =~ "remote"
 
       stub(Managoat.Sandbox, :exec, fn _, "bash", args, opts -> SkillRepo.exec(args, opts) end)
-      assert {:ok, []} = SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil, env: env)
+
+      assert {:ok, []} =
+               SandboxSkills.reconcile(@handle, DiskRuntime, [skill], nil,
+                 env: env,
+                 config_home: @home
+               )
+
       assert File.exists?(Path.join(root, "remote/SKILL.md"))
     end
   end

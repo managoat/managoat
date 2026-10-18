@@ -677,7 +677,9 @@ defmodule Fountain.Conversations do
   # context's public surface.
   @doc false
   def insert_conversation_row(attrs) do
-    %Conversation{} |> Conversation.changeset(attrs) |> Repo.insert()
+    # An `:id` chosen by the caller, when the row's other attributes are
+    # derived from it (a launch's config home, ADR 0097); generated otherwise.
+    %Conversation{id: Map.get(attrs, :id)} |> Conversation.changeset(attrs) |> Repo.insert()
   end
 
   @doc """

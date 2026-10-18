@@ -29,7 +29,7 @@ defmodule Fountain.Conversations.FreshProvision do
 
   alias Fountain.Conversations
   alias Fountain.Conversations.ActorStatus
-  alias Fountain.Conversations.{CallbackKey, ConversationServer, Egress}
+  alias Fountain.Conversations.{CallbackKey, ConfigHome, ConversationServer, Egress}
   alias Fountain.Conversations.{Lifecycle, Output}
   alias Fountain.Conversations.{Provisioning, TurnMachine}
   alias Fountain.Machines.Machine
@@ -142,16 +142,17 @@ defmodule Fountain.Conversations.FreshProvision do
         &pipeline(ctx, &1, &2),
         actor: "system:conversation_server",
         conversation_id: conv.id,
-        on_claim: &announce_and_check(state, sandbox, &1),
-        # Known before the pipeline runs, because it describes what the disk
-        # is *to be* built with rather than anything the build discovers.
-        # Written by the finalize, in the statement that makes the row
-        # `ready`.
-        ready_attrs: [applied_skills: skills]
+        on_claim: &announce_and_check(state, sandbox, &1)
       )
 
     case result do
       {:ok, :provisioned, %{state: provisioned, conv: conv}} ->
+        # What the config home was built with, known from the agent rather
+        # than from anything the build discovered. Recorded once the machine
+        # is `ready`, so a superseded provision, which never gets here,
+        # leaves no record of a disk another owner threw away. Best effort:
+        # with no record a wake falls back to the agent version's skills.
+        _ = Fountain.Conversations.Skills.record(conv, skills)
         Output.publish_stage(state.conversation_id, "provision", "done")
 
         # Any prompt this conversation was started for arrives as a cast,
@@ -262,6 +263,7 @@ defmodule Fountain.Conversations.FreshProvision do
   defp mount_skills(handle, ctx, sprite_env) do
     step(ctx.state.conversation_id, "skills", fn ->
       Fountain.SandboxSkills.mount_fresh(handle, ctx.runtime, ctx.skills,
+        config_home: ConfigHome.home(ctx.conv),
         env: Fountain.Broker.egress_env(sprite_env)
       )
     end)
@@ -328,7 +330,7 @@ defmodule Fountain.Conversations.FreshProvision do
            ConversationServer.build_sprite_env(state, agent, env, secrets, sandbox_url, ca_files),
          :ok <-
            step(conv_id, "sandbox_config", fn ->
-             write_sandbox_config(handle, state, agent, runtime, sprite_env)
+             write_sandbox_config(handle, state, agent, runtime, sprite_env, conv)
            end),
          :ok <-
            run_provisioning_pipeline(handle, env, sprite_env, secrets, conv_id, fn ->
@@ -348,12 +350,12 @@ defmodule Fountain.Conversations.FreshProvision do
            step(conv_id, "runtime_prepare", fn ->
              Provisioning.prepare_runtime_sandbox(
                handle,
+               conv,
                runtime,
                state.runtime_module,
                agent,
                sprite_env,
-               state.inference_source,
-               state.user_id
+               state.inference_source
              )
            end) do
       {:ok,
@@ -393,15 +395,17 @@ defmodule Fountain.Conversations.FreshProvision do
   #   process env on every spawn (`Fountain.Conversations.Identity`).
   # - The CA is installed before anything dials out, which the pipeline still
   #   guarantees: every step after this one waits for it.
-  defp write_sandbox_config(handle, state, agent, runtime, sprite_env) do
+  defp write_sandbox_config(handle, state, agent, runtime, sprite_env, conv) do
+    home = ConfigHome.home(conv)
+
     [
       {"runtime_config",
        fn ->
-         Provisioning.write_runtime_config(handle, state.runtime_module, agent)
+         Provisioning.write_runtime_config(handle, state.runtime_module, agent, home)
        end},
       {"instructions",
        fn ->
-         _ = Provisioning.write_instructions(handle, runtime, agent)
+         _ = Provisioning.write_instructions(handle, runtime, agent, home)
          :ok
        end},
       {"env_file",

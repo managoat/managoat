@@ -8,8 +8,10 @@ defmodule Managoat.Runtimes.Claude do
   kept: how credentials, skills and MCP servers get into the sandbox.
 
   The adapter runs on the Claude Agent SDK, which reads the same skills tree
-  as the CLI (`/home/sprite/.claude/skills`, verified live 2026-08-10) and
-  honours the same credential env vars. On Sprites the adapter reuses the
+  as the CLI (`$CLAUDE_CONFIG_DIR/skills`; `/home/sprite/.claude/skills` was
+  verified live 2026-08-10) and honours the same credential env vars. Every
+  path here is under the conversation's config home, which `config_env/1`
+  exports as `CLAUDE_CONFIG_DIR` (ADR 0097). On Sprites the adapter reuses the
   image's Claude executable when it meets ACP's version floor; elsewhere,
   or when the image CLI cannot be used, it runs the SDK's bundled binary.
   The measurements below describe the bundled pin unless stated otherwise.
@@ -27,16 +29,26 @@ defmodule Managoat.Runtimes.Claude do
   session-scoped path are not yet measured, which is why this provisioning
   stays until they are.
 
-  So `write_config/2` provisions the servers into the sandbox instead, as a
-  project `.mcp.json` plus `enableAllProjectMcpServers` in
-  `~/.claude/settings.json` — which the CLI loads via its `settingSources`.
-  This path is verified working end-to-end (2026-08-19): the model calls
-  `mcp__<server>__*` tools and gets results. It works on every provider (all
-  share `HOME=/home/sprite`), and the `${VAR}` refs are already resolved
+  So `write_config/3` provisions the servers into the sandbox instead, as
+  **user-scope** servers: the `mcpServers` key of the CLI's own config file,
+  `$CLAUDE_CONFIG_DIR/.claude.json`. The `${VAR}` refs are already resolved
   because the caller hands us the substituted agent.
 
+  User scope because it is the conversation's own. Until ADR 0097 the servers
+  were a project-scope `<cwd>/.mcp.json`, which two conversations in one
+  folder would overwrite. The CLI keeps that file's `mcpServers` as its
+  user-scope servers when it adds its own state to the file (Claude CLI
+  2.1.296: `claude mcp get` reports them as "User config"; `claude-agent-acp`
+  0.81.2, whose `settingSources` are `["user", "project", "local"]`, started a
+  stdio server named there on `session/new`; measured on a sprite on
+  2026-10-18). The same measurement found that a project `.mcp.json` is
+  started too, approved or not, and that project scope outranks user scope on
+  a name collision, so for a conversation provisioned before config homes
+  the `/home/sprite/.mcp.json` it already has is kept written with the same
+  servers (see `write_config/3`).
+
   When the upstream bug is fixed, the session-scoped path will start working
-  too; at that point drop this provisioning to avoid double-registration
+  too; at that point drop the file provisioning to avoid double-registration
   (cf. the same lesson in `Managoat.Runtimes.Gemini`). Registered as
   `:claude_mcp_via_files` in `Managoat.Runtimes.Quirks`, which carries the
   re-probe procedure and is guarded by a test that fails if this function
@@ -64,9 +76,10 @@ defmodule Managoat.Runtimes.Claude do
 
   The 0.81.2 CLI defaults `showThinkingSummaries` to false, and the API then
   returns thinking with its display omitted: the adapter has no text to send,
-  so no `agent_thought_chunk` reaches the host. `write_config/2` therefore
-  always writes `showThinkingSummaries: true` into `~/.claude/settings.json`.
-  Registered as `:claude_thinking_summaries`.
+  so no `agent_thought_chunk` reaches the host. `write_config/3` therefore
+  always writes `showThinkingSummaries: true` into
+  `$CLAUDE_CONFIG_DIR/settings.json`. Registered as
+  `:claude_thinking_summaries`.
 
   ## Form elicitation is declared, so `AskUserQuestion` is offered
 
@@ -96,13 +109,16 @@ defmodule Managoat.Runtimes.Claude do
 
   @runtime "claude"
 
-  # The project-scope config sits at the repo root the agent runs in, not
-  # under the config directory — that is what makes it *project* scope.
-  @mcp_config Path.join(Layout.cwd(@runtime), ".mcp.json")
-  @settings Path.join(Layout.config_root(@runtime), "settings.json")
+  # The project-scope file Fountain wrote MCP servers to before config homes,
+  # in the working directory those conversations ran in; still written for
+  # them (see `write_config/3`).
+  @legacy_mcp_config Path.join(Layout.cwd(@runtime), ".mcp.json")
 
   @impl true
-  def skills_root, do: Layout.skills_root(@runtime)
+  def skills_root(home), do: Layout.skills_root(@runtime, home)
+
+  @impl true
+  def config_env(home), do: Layout.config_env(@runtime, home)
 
   @impl true
   def default_env(_agent, inference_credentials) do
@@ -130,34 +146,51 @@ defmodule Managoat.Runtimes.Claude do
   end
 
   @doc """
-  Write the CLI's settings, and the agent's MCP servers when it has any (see
-  the moduledoc for why this, not the ACP session-scoped channel).
+  Write the CLI's settings and the agent's MCP servers under `home`, the
+  conversation's config home (see the moduledoc for why the servers go in a
+  file and not only over the ACP session-scoped channel).
 
-  `~/.claude/settings.json` is written on every call, agent or not, because
-  it carries `showThinkingSummaries` (see the moduledoc). A host that calls
-  this on every provision and wake keeps an existing sandbox current.
+  `settings.json` is written on every call, agent or not, because it carries
+  `showThinkingSummaries`. The servers are set as the `mcpServers` of
+  `.claude.json` on every call too, `%{}` included, so an agent that drops a
+  server drops it on its next wake. The rest of that file is the CLI's own
+  state and is kept: the file is read, the key replaced, and the result
+  renamed into place, so a CLI reading it never sees half a file. A file
+  whose servers are already these is left alone: last writer wins between
+  two whole-file writers, and a write that changes nothing is a race not
+  worth running. That covers an agent whose servers carry no token Fountain
+  rotates; a reattach rotates the callback key, so an agent with a
+  Fountain-authenticated server is rewritten on every reattach and still
+  races a CLI running in the home, as the project file did before. A file
+  that is there but is not a JSON object (a CLI halfway through its own
+  write) is read once more, then is an error, not something to overwrite.
+
+  On a conversation from before config homes (`home` is the legacy
+  `~/.claude`), the project `/home/sprite/.mcp.json` is also written as it
+  always was, when the agent has servers. It is the file the previous
+  release's adapter, still running after a deploy, reads; and project scope
+  outranks user scope on a name collision, so a stale copy there would shadow
+  these servers with the token it was written with. Writing it with the same
+  servers keeps the two in step. A legacy agent with no servers leaves the
+  file alone, as before: it may be the tenant's. (One that dropped its last
+  server keeps the stale file, which the CLI starts approved or not; that
+  was so before config homes too.)
   """
   @impl true
-  def write_config(handle, agent) do
-    # Both writes are idempotent, so a transport blip on a sprite that has
+  def write_config(handle, agent, home) do
+    # Every write is idempotent, so a transport blip on a sprite that has
     # only just booted is retried rather than failing the provision: the
     # first filesystem call into a fresh sprite timed out once in prod and
     # took the whole conversation with it.
-    case mcp_servers(agent) do
-      servers when servers == %{} ->
-        write_retrying(handle, @settings, settings(false))
-
-      servers ->
-        # Project-scope config the CLI reads via settingSources; `servers` is
-        # already the Claude-Code shape (`%{name => %{"command"/"args"/"env"...}}`)
-        # with `${VAR}` refs resolved by the caller.
-        mcp_json = Jason.encode!(%{"mcpServers" => servers}, pretty: true)
-
-        with :ok <- write_retrying(handle, @mcp_config, mcp_json) do
-          write_retrying(handle, @settings, settings(true))
-        end
+    with :ok <- write_retrying(handle, Path.join(home, "settings.json"), settings()),
+         :ok <- write_mcp_servers(handle, home, mcp_servers(agent)) do
+      write_legacy_project_config(handle, home, mcp_servers(agent))
     end
   end
+
+  @doc "The CLI's own config file under `home`, which carries the user-scope MCP servers."
+  @spec user_config_path(String.t()) :: String.t()
+  def user_config_path(home), do: Path.join(home, ".claude.json")
 
   @doc """
   The ACP default, plus form elicitation when `policy` asks a person (see
@@ -177,17 +210,97 @@ defmodule Managoat.Runtimes.Claude do
   defp mcp_servers(%{mcp_servers: servers}) when is_map(servers), do: servers
   defp mcp_servers(_agent), do: %{}
 
-  # With MCP servers, pre-approve the project's servers so the first turn does
-  # not stall on an approval the sandbox has no human to answer. (Fountain's
-  # ACP peer also auto-allows `session/request_permission`, but that only
-  # fires mid-turn; pre-approval keeps the server connected from session start.)
-  defp settings(false), do: Jason.encode!(%{"showThinkingSummaries" => true}, pretty: true)
+  # User-scope servers need no approval, unlike the project-scope ones this
+  # used to write, so the settings carry no `enableAllProjectMcpServers`: a
+  # repository's own `.mcp.json` is the CLI's to decide about.
+  defp settings, do: Jason.encode!(%{"showThinkingSummaries" => true}, pretty: true)
 
-  defp settings(true) do
-    Jason.encode!(%{"showThinkingSummaries" => true, "enableAllProjectMcpServers" => true},
-      pretty: true
-    )
+  # Read, replace `mcpServers`, write beside, rename over. The read answers an
+  # empty object for a file that is not there yet (a fresh config home); the
+  # CLI's state in a readable one is kept. Mode 600: the servers carry
+  # resolved credentials. The temporary name is this call's own, so two
+  # writers never move each other's file, and the rename succeeds when it
+  # finds its file already moved: a retried exec whose first reply was lost
+  # has done its work.
+  defp write_mcp_servers(handle, home, servers) do
+    path = user_config_path(home)
+    tmp = path <> ".managoat." <> Integer.to_string(System.unique_integer([:positive])) <> ".tmp"
+
+    with {:ok, current} <- read_user_config(handle, path) do
+      if Map.get(current, "mcpServers") == servers and current != %{} do
+        :ok
+      else
+        body = Jason.encode!(Map.put(current, "mcpServers", servers), pretty: true)
+
+        with :ok <- write_retrying(handle, tmp, body, mode: 0o600) do
+          run_retrying(handle, rename_script(tmp, path), path)
+        end
+      end
+    end
   end
+
+  @doc false
+  def rename_script(tmp, path) do
+    "if [ -e #{quote_shell(tmp)} ]; then mv -f -- #{quote_shell(tmp)} #{quote_shell(path)}; " <>
+      "else [ -f #{quote_shell(path)} ]; fi"
+  end
+
+  defp read_user_config(handle, path, attempt \\ 1) do
+    script = "if [ -f #{quote_shell(path)} ]; then cat -- #{quote_shell(path)}; fi"
+
+    case exec_retrying(handle, script, path) do
+      {:ok, out} ->
+        case decode_object(out, path) do
+          {:error, {:runtime_config, _, :unreadable}} when attempt == 1 ->
+            Process.sleep(200)
+            read_user_config(handle, path, 2)
+
+          decoded ->
+            decoded
+        end
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp decode_object("", _path), do: {:ok, %{}}
+
+  defp decode_object(text, path) do
+    case Jason.decode(text) do
+      {:ok, %{} = map} -> {:ok, map}
+      _ -> {:error, {:runtime_config, path, :unreadable}}
+    end
+  end
+
+  defp write_legacy_project_config(handle, home, servers) do
+    if home == Layout.legacy_home(@runtime) and servers != %{} do
+      body = Jason.encode!(%{"mcpServers" => servers}, pretty: true)
+      write_retrying(handle, @legacy_mcp_config, body)
+    else
+      :ok
+    end
+  end
+
+  defp run_retrying(handle, script, path) do
+    case exec_retrying(handle, script, path) do
+      {:ok, _out} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp exec_retrying(handle, script, path) do
+    case Managoat.Sandbox.Retry.with_backoff(
+           fn -> Managoat.Sandbox.exec(handle, "bash", ["-c", script], timeout: 15_000) end,
+           label: "claude config #{path}"
+         ) do
+      {:ok, out, 0} -> {:ok, to_string(out)}
+      {:ok, _out, code} -> {:error, {:runtime_config, path, {:exit, code}}}
+      {:error, reason} -> {:error, {:runtime_config, path, reason}}
+    end
+  end
+
+  defp quote_shell(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   @doc """
   The env a turn on `model` needs in the adapter's process, beyond
@@ -204,9 +317,9 @@ defmodule Managoat.Runtimes.Claude do
   def model_env("claude-opus-5"), do: [{"ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-5"}]
   def model_env(_model), do: []
 
-  defp write_retrying(handle, path, body) do
+  defp write_retrying(handle, path, body, opts \\ []) do
     case Managoat.Sandbox.Retry.with_backoff(
-           fn -> Managoat.Sandbox.write_file(handle, path, body) end,
+           fn -> Managoat.Sandbox.write_file(handle, path, body, opts) end,
            label: "claude config write #{path}"
          ) do
       :ok -> :ok

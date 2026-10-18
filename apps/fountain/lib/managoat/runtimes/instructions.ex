@@ -17,18 +17,17 @@ defmodule Managoat.Runtimes.Instructions do
 
   | runtime  | file                                 |
   |----------|--------------------------------------|
-  | claude   | `~/.claude/CLAUDE.md`                |
-  | codex    | `~/.codex/AGENTS.md`                 |
-  | gemini   | `~/.gemini/GEMINI.md`                |
+  | claude   | `$CLAUDE_CONFIG_DIR/CLAUDE.md`       |
+  | codex    | `$CODEX_HOME/AGENTS.md`              |
+  | gemini   | `$GEMINI_CLI_HOME/.gemini/GEMINI.md` |
 
-  `~` is the runtime's own HOME, which is **not** `/home/sprite` for all of
-  them — gemini runs with `HOME=/tmp` (as did the removed opencode). This
-  module used to expand the table above against a hardcoded `/home/sprite`,
-  so for those two the
-  prompt was written where their CLI never looks: they ran on the default
-  persona, silently, and the test pinned the wrong path alongside. The paths
-  now come from `Managoat.Runtimes.Layout`, which is also where the `HOME`
-  export is derived from, so the two cannot disagree again.
+  Each variable is the conversation's config home (ADR 0097). This module
+  once expanded a table like this one against a hardcoded `/home/sprite`
+  while gemini ran with `HOME=/tmp`, so its prompt was written where its CLI
+  never looks: it ran on the default persona, silently, and the test pinned
+  the wrong path alongside. The paths come from `Managoat.Runtimes.Layout`,
+  which is also where the variable is derived from, so the two cannot
+  disagree again.
 
   The file carries a short header so a human (or the agent) reading it knows
   where it came from, then the prompt verbatim.
@@ -36,23 +35,27 @@ defmodule Managoat.Runtimes.Instructions do
 
   alias Managoat.Runtimes.Layout
 
-  @doc "The user-level instructions file the runtime reads, or nil for a runtime we do not know."
-  @spec path(String.t() | nil) :: String.t() | nil
-  def path(runtime) when is_binary(runtime), do: Layout.instructions_path(runtime)
-  def path(_runtime), do: nil
+  @doc """
+  The user-level instructions file the runtime reads under `home`, the
+  conversation's config home, or nil for a runtime we do not know.
+  """
+  @spec path(String.t() | nil, String.t()) :: String.t() | nil
+  def path(runtime, home) when is_binary(runtime), do: Layout.instructions_path(runtime, home)
+  def path(_runtime, _home), do: nil
 
   @doc """
-  Write the agent's system prompt for the runtime into the sandbox. Returns
-  `:ok` when written or when there was nothing to write; `{:error, reason}`
-  when the sandbox refused the write (the caller logs and carries on — a
-  missing persona is not a reason to fail a provision).
+  Write the agent's system prompt for the runtime into the conversation's
+  config home `home`. Returns `:ok` when written or when there was nothing
+  to write; `{:error, reason}` when the sandbox refused the write (the caller
+  logs and carries on — a missing persona is not a reason to fail a
+  provision).
   """
-  @spec write(Managoat.Sandbox.Handle.t(), String.t() | nil, map() | nil) ::
+  @spec write(Managoat.Sandbox.Handle.t(), String.t() | nil, map() | nil, String.t()) ::
           :ok | {:error, term()}
-  def write(_handle, _runtime, nil), do: :ok
+  def write(_handle, _runtime, nil, _home), do: :ok
 
-  def write(handle, runtime, %{system: system} = agent) do
-    with path when is_binary(path) <- path(runtime),
+  def write(handle, runtime, %{system: system} = agent, home) do
+    with path when is_binary(path) <- path(runtime, home),
          prompt when is_binary(prompt) <- blank_to_nil(system) do
       Managoat.Sandbox.write_file(handle, path, render(agent, prompt))
     else
@@ -60,7 +63,7 @@ defmodule Managoat.Runtimes.Instructions do
     end
   end
 
-  def write(_handle, _runtime, _agent), do: :ok
+  def write(_handle, _runtime, _agent, _home), do: :ok
 
   @doc false
   def render(agent, prompt) do

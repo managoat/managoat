@@ -257,11 +257,9 @@ defmodule Fountain.Machines.Provision do
       was starting therefore announces nothing at all, which is the invariant
       `conversation_server_provision_retirement_test.exs` pins.
     * `:ready_attrs` — extra columns to write in the same statement that makes
-      the row `ready`: `applied_skills`, the record of the skills
-      the disk was built with. Computed by the caller *before* the bracket,
-      because it is known from the agent rather than from anything the
-      pipeline discovers, and written by compare-and-set so a superseded
-      attempt leaves none behind.
+      the row `ready`, written by compare-and-set so a superseded attempt
+      leaves none behind. Its one caller wrote `applied_skills` here until
+      the skills record moved to the conversation (ADR 0097 step 1).
     * `:conversation_id` — recorded in the audit metadata.
     * `:request_ip` — attribution, passed to the audit event.
     * `:busy_wait_ms` — the bound above. Tests shorten it; no call site does.

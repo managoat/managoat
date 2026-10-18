@@ -14,7 +14,8 @@ defmodule Managoat.Runtimes.SkillsTest do
       reject(&Sandbox.write_file/3)
       reject(&Sandbox.exec/4)
 
-      assert :ok = Skills.install(@handle, [], runtime: "claude")
+      assert :ok =
+               Skills.install(@handle, [], runtime: "claude", config_home: "/home/sprite/.claude")
     end
 
     test "inline skills land under the runtime's skills root, in the order given" do
@@ -34,7 +35,8 @@ defmodule Managoat.Runtimes.SkillsTest do
                    %{"name" => "managoat", "content" => "# API"},
                    %{name: "mine", content: "# mine"}
                  ],
-                 runtime: "claude"
+                 runtime: "claude",
+                 config_home: "/home/sprite/.claude"
                )
 
       assert_receive {:wrote, "/home/sprite/.claude/skills/managoat/SKILL.md", "# API"}
@@ -46,7 +48,10 @@ defmodule Managoat.Runtimes.SkillsTest do
       stub(Sandbox, :write_file, fn _h, path, _body -> send(test, {:wrote, path}) && :ok end)
 
       assert :ok =
-               Skills.install(@handle, [%{"name" => "s", "content" => "c"}], runtime: "gemini")
+               Skills.install(@handle, [%{"name" => "s", "content" => "c"}],
+                 runtime: "gemini",
+                 config_home: "/tmp"
+               )
 
       assert_receive {:wrote, "/tmp/.gemini/skills/s/SKILL.md"}
     end
@@ -72,6 +77,7 @@ defmodule Managoat.Runtimes.SkillsTest do
           assert :ok =
                    Skills.install(@handle, [%{"source" => "owner/repo"}],
                      runtime: "claude",
+                     config_home: "/home/sprite/.claude",
                      env: proxy
                    )
         end)
@@ -104,7 +110,8 @@ defmodule Managoat.Runtimes.SkillsTest do
                      %{"name" => "bad", "content" => "c"},
                      %{"name" => "good", "content" => "c"}
                    ],
-                   runtime: "claude"
+                   runtime: "claude",
+                   config_home: "/home/sprite/.claude"
                  )
       end)
 
@@ -117,7 +124,10 @@ defmodule Managoat.Runtimes.SkillsTest do
       reject(&Sandbox.exec/4)
 
       assert {:error, msg} =
-               Skills.install(@handle, [%{"name" => "s", "content" => "c"}], runtime: "nope")
+               Skills.install(@handle, [%{"name" => "s", "content" => "c"}],
+                 runtime: "nope",
+                 config_home: "/tmp"
+               )
 
       assert msg =~ "unsupported runtime"
     end
@@ -127,7 +137,7 @@ defmodule Managoat.Runtimes.SkillsTest do
     alias Managoat.Runtimes.Testing.SkillRepo
 
     defmodule DiskRuntime do
-      def skills_root, do: Process.get(:skills_lib_root)
+      def skills_root(_home), do: Process.get(:skills_lib_root)
     end
 
     setup do
@@ -171,6 +181,7 @@ defmodule Managoat.Runtimes.SkillsTest do
       assert :ok =
                Skills.install(@handle, [%{"source" => "obra/superpowers"}],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -194,6 +205,7 @@ defmodule Managoat.Runtimes.SkillsTest do
                    %{"source" => "anthropics/skills"}
                  ],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -210,6 +222,7 @@ defmodule Managoat.Runtimes.SkillsTest do
                    %{"source" => "obra/superpowers"}
                  ],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -243,6 +256,7 @@ defmodule Managoat.Runtimes.SkillsTest do
       assert :ok =
                Skills.install(@handle, [%{"source" => "obra/superpowers", "ref" => "v1.0.0"}],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -252,6 +266,7 @@ defmodule Managoat.Runtimes.SkillsTest do
       assert :ok =
                Skills.install(@handle, [%{"source" => "obra/superpowers", "ref" => old}],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -261,6 +276,7 @@ defmodule Managoat.Runtimes.SkillsTest do
       assert :ok =
                Skills.install(@handle, [%{"source" => "obra/superpowers", "ref" => "main"}],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 
@@ -274,6 +290,7 @@ defmodule Managoat.Runtimes.SkillsTest do
       assert :ok =
                Skills.install(@handle, [%{"source" => "obra/superpowers"}],
                  runtime: DiskRuntime,
+                 config_home: "/unused",
                  env: ctx.env
                )
 

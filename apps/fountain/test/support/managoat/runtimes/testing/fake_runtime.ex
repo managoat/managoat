@@ -38,18 +38,18 @@ defmodule Managoat.Runtimes.Testing.FakeRuntime do
   def default_env(_agent, _credentials), do: [{"FAKE_RUNTIME", "1"}]
 
   @impl true
-  def write_config(_sprite, _agent), do: report(:write_config)
+  def write_config(_sprite, _agent, _home), do: report(:write_config)
 
   @impl true
-  def prepare_sandbox(_sprite, _agent, _sprite_env), do: report(:prepare_sandbox)
+  def prepare_sandbox(_sprite, _agent, _sprite_env, _home), do: report(:prepare_sandbox)
 
   @impl true
-  def skills_root, do: "/home/sprite/.fake/skills"
+  def skills_root(home), do: Path.join(home, "fake-skills")
 end
 
 defmodule Managoat.Runtimes.Testing.FailingRuntime do
   @moduledoc """
-  A runtime whose `prepare_sandbox/3` fails, for exercising a host's
+  A runtime whose `prepare_sandbox/4` fails, for exercising a host's
   provisioning failure path without having to make a sandbox call fail.
   """
 
@@ -59,18 +59,18 @@ defmodule Managoat.Runtimes.Testing.FailingRuntime do
   def default_env(_agent, _credentials), do: []
 
   @impl true
-  def write_config(_sprite, _agent), do: :ok
+  def write_config(_sprite, _agent, _home), do: :ok
 
   @impl true
-  def prepare_sandbox(_sprite, _agent, _sprite_env), do: {:error, :prepare_failed}
+  def prepare_sandbox(_sprite, _agent, _sprite_env, _home), do: {:error, :prepare_failed}
 
   @impl true
-  def skills_root, do: "/home/sprite/.fake/skills"
+  def skills_root(home), do: Path.join(home, "fake-skills")
 end
 
 defmodule Managoat.Runtimes.Testing.ConfigFailingRuntime do
   @moduledoc """
-  A runtime whose `write_config/2` fails: the sandbox never took the runtime's
+  A runtime whose `write_config/3` fails: the sandbox never took the runtime's
   config file. A host's provisioning must treat that as a failure rather than
   run the agent without its MCP servers.
   """
@@ -81,11 +81,12 @@ defmodule Managoat.Runtimes.Testing.ConfigFailingRuntime do
   def default_env(_agent, _credentials), do: []
 
   @impl true
-  def write_config(_sprite, _agent), do: {:error, {:runtime_config, "/x/.mcp.json", :timeout}}
+  def write_config(_sprite, _agent, _home),
+    do: {:error, {:runtime_config, "/x/.mcp.json", :timeout}}
 
   @impl true
-  def prepare_sandbox(_sprite, _agent, _sprite_env), do: :ok
+  def prepare_sandbox(_sprite, _agent, _sprite_env, _home), do: :ok
 
   @impl true
-  def skills_root, do: "/home/sprite/.fake/skills"
+  def skills_root(home), do: Path.join(home, "fake-skills")
 end

@@ -79,16 +79,22 @@ defmodule Fountain.CommandRuntimeTest do
         )
 
       refute Enum.any?(env, fn {_k, v} -> v =~ "sk-" end)
-      assert {"MANAGOAT_SKILLS_DIR", "/home/sprite/.claude/skills"} in env
+      assert env == []
     end
 
-    test "skills land in claude-code's tree" do
-      assert CommandRuntime.skills_root() == "/home/sprite/.claude/skills"
+    test "skills land in claude-code's tree under the conversation's config home, exported" do
+      home = "/home/sprite/.managoat/c/1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+      assert CommandRuntime.skills_root(home) == home <> "/skills"
+      assert CommandRuntime.config_env(home) == [{"MANAGOAT_SKILLS_DIR", home <> "/skills"}]
+
+      # A conversation from before config homes keeps the tree it had.
+      legacy = Fountain.Conversations.ConfigHome.legacy_home("acp")
+      assert CommandRuntime.skills_root(legacy) == "/home/sprite/.claude/skills"
     end
 
     test "provisioning finds nothing to write and nothing to prepare" do
-      refute function_exported?(CommandRuntime, :write_config, 2)
-      refute function_exported?(CommandRuntime, :prepare_sandbox, 3)
+      refute function_exported?(CommandRuntime, :write_config, 3)
+      refute function_exported?(CommandRuntime, :prepare_sandbox, 4)
     end
   end
 end

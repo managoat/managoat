@@ -584,9 +584,10 @@ defmodule Fountain.ChatGPTTest do
         :ok
       end)
 
-      assert :ok = CodexChatGPT.prepare_sandbox(handle, "codex", source, user.id)
+      home = "/home/sprite/.managoat/c/#{Ecto.UUID.generate()}"
+      assert :ok = CodexChatGPT.prepare_sandbox(handle, "codex", source, user.id, home)
       assert_received {:wrote, path, body, [mode: 0o600]}
-      assert path == Managoat.Runtimes.Codex.auth_path()
+      assert path == "#{home}/auth.json"
 
       auth = Jason.decode!(body)
       assert auth["auth_mode"] == "chatgptAuthTokens"
@@ -602,11 +603,13 @@ defmodule Fountain.ChatGPTTest do
 
       # Another runtime or an API-key source is the library's; another user's
       # subscription is refused.
-      assert :skip = CodexChatGPT.prepare_sandbox(handle, "claude", source, user.id)
-      assert :skip = CodexChatGPT.prepare_sandbox(handle, "codex", Source.credential(), user.id)
+      assert :skip = CodexChatGPT.prepare_sandbox(handle, "claude", source, user.id, home)
+
+      assert :skip =
+               CodexChatGPT.prepare_sandbox(handle, "codex", Source.credential(), user.id, home)
 
       assert {:error, :chatgpt_reconnect_required} =
-               CodexChatGPT.prepare_sandbox(handle, "codex", source, Ecto.UUID.generate())
+               CodexChatGPT.prepare_sandbox(handle, "codex", source, Ecto.UUID.generate(), home)
     end
 
     test "the refresh before a turn puts the stored token into the broker's rule", %{user: user} do

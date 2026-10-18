@@ -8,9 +8,14 @@ defmodule Managoat.Runtimes.Codex do
   went with the legacy spawn path. What remains is the half ADR 0014
   deliberately kept: credentials and skills.
 
+  Every file is under the conversation's config home, which `config_env/1`
+  exports as `CODEX_HOME` (ADR 0097): the adapter and the CLI keep their
+  sessions, logs and `auth.json` there, so two codex conversations on one
+  machine never share a store.
+
   Auth: `OPENAI_API_KEY` is consumed once at provision time via
-  `prepare_sandbox/3` (see below) — codex reads `~/.codex/auth.json`, not the
-  process env, and the adapter runs on the same store.
+  `prepare_sandbox/4` (see below) — codex reads `$CODEX_HOME/auth.json`, not
+  the process env, and the adapter runs on the same store.
   """
 
   @behaviour Managoat.Runtimes
@@ -20,7 +25,10 @@ defmodule Managoat.Runtimes.Codex do
   @runtime "codex"
 
   @impl true
-  def skills_root, do: Layout.skills_root(@runtime)
+  def skills_root(home), do: Layout.skills_root(@runtime, home)
+
+  @impl true
+  def config_env(home), do: Layout.config_env(@runtime, home)
 
   @impl true
   def default_env(_agent, inference_credentials) do
@@ -49,13 +57,13 @@ defmodule Managoat.Runtimes.Codex do
   # The file write needs nothing installed, keeps the key off argv and stdin,
   # and costs one call instead of a spawn and its exit.
   #
-  # A ChatGPT grant's `auth.json` is the host's, in a CODEX_HOME of its own
-  # (Fountain's CodexChatGPT); an API key uses the shared `~/.codex`.
+  # A ChatGPT grant's `auth.json` is the host's (Fountain's CodexChatGPT),
+  # written to the same path.
   @impl true
-  def prepare_sandbox(handle, _agent, sprite_env) do
+  def prepare_sandbox(handle, _agent, sprite_env, home) do
     case List.keyfind(sprite_env, "OPENAI_API_KEY", 0) do
       {"OPENAI_API_KEY", key} when is_binary(key) and key != "" ->
-        case Managoat.Sandbox.write_file(handle, auth_path(), auth_json(key), mode: 0o600) do
+        case Managoat.Sandbox.write_file(handle, auth_path(home), auth_json(key), mode: 0o600) do
           :ok -> :ok
           {:error, reason} -> {:error, {:codex_auth_write, reason}}
         end
@@ -68,7 +76,7 @@ defmodule Managoat.Runtimes.Codex do
   end
 
   @doc false
-  def auth_path, do: Path.join(Layout.config_root(@runtime), "auth.json")
+  def auth_path(home), do: Path.join(Layout.config_dir(@runtime, home), "auth.json")
 
   @doc false
   def auth_json(key), do: Jason.encode!(%{"auth_mode" => "apikey", "OPENAI_API_KEY" => key})

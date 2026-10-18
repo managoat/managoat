@@ -30,11 +30,12 @@ there.
 ### One runtime does this differently
 
 On `claude`, an upstream defect breaks session-scoped MCP delivery. So
-Managoat provisions `.mcp.json` into the sandbox and starts the project
-servers, and it does not pass them for each session. The effect is the same.
+Managoat provisions the servers as user-scope servers in the conversation's
+config home (`$CLAUDE_CONFIG_DIR/.claude.json`), and it does not pass them
+for each session. The effect is the same.
 The mechanism matters only when you debug why a raw ACP probe behaves one way
 and Managoat behaves another. Read [claude](../runtimes/claude.md). A server
-with `auth: conversation` is the exception: it is not written to `.mcp.json`
+with `auth: conversation` is the exception: it is not written to that file
 and reaches Claude in the session only, with its headers. Read
 [Your application's own server](#your-applications-own-server).
 

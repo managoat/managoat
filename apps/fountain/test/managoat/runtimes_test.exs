@@ -23,13 +23,16 @@ defmodule Managoat.RuntimesTest do
     def default_env(_agent, credentials), do: [{"UNLOADED_KEY", credentials.anthropic_api_key}]
 
     @impl true
-    def write_config(_handle, _agent), do: {:error, :wrote_config}
+    def config_env(home), do: [{"UNLOADED_HOME", home}]
 
     @impl true
-    def prepare_sandbox(_handle, _agent, _sprite_env), do: {:error, :prepared_sandbox}
+    def write_config(_handle, _agent, _home), do: {:error, :wrote_config}
 
     @impl true
-    def skills_root, do: "/home/sprite/.unloaded/skills"
+    def prepare_sandbox(_handle, _agent, _sprite_env, _home), do: {:error, :prepared_sandbox}
+
+    @impl true
+    def skills_root(home), do: Path.join(home, "skills")
   end
   """
 
@@ -91,13 +94,19 @@ defmodule Managoat.RuntimesTest do
              "optional callback silently no-opped on an unloaded module"
     end
 
-    test "write_config/3 still reaches the implementation" do
-      assert Runtimes.write_config(@unloaded, :handle, %{}) == {:error, :wrote_config},
+    test "config_env/2 still reaches the implementation" do
+      assert Runtimes.config_env(@unloaded, "/h") == [{"UNLOADED_HOME", "/h"}],
              "optional callback silently no-opped on an unloaded module"
     end
 
-    test "prepare_sandbox/4 still reaches the implementation" do
-      assert Runtimes.prepare_sandbox(@unloaded, :handle, %{}, []) == {:error, :prepared_sandbox},
+    test "write_config/4 still reaches the implementation" do
+      assert Runtimes.write_config(@unloaded, :handle, %{}, "/h") == {:error, :wrote_config},
+             "optional callback silently no-opped on an unloaded module"
+    end
+
+    test "prepare_sandbox/5 still reaches the implementation" do
+      assert Runtimes.prepare_sandbox(@unloaded, :handle, %{}, [], "/h") ==
+               {:error, :prepared_sandbox},
              "optional callback silently no-opped on an unloaded module"
     end
 
@@ -109,15 +118,19 @@ defmodule Managoat.RuntimesTest do
 
   describe "dispatching an optional callback a runtime does not implement" do
     # The matrix is sparse in both directions, so these are the live rows:
-    # claude has no prepare_sandbox/3, codex no write_config/2 and no
+    # claude has no prepare_sandbox/4, codex no write_config/3 and no
     # model_env/1.
 
-    test "prepare_sandbox/4 is :ok" do
-      assert Runtimes.prepare_sandbox(Managoat.Runtimes.Claude, :handle, %{}, []) == :ok
+    test "prepare_sandbox/5 is :ok" do
+      assert Runtimes.prepare_sandbox(Managoat.Runtimes.Claude, :handle, %{}, [], "/h") == :ok
     end
 
-    test "write_config/3 is :ok" do
-      assert Runtimes.write_config(Managoat.Runtimes.Codex, :handle, %{}) == :ok
+    test "write_config/4 is :ok" do
+      assert Runtimes.write_config(Managoat.Runtimes.Codex, :handle, %{}, "/h") == :ok
+    end
+
+    test "config_env/2 is []" do
+      assert Runtimes.config_env(Managoat.Runtimes.Layout, "/h") == []
     end
 
     test "model_env/2 is []" do
@@ -131,7 +144,7 @@ defmodule Managoat.RuntimesTest do
     end
 
     test "implements?/3 is false, including for a module that does not exist" do
-      refute Runtimes.implements?(Managoat.Runtimes.Claude, :prepare_sandbox, 3)
+      refute Runtimes.implements?(Managoat.Runtimes.Claude, :prepare_sandbox, 4)
       refute Runtimes.implements?(Managoat.Runtimes.NoSuchRuntime, :default_env, 2)
     end
   end
