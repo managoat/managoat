@@ -419,6 +419,84 @@ defmodule Fountain.WorkspaceLifecycleTest do
       assert_received {:ensure_up, ^sandbox_id, ^conv_id}
     end
 
+    test "a reattach does not confirm a parked explicit machine ready", ctx do
+      {:ok, _} = update_sandbox(ctx.sandbox, %{status: "suspended"})
+
+      # Implicit: confirmed as it always was.
+      assert {:ok, :confirmed} =
+               Fountain.Machines.Provision.confirm_up(ctx.sandbox.id,
+                 actor: "system:conversation_server"
+               )
+
+      {:ok, _} = update_sandbox(ctx.sandbox, %{status: "suspended"})
+      explicit_workspace!(ctx.sandbox)
+
+      assert {:error, :sandbox_unavailable} =
+               Fountain.Machines.Provision.confirm_up(ctx.sandbox.id,
+                 actor: "system:conversation_server"
+               )
+
+      assert Repo.reload!(ctx.sandbox).status == "suspended"
+    end
+
+    test "an idle park waits for a co-tenant that is mid-wake", ctx do
+      explicit_workspace!(ctx.sandbox)
+      other = insert_conversation(user_id: ctx.user.id, sandbox: ctx.sandbox, status: "idle")
+      test = self()
+
+      start_supervised!(
+        {Task,
+         fn ->
+           {:ok, _} = Registry.register(Fountain.ConversationRegistry, other.id, :setting_up)
+           send(test, :registered)
+           Process.sleep(:infinity)
+         end}
+      )
+
+      assert_receive :registered
+      reject(&Managoat.Sandbox.suspend/1)
+
+      # The idle window off, so the co-tenant's row activity is not what refuses.
+      with_bounds([sandbox_idle_timeout_minutes: 0], fn ->
+        assert {:error, :machine_occupied} =
+                 Fountain.Machines.Park.run(ctx.sandbox.id,
+                   actor: "system:conversation_server",
+                   reason: :idle,
+                   requesting_conversation_id: ctx.conv.id
+                 )
+      end)
+    end
+
+    test "a destroy's notice reaches its requester too", ctx do
+      test = self()
+
+      start_supervised!(
+        {Task,
+         fn ->
+           {:ok, _} = Registry.register(Fountain.ConversationRegistry, ctx.conv.id, nil)
+           send(test, :registered)
+           receive do: (msg -> send(test, {:told, msg}))
+         end}
+      )
+
+      assert_receive :registered
+      stub(Managoat.Sandbox, :destroy, fn _ -> :ok end)
+
+      capture_log(fn ->
+        assert {:ok, :destroyed} =
+                 Fountain.Machines.Destroy.run(ctx.sandbox.id,
+                   actor: "system:conversation_server",
+                   reason: :idle,
+                   notify: {ctx.conv.id, "reclaimed", "idle", "why"}
+                 )
+      end)
+
+      sandbox_id = ctx.sandbox.id
+
+      assert_receive {:told,
+                      {:"$gen_cast", {:machine_gone, ^sandbox_id, "reclaimed", "idle", "why"}}}
+    end
+
     test "a wake into an explicit workspace waits out a co-tenant's operation", ctx do
       explicit_workspace!(ctx.sandbox)
       test = self()

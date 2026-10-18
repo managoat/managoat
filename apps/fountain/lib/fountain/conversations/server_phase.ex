@@ -35,6 +35,16 @@ defmodule Fountain.Conversations.ServerPhase do
   @spec setting_up_value() :: :setting_up
   def setting_up_value, do: :setting_up
 
+  @doc """
+  Whether the registered server of `conv_id` is setting up its machine right
+  now: a wake in flight, with no turn row yet to say so. Advisory, like the
+  value itself.
+  """
+  @spec setting_up?(String.t()) :: boolean()
+  def setting_up?(conv_id) do
+    match?([{_pid, :setting_up}], Registry.lookup(@registry, conv_id))
+  end
+
   # Only the registered process may change its value; from anyone else the
   # registry answers `:error`, which leaves the phase as it was.
   defp put(conv_id, value) do

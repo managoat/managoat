@@ -496,9 +496,16 @@ defmodule Fountain.Machines.Park do
 
   # A server at the ceiling parks over its co-tenants' activity: the ceiling
   # is the workspace's continuous run, not one conversation's idleness.
+  #
+  # A co-tenant mid-wake (its server setting up, its prompt not yet a turn
+  # row) is activity too, or an idle co-tenant's park lands under its prompt
+  # (review of step 4a).
   defp held_by_somebody_else?(%Occupancy{} = occupancy, requester, opts) do
     Keyword.fetch!(opts, :reason) != :max_lifetime and
-      Occupancy.busy_elsewhere?(occupancy, requester, Lifecycle.idle_timeout_seconds())
+      (Occupancy.busy_elsewhere?(occupancy, requester, Lifecycle.idle_timeout_seconds()) or
+         occupancy
+         |> Occupancy.live_ids()
+         |> Enum.any?(&(&1 != requester and Fountain.Conversations.ServerPhase.setting_up?(&1))))
   end
 
   @doc """

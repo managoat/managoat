@@ -374,7 +374,7 @@ defmodule Fountain.Conversations.Wake do
   # to belong to; the prompt door always passes what the request decoded.
   def wake_conversation_for(conv_id, initial_prompt, purpose, images \\ []) do
     with {:ok, conv, agent, runtime_module} <- preflight(conv_id) do
-      case reuse_verdict(conv) do
+      case reuse_verdict(conv, purpose) do
         {:reuse, sandbox_id, observed} ->
           # Reuse provisions nothing, so the fresh-path gates below never ran
           # here (#313). Same checks. Reusing a
@@ -507,15 +507,18 @@ defmodule Fountain.Conversations.Wake do
   # waits and then finds it up, as two wakes of one machine always have
   # (review of step 4a). An implicit workspace's machine is one
   # conversation's, and a lease on it answers 503 at once, as before.
-  defp reuse_verdict(conv),
-    do: reuse_verdict(conv, System.monotonic_time(:millisecond) + @co_tenant_wait_ms)
+  # An interrupt is a synchronous request with nothing to wait for.
+  defp reuse_verdict(conv, :interrupt), do: maybe_reuse_sandbox(conv)
 
-  defp reuse_verdict(conv, deadline) do
+  defp reuse_verdict(conv, _purpose),
+    do: wait_reuse(conv, System.monotonic_time(:millisecond) + @co_tenant_wait_ms)
+
+  defp wait_reuse(conv, deadline) do
     case maybe_reuse_sandbox(conv) do
       {:error, :sandbox_unavailable} = busy ->
         if shared?(conv) and System.monotonic_time(:millisecond) < deadline do
           Process.sleep(@co_tenant_poll_ms)
-          reuse_verdict(conv, deadline)
+          wait_reuse(conv, deadline)
         else
           busy
         end

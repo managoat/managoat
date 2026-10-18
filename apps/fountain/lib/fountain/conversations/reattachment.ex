@@ -54,6 +54,8 @@ defmodule Fountain.Conversations.Reattachment do
           retryable: true
         })
 
+        # The prompt this server was started for will not run.
+        Fountain.Conversations.Wake.report_unrun_prompt(conv_id, reason)
         error
     end
   end
