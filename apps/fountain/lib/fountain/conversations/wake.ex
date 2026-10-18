@@ -761,7 +761,9 @@ defmodule Fountain.Conversations.Wake do
                # concurrent wake reserves a machine of its own, so a shared
                # workspace would trip the live-workspace index on both. The
                # conversation moves to it with `sandbox_id`. Keeping one
-               # workspace across a lost machine is step 4's rebuild.
+               # workspace across a lost machine is step 4's rebuild. Under the
+               # fleet lock, unlike the launch's: one more insert, whose foreign
+               # key checks the sandbox insert takes anyway.
                with {:ok, workspace} <- Fountain.Workspaces.insert_implicit(attrs) do
                  Fountain.Machines.Provision.reserve(Map.put(attrs, :workspace_id, workspace.id))
                end

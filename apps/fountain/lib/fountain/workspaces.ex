@@ -7,6 +7,12 @@ defmodule Fountain.Workspaces do
 
   Every query is scoped by `user_id`.
 
+  **Nothing deletes an implicit workspace yet**, except account deletion: the
+  ADR ends one with its conversation, and that is step 4's lifecycle work. Until
+  then a row is left per launch and per fresh-sandbox wake, as a sandbox row
+  is, including the `provisioning` ones a lost wake race leaves, which nothing
+  points at.
+
   **Nothing here is audited, deliberately.** An implicit workspace is made in
   the launch's transaction, where an audit event cannot be recorded (ADR 0013),
   and it is not a thing anybody asked for: it is the launch's own sandbox

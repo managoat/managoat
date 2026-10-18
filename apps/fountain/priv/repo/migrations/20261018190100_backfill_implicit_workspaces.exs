@@ -55,7 +55,11 @@ defmodule Fountain.Repo.Migrations.BackfillImplicitWorkspaces do
   # rollback to the previous release and forward again — which inserts
   # sandboxes without workspaces in between — fills in only those. A migration
   # does not run twice by itself, so step 3, the first to depend on every live
-  # sandbox having a workspace, has to repeat this fill.
+  # sandbox having a workspace, has to repeat this fill. It should also repoint
+  # a conversation whose `workspace_id` no longer matches its sandbox's: a wake
+  # on the previous release moves `sandbox_id` to a workspace-less sandbox and
+  # leaves the old `workspace_id` behind, which the `IS NULL` test below does
+  # not catch.
   #
   # Safe on prod's Recreate deploy: the old pod is gone before this runs, so
   # nothing inserts a sandbox concurrently. On a rolling deploy an old replica

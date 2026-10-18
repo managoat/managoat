@@ -98,7 +98,8 @@ defmodule Fountain.Conversations.Sandbox do
     belongs_to :user, User
     # The workspace that owns this machine (ADR 0097). Every sandbox created
     # since step 2 is born with an implicit one, in its reservation's
-    # transaction; a terminal row from before then has none. At most one
+    # transaction; a terminal row from before then has none, nor does a live
+    # one the backfill found with no owner. At most one
     # non-terminal sandbox per workspace (`sandboxes_live_workspace_index`).
     # Nilified when the workspace is deleted, as the row outlives its user.
     # Nothing reads it yet.

@@ -23,14 +23,17 @@ defmodule Fountain.Repo.Migrations.CreateWorkspaces do
   # sandbox per workspace". The statuses are the terminal pair every other
   # live-row index here uses (`sandboxes_live_machine_name_index`).
   #
-  # Reversible: `down` drops the columns, the index and the table, and the
-  # previous release reads none of them.
-  def change do
-    # Fail fast rather than wait behind a stray session's lock: an `ALTER` that
-    # waits queues every later reader of `sandboxes` and `conversations` behind
-    # it, which is how a deploy took prod down on 2026-10-15. A refused boot
-    # retries; a wedged one serves nothing.
-    execute "SET LOCAL lock_timeout = '10s'", "SET LOCAL lock_timeout = '10s'"
+  # Reversible: `down` drops the columns, the indexes and the table, and the
+  # previous release reads none of them. `up` and `down` rather than `change`
+  # so the lock timeout comes first in both directions (a `change` replays its
+  # commands in reverse on rollback).
+  #
+  # Both fail fast rather than wait behind a stray session's lock: an `ALTER`
+  # that waits queues every later reader of `sandboxes` and `conversations`
+  # behind it, which is how a deploy took prod down on 2026-10-15. A refused
+  # boot retries; a wedged one serves nothing.
+  def up do
+    execute "SET LOCAL lock_timeout = '10s'"
 
     create table(:workspaces, primary_key: false) do
       add :id, :binary_id, primary_key: true
@@ -80,5 +83,23 @@ defmodule Fountain.Repo.Migrations.CreateWorkspaces do
     # workspace's delete also has to find the terminal ones.
     create index(:sandboxes, [:workspace_id])
     create index(:conversations, [:workspace_id])
+  end
+
+  def down do
+    execute "SET LOCAL lock_timeout = '10s'"
+
+    drop index(:conversations, [:workspace_id])
+    drop index(:sandboxes, [:workspace_id])
+    drop index(:sandboxes, [:workspace_id], name: :sandboxes_live_workspace_index)
+
+    alter table(:conversations) do
+      remove :workspace_id
+    end
+
+    alter table(:sandboxes) do
+      remove :workspace_id
+    end
+
+    drop table(:workspaces)
   end
 end

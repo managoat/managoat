@@ -5,7 +5,8 @@ defmodule Fountain.Workspaces.Workspace do
 
   **Not read by anything yet** (ADR 0097, step 2). Every sandbox created from
   this release on is born with an *implicit* workspace, made in the same
-  transaction as its row, and the live sandboxes were backfilled with one.
+  transaction as its row, and the live sandboxes with an owner were
+  backfilled with one.
   The lease moves here in step 3 and the lifecycle reads it in step 4;
   explicit workspaces, made through `/api/workspaces`, come in step 5.
 
@@ -49,15 +50,15 @@ defmodule Fountain.Workspaces.Workspace do
   @doc """
   The changeset for a new implicit workspace: the launch's resolved
   environment and vault, its provider and its owner. Not for request params:
-  every field comes from a launch that has already checked them.
+  every field comes from a launch that has already checked them. No
+  `foreign_key_constraint/2`, like `Sandbox.changeset/2`: an environment or
+  vault deleted between the launch's resolution and this insert raises, as the
+  sandbox insert did before this row came first.
   """
   def implicit_changeset(attrs) do
     %__MODULE__{implicit: true, status: "provisioning"}
     |> cast(attrs, [:user_id, :environment_id, :vault_id, :provider])
     |> validate_required([:user_id, :provider])
     |> validate_inclusion(:provider, Fountain.SandboxProviders.known_providers())
-    |> foreign_key_constraint(:user_id)
-    |> foreign_key_constraint(:environment_id)
-    |> foreign_key_constraint(:vault_id)
   end
 end
