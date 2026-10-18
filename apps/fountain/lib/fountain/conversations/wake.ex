@@ -374,7 +374,7 @@ defmodule Fountain.Conversations.Wake do
   # to belong to; the prompt door always passes what the request decoded.
   def wake_conversation_for(conv_id, initial_prompt, purpose, images \\ []) do
     with {:ok, conv, agent, runtime_module} <- preflight(conv_id) do
-      case maybe_reuse_sandbox(conv) do
+      case reuse_verdict(conv) do
         {:reuse, sandbox_id, observed} ->
           # Reuse provisions nothing, so the fresh-path gates below never ran
           # here (#313). Same checks. Reusing a
@@ -492,6 +492,44 @@ defmodule Fountain.Conversations.Wake do
         {:error, _} = err ->
           err
       end
+    end
+  end
+
+  # How long a wake into an explicit workspace waits for another
+  # conversation's operation on the shared machine (a resume, a park) before
+  # it answers 503: the resume budget, which is what such a wait usually is.
+  @co_tenant_wait_ms 60_000
+  @co_tenant_poll_ms 500
+
+  # `maybe_reuse_sandbox/1`, waiting out a live lease on an explicit
+  # workspace's machine (ADR 0097): there, the lease is usually a co-tenant's
+  # wake resuming the machine this prompt wants, so the second of two wakes
+  # waits and then finds it up, as two wakes of one machine always have
+  # (review of step 4a). An implicit workspace's machine is one
+  # conversation's, and a lease on it answers 503 at once, as before.
+  defp reuse_verdict(conv),
+    do: reuse_verdict(conv, System.monotonic_time(:millisecond) + @co_tenant_wait_ms)
+
+  defp reuse_verdict(conv, deadline) do
+    case maybe_reuse_sandbox(conv) do
+      {:error, :sandbox_unavailable} = busy ->
+        if shared?(conv) and System.monotonic_time(:millisecond) < deadline do
+          Process.sleep(@co_tenant_poll_ms)
+          reuse_verdict(conv, deadline)
+        else
+          busy
+        end
+
+      verdict ->
+        verdict
+    end
+  end
+
+  # ownership: the conversation's own machine.
+  defp shared?(%Conversation{sandbox_id: sandbox_id}) do
+    case sandbox_id && Conversations._unsafe_get_sandbox(sandbox_id) do
+      %Sandbox{} = sandbox -> Fountain.Workspaces.machine_kind(sandbox) == :explicit
+      nil -> false
     end
   end
 

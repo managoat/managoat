@@ -813,7 +813,10 @@ defmodule Fountain.Machines.Park do
   # its adapter and stops rather than leaving it running on a machine about to
   # be parked; the park does not wait for them. They are told once: the
   # finalize does not tell them again. Answers `opts`, marked when they have
-  # been told.
+  # been told. A stamp then refused (`:stale`, `:retired`) has cut the turns
+  # and stopped the servers for a park that did not happen, the trade the
+  # requester's own turn already made above; each conversation's next prompt
+  # wakes it, and the ceiling was reclaiming the machine either way.
   defp end_cut_turn(%Sandbox{} = sandbox, opts) do
     case Keyword.fetch!(opts, :reason) do
       :max_lifetime ->
@@ -867,24 +870,25 @@ defmodule Fountain.Machines.Park do
   # caller's — and the reaper, which has no conversation of its own and never
   # notified before ADR 0058, still does not.
   #
-  # `machine_gone` tells every conversation bound to the machine (ADR 0097):
-  # a caller with no wording of its own gets the park's own, and every bound
-  # conversation but the requester (with none, every one) is told. The reaper's park, the one
-  # such caller, reaches only machines with no live server, so in practice it
-  # still tells nobody.
+  # `machine_gone` tells every conversation bound to the machine (ADR 0097),
+  # **the requester's own included**: a requester whose park returns stops
+  # straight after, so its own notice is never read, but one whose call to the
+  # owner timed out while the park went on is still running, bound to a machine
+  # that is now parked, and the notice is what stops it (review of step 4a). A
+  # caller with no wording of its own gets the park's own. The reaper's park,
+  # the one such caller, reaches only machines with no live server.
   defp notify_cotenants(%Sandbox{} = sandbox, opts) do
     if Keyword.get(opts, :cotenants_told, false) do
       :ok
     else
       reason = Keyword.fetch!(opts, :reason)
 
-      {conversation_id, event, why, message} =
+      {_requester, event, why, message} =
         Keyword.get(opts, :notify) ||
-          {Keyword.get(opts, :requesting_conversation_id), "suspended", to_string(reason),
-           Lifecycle.explain(reason, :suspend)}
+          {nil, "suspended", to_string(reason), Lifecycle.explain(reason, :suspend)}
 
       sandbox.id
-      |> Conversations._unsafe_list_cotenant_ids(conversation_id)
+      |> Conversations._unsafe_list_cotenant_ids(nil)
       |> MachineEvents.tell_cotenants(sandbox.id, event, why, message)
     end
   end

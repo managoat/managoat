@@ -549,10 +549,12 @@ defmodule Fountain.Conversations.ConversationServer do
         case sandbox.status do
           s when s in ["ready", "suspended"] ->
             # Provisioned in a previous BEAM lifetime: reattach, never recreate.
-            # `suspended` here means the reaper parked the row mid-wake; the
-            # catch-all would provision a second sprite over a live one, and
-            # do_reattach flips the row back to ready.
-            reattach(state, conv, sandbox, agent, env, secrets)
+            # `suspended` here is a park that landed mid-wake (the reaper's, or
+            # a co-tenant's, ADR 0097), resumed through its owner first.
+            case Reattachment.awake(sandbox, conv.id) do
+              {:ok, sandbox} -> reattach(state, conv, sandbox, agent, env, secrets)
+              {:error, _} -> {:stop, :normal, state}
+            end
 
           s when s in ["pending", "starting"] ->
             FreshProvision.run(state, conv, sandbox, agent, env, secrets)

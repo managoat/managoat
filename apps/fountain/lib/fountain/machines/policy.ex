@@ -65,8 +65,9 @@ defmodule Fountain.Machines.Policy do
   @spec reclaim_action(:idle | :max_lifetime, atom(), :implicit | :explicit) :: :park | :destroy
   def reclaim_action(:max_lifetime, provider, :implicit) when is_atom(provider), do: :destroy
 
-  def reclaim_action(_bound, provider, kind)
-      when is_atom(provider) and kind in [:implicit, :explicit] do
+  def reclaim_action(bound, provider, kind)
+      when bound in [:idle, :max_lifetime] and is_atom(provider) and
+             kind in [:implicit, :explicit] do
     case idle_action(provider) do
       :suspend -> :park
       :destroy -> :destroy

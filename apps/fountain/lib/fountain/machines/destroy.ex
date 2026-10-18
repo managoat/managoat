@@ -802,24 +802,26 @@ defmodule Fountain.Machines.Destroy do
     :ok
   end
 
-  # The machine is gone, so any other conversation still bound to it has lost
-  # its handle. `machine_gone` tells every one of them (ADR 0097: an explicit
-  # workspace has many). A caller that knows what to say says it ("reclaimed"
-  # and the bound that reclaimed it); any other gets the destroy's own words,
-  # and every bound conversation but a terminating one is told. A server already
-  # ending, or none, makes the cast a no-op (`MachineEvents.tell_cotenants/5`).
+  # The machine is gone, so every conversation still bound to it has lost its
+  # handle. `machine_gone` tells every one of them (ADR 0097: an explicit
+  # workspace has many), the requester's own included, for `Park`'s reason: a
+  # server whose call timed out while its destroy went on is still running on
+  # a dead handle, and the notice is what stops it; one whose destroy returned
+  # stops straight after and never reads it. A caller that knows what to say
+  # says it ("reclaimed" and the bound that reclaimed it); any other gets the
+  # destroy's own words. No server, or one already ending, makes the cast a
+  # no-op (`MachineEvents.tell_cotenants/5`).
   defp notify_cotenants(%Sandbox{} = sandbox, opts) do
-    {conversation_id, event, reason, message} =
+    {_requester, event, reason, message} =
       Keyword.get(opts, :notify) || default_notice(opts)
 
     sandbox.id
-    |> Conversations._unsafe_list_cotenant_ids(conversation_id)
+    |> Conversations._unsafe_list_cotenant_ids(nil)
     |> MachineEvents.tell_cotenants(sandbox.id, event, reason, message)
   end
 
   defp default_notice(opts) do
-    {Keyword.get(opts, :terminating_conversation_id), "reclaimed",
-     to_string(Keyword.fetch!(opts, :reason)),
+    {nil, "reclaimed", to_string(Keyword.fetch!(opts, :reason)),
      "The sandbox was destroyed. Send another prompt to continue — the transcript " <>
        "above is kept, but the agent starts a fresh session and will not remember " <>
        "the earlier turns."}

@@ -144,7 +144,8 @@ defmodule Fountain.Conversations.Termination do
   def remove_config_home_now(%{handle: handle, sandbox_id: sandbox_id, conversation_id: conv_id}) do
     # ownership: the conversation's own server, which established both rows
     # at init.
-    with %Sandbox{status: "ready"} <- Conversations._unsafe_get_sandbox(sandbox_id),
+    with %Sandbox{status: "ready"} = sandbox <- Conversations._unsafe_get_sandbox(sandbox_id),
+         true <- at_rest?(sandbox),
          # ownership: as above.
          %Conversation{} = conv <- Conversations._unsafe_get_conversation(conv_id) do
       Fountain.Conversations.ConfigHome.remove(handle, conv)
@@ -346,7 +347,8 @@ defmodule Fountain.Conversations.Termination do
   @spec release_kept_now(Conversation.t(), String.t()) :: :ok
   def release_kept_now(%Conversation{} = conv, sandbox_id) do
     # ownership: the conversation the caller established; its own machine.
-    with %Sandbox{status: "ready"} = sandbox <- Conversations._unsafe_get_sandbox(sandbox_id) do
+    with %Sandbox{status: "ready"} = sandbox <- Conversations._unsafe_get_sandbox(sandbox_id),
+         true <- at_rest?(sandbox) do
       handle =
         Managoat.Sandbox.build_handle(
           Conversations.sandbox_provider_atom(sandbox),
@@ -368,6 +370,13 @@ defmodule Fountain.Conversations.Termination do
       Logger.info("conv #{conv.id}: kept machine not tidied: #{Exception.message(error)}")
       :ok
   end
+
+  # Awake and nobody operating on it: an exec under a co-tenant's park could
+  # bring a paused machine back up behind a row that says `suspended` (E2B),
+  # and under a destroy it has nothing to tidy (review of step 4a). Best
+  # effort: a check, not a lock, and a home left behind is only disk.
+  defp at_rest?(%Sandbox{} = sandbox),
+    do: is_nil(sandbox.transition) and not Machine.busy?(sandbox)
 
   @doc """
   Support teardown of any tenant's sandbox, from the admin panel. Moved from

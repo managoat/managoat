@@ -323,6 +323,28 @@ defmodule Fountain.Machines.ParkTest do
                       {:"$gen_cast", {:machine_gone, ^sandbox_id, "suspended", "idle", "why"}}}
     end
 
+    test "the requester's own server is told too, for a park it stopped waiting for", ctx do
+      # A server whose call to the owner timed out while its park went on is
+      # still running, on a machine now parked; the notice stops it (review
+      # of step 4a). One whose park returned stops first and never reads it.
+      stand_in_server(ctx.conv.id)
+      stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
+
+      assert {:ok, :parked} =
+               Park.run(
+                 ctx.sandbox.id,
+                 opts(
+                   requesting_conversation_id: ctx.conv.id,
+                   notify: {ctx.conv.id, "suspended", "idle", "why"}
+                 )
+               )
+
+      sandbox_id = ctx.sandbox.id
+
+      assert_receive {:cotenant,
+                      {:"$gen_cast", {:machine_gone, ^sandbox_id, "suspended", "idle", "why"}}}
+    end
+
     test "a co-tenant with no live server is not an error", ctx do
       _other = quiet_cotenant(ctx)
       stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)

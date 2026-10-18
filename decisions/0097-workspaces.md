@@ -654,7 +654,8 @@ A PR sequence, each releasable alone:
 - 2026-10-18 — Step 4a built: the lifecycle reads the workspace's kind
   (`Workspaces.machine_kind/1`, fixed at create, so read without a lock).
   `detach` keeps an explicit workspace's machine (`:detached`, nothing
-  written, a live lease not waited on) and fences an implicit one's
+  written, decided on the caller rather than queued in the owner, and a live
+  lease not waited on) and fences an implicit one's
   (`:fenced`, the answer `:detached` used to give); ending a conversation in
   an explicit workspace stops its adapter (with no live server, its tagged
   sessions) and removes its config home from an awake machine. An implicit
@@ -669,9 +670,14 @@ A PR sequence, each releasable alone:
   reaper's sweep alike, while a `:max_lifetime` park of an implicit one is
   refused (`:cannot_park`, which its callers already degrade to a destroy).
   `machine_gone` tells every conversation bound to a parked or destroyed
-  machine, with the protocol's own words when the caller gave none. A turn
-  is refused on a `suspended` machine, where a co-tenant's park can now leave
-  a live server; its prompt's retry wakes the machine. The idle park needed
+  machine, the requester's own included (a server whose call timed out while
+  its park went on is stopped by it), with the protocol's own words when the
+  caller gave none. A turn is refused on a `suspended` machine, where a
+  co-tenant's park can now leave a live server; its prompt's retry wakes the
+  machine. On an explicit workspace a wake waits out a co-tenant's operation
+  on the shared machine (up to a minute) rather than answering 503, and a
+  server reattaching to a parked machine resumes it through its owner first;
+  an implicit workspace's answers are as before. The idle park needed
   no change: the server's verdict and the park's recheck already read every
   conversation on the machine (`Occupancy`), and the reaper already parked a
   machine with no live server.

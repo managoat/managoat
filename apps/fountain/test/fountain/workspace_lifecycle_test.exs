@@ -331,6 +331,151 @@ defmodule Fountain.WorkspaceLifecycleTest do
     end
   end
 
+  describe "review of step 4a" do
+    test "a workspace whose lease is still held is not deleted yet", ctx do
+      # A destroy writes its machine terminal before it releases the lease.
+      {:ok, _} = update_sandbox(ctx.sandbox, %{status: "terminated"})
+      {:ok, _} = Fountain.Conversations.update_conversation(ctx.conv, %{status: "terminated"})
+      put_lease(ctx.sandbox.id, lease_epoch: 3, lease_node: live_lease_holder())
+
+      assert :ok = Workspaces.release_ended(ctx.sandbox.id)
+      assert workspace(ctx.sandbox)
+
+      put_lease(ctx.sandbox.id, lease_node: nil)
+      assert :ok = Workspaces.release_ended(ctx.sandbox.id)
+      refute workspace(ctx.sandbox)
+    end
+
+    test "an explicit detach does not queue behind another operation in the owner", ctx do
+      explicit_workspace!(ctx.sandbox)
+      test = self()
+
+      # A park holds the owner process at the provider.
+      stub(Managoat.Sandbox, :suspend, fn _ ->
+        send(test, :suspending)
+        Process.sleep(1_500)
+        :ok
+      end)
+
+      {:ok, owner} = Machine.ensure_started(ctx.sandbox.id)
+      Mimic.allow(Managoat.Sandbox, self(), owner)
+      sandbox_id = ctx.sandbox.id
+
+      park =
+        Task.async(fn ->
+          capture_log(fn ->
+            Machine.park(sandbox_id, actor: "system:sandbox_reaper", reason: :idle)
+          end)
+        end)
+
+      assert_receive :suspending, 2_000
+      started = System.monotonic_time(:millisecond)
+
+      assert {:ok, :detached} =
+               Machine.detach(ctx.sandbox.id, conversation_id: ctx.conv.id, actor: "self")
+
+      assert System.monotonic_time(:millisecond) - started < 1_000
+      Task.await(park, 5_000)
+    end
+
+    test "a kept machine is not tidied while an owner operates on it", ctx do
+      explicit_workspace!(ctx.sandbox)
+      put_lease(ctx.sandbox.id, transition: "parking", transition_reason: "idle")
+      reject(&Managoat.Sandbox.list_sessions/1)
+      reject(&Managoat.Sandbox.exec/4)
+
+      assert :ok = Termination.release_kept_now(ctx.conv, ctx.sandbox.id)
+
+      put_lease(ctx.sandbox.id,
+        transition: nil,
+        transition_reason: nil,
+        lease_node: live_lease_holder()
+      )
+
+      assert :ok = Termination.release_kept_now(ctx.conv, ctx.sandbox.id)
+    end
+
+    test "a parked explicit machine is resumed through its owner before a reattach", ctx do
+      {:ok, parked} = update_sandbox(ctx.sandbox, %{status: "suspended"})
+      test = self()
+
+      stub(Machine, :ensure_up, fn id, opts ->
+        send(test, {:ensure_up, id, opts[:requesting_conversation_id]})
+        {:ok, _} = update_sandbox(parked, %{status: "ready"})
+        {:ok, :resumed}
+      end)
+
+      # Implicit: confirmed as it always was, no resume.
+      assert {:ok, ^parked} = Fountain.Conversations.Reattachment.awake(parked, ctx.conv.id)
+      refute_received {:ensure_up, _, _}
+
+      explicit_workspace!(parked)
+
+      assert {:ok, %Sandbox{status: "ready"}} =
+               Fountain.Conversations.Reattachment.awake(parked, ctx.conv.id)
+
+      sandbox_id = parked.id
+      conv_id = ctx.conv.id
+      assert_received {:ensure_up, ^sandbox_id, ^conv_id}
+    end
+
+    test "a wake into an explicit workspace waits out a co-tenant's operation", ctx do
+      explicit_workspace!(ctx.sandbox)
+      test = self()
+
+      # A co-tenant's owner operation, holding the workspace's lease briefly.
+      holder =
+        spawn(fn ->
+          {:ok, epoch} = Fountain.Machines.Lease.claim(ctx.sandbox.id)
+          send(test, :held)
+          Process.sleep(800)
+          Fountain.Machines.Lease.release(ctx.sandbox.id, epoch)
+          send(test, :released)
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), holder)
+      assert_receive :held, 2_000
+
+      stub(Managoat.Sandbox.Sprites, :get, fn _ -> {:ok, %{status: :running}} end)
+
+      stub_server_start(fn _sup, _spec ->
+        send(test, :started)
+        {:ok, spawn(fn -> Process.sleep(:infinity) end)}
+      end)
+
+      Mimic.set_mimic_global()
+
+      capture_log(fn ->
+        assert {:ok, _} = Fountain.Conversations.Wake.wake_conversation(ctx.conv.id)
+      end)
+
+      assert_received :released
+      assert_received :started
+    end
+
+    test "a wake into an implicit workspace still answers a held lease at once", ctx do
+      test = self()
+
+      holder =
+        spawn(fn ->
+          {:ok, epoch} = Fountain.Machines.Lease.claim(ctx.sandbox.id)
+          send(test, :held)
+
+          receive do
+            :go -> Fountain.Machines.Lease.release(ctx.sandbox.id, epoch)
+          end
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), holder)
+      assert_receive :held, 2_000
+
+      assert {:error, :sandbox_unavailable} =
+               Fountain.Conversations.Wake.wake_conversation(ctx.conv.id)
+
+      send(holder, :go)
+    end
+  end
+
   defp wait_until(fun, tries \\ 40) do
     cond do
       fun.() -> :ok

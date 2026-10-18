@@ -186,12 +186,22 @@ defmodule Fountain.Workspaces do
     # reproduced).
     _ =
       Repo.all(
-        from(c in Conversation, where: c.user_id == ^user_id, select: c.id, lock: "FOR UPDATE")
+        from(c in Conversation,
+          where: c.user_id == ^user_id,
+          order_by: c.id,
+          select: c.id,
+          lock: "FOR UPDATE"
+        )
       )
 
     _ =
       Repo.all(
-        from(w in Workspace, where: w.user_id == ^user_id, select: w.id, lock: "FOR UPDATE")
+        from(w in Workspace,
+          where: w.user_id == ^user_id,
+          order_by: w.id,
+          select: w.id,
+          lock: "FOR UPDATE"
+        )
       )
 
     case Repo.all(from(w in without_live_sandbox(), where: w.user_id == ^user_id, select: w.id)) do
@@ -298,10 +308,15 @@ defmodule Fountain.Workspaces do
   # Ended: an implicit workspace, or one with no account left to own it, with
   # no live sandbox and no conversation that could still be prompted into it.
   # An explicit workspace with an owner lives until it is deleted (step 5).
+  # A row whose lease is still held is not ended yet: a destroy writes its
+  # machine terminal before it releases the lease, and deleting the row in
+  # between would leave the release nothing to write and change the advisory
+  # lock's key under an operation (review of step 4a). The sweep takes it
+  # once the lease is released.
   defp ended do
     from(w in without_live_sandbox(),
       where:
-        (w.implicit or is_nil(w.user_id)) and
+        is_nil(w.lease_node) and (w.implicit or is_nil(w.user_id)) and
           not exists(
             from(c in Conversation,
               where:
@@ -327,12 +342,21 @@ defmodule Fountain.Workspaces do
           Repo.all(
             from(c in Conversation,
               where: c.workspace_id in ^ids,
+              order_by: c.id,
               select: c.id,
               lock: "FOR UPDATE"
             )
           )
 
-        _ = Repo.all(from(w in Workspace, where: w.id in ^ids, select: w.id, lock: "FOR UPDATE"))
+        _ =
+          Repo.all(
+            from(w in Workspace,
+              where: w.id in ^ids,
+              order_by: w.id,
+              select: w.id,
+              lock: "FOR UPDATE"
+            )
+          )
 
         case Repo.all(from(w in ended(), where: w.id in ^ids, select: w.id)) do
           [] ->

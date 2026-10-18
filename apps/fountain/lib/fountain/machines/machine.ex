@@ -841,7 +841,19 @@ defmodule Fountain.Machines.Machine do
       {:error, :provider_transaction_open}
     else
       timeout = Keyword.get(opts, :detach_timeout_ms, @detach_timeout)
-      sandbox_id |> detach_in_owner(opts, timeout, 1) |> binding_refusal(sandbox_id)
+
+      # An explicit workspace's detach writes nothing on the machine, so it is
+      # run here rather than queued in the owner behind another conversation's
+      # operation (`Binding.keep_explicit/2`), on the same deadline.
+      deadline = DateTime.add(db_now(), timeout, :millisecond)
+
+      case Binding.keep_explicit(sandbox_id, Keyword.put(opts, :deadline, deadline)) do
+        :not_explicit ->
+          sandbox_id |> detach_in_owner(opts, timeout, 1) |> binding_refusal(sandbox_id)
+
+        kept ->
+          binding_refusal(kept, sandbox_id)
+      end
     end
   end
 

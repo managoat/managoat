@@ -162,11 +162,39 @@ defmodule Fountain.Machines.Binding do
     end
   end
 
+  @doc """
+  The explicit workspace's detach, run on the caller rather than in the
+  machine's owner: `{:ok, :detached}` or the binding's refusal for a live
+  machine of an explicit workspace, and `:not_explicit` for anything else,
+  which the caller takes to the owner (`Machine.detach/2`).
+
+  Off the owner because it writes nothing on the machine and must not queue
+  behind another conversation's operation in the owner's mailbox (a park, a
+  resume, a rebuild that runs for minutes): a conversation leaving a machine
+  it shares has nothing to wait for (review of step 4a). The binding check is
+  still taken under the machine's advisory lock.
+  """
+  @spec keep_explicit(Ecto.UUID.t(), keyword()) ::
+          {:ok, :detached} | {:error, term()} | :not_explicit
+  def keep_explicit(sandbox_id, opts) when is_binary(sandbox_id) and is_list(opts) do
+    conversation_id = Keyword.fetch!(opts, :conversation_id)
+
+    with %Sandbox{status: status} = sandbox when status not in @terminal_statuses <-
+           Conversations._unsafe_get_sandbox(sandbox_id),
+         :explicit <- Fountain.Workspaces.machine_kind(sandbox) do
+      keep(sandbox, conversation_id, opts)
+    else
+      _ -> :not_explicit
+    end
+  end
+
   # The binding ends and the machine stays (an explicit workspace). The
   # binding is checked under the machine's lock, in the lock order admission
   # takes (advisory, then the conversation), so a conversation already moved
   # to another machine is refused rather than answered for; nothing is
-  # written.
+  # written. An ownerless machine (its account deleted) binds nobody.
+  defp keep(%Sandbox{user_id: nil}, _conversation_id, _opts), do: {:error, :sandbox_unavailable}
+
   defp keep(%Sandbox{} = sandbox, conversation_id, opts) do
     Conversations.with_sandbox_lock(sandbox.id, fn ->
       bound? =
