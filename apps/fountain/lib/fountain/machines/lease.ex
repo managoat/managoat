@@ -55,6 +55,25 @@ defmodule Fountain.Machines.Lease do
 
   The read half is `live?/1`, through `Machines.Machine.busy?/1` for readers
   outside this namespace.
+
+  ## Written twice (ADR 0097, step 3a)
+
+  The lease is moving to the sandbox's workspace. In this release the columns
+  on `sandboxes` are still the ones every function here reads, and every write
+  of them is followed, in the same transaction, by `copy_to_workspace/1`,
+  which copies all four onto the sandbox's workspace. So the two always agree
+  at a commit, and step 3b can make the workspace the source of truth with a
+  release that rolls back onto this one cleanly. The epoch is copied as the
+  greater of the two, so the workspace's never goes backwards either.
+
+  Only the workspace's **current** sandbox is copied: its live one, or, when
+  it has none, the sandbox written (with several retired ones and no live
+  one, which no release yet makes, which of them the boot sweep copies is
+  not defined). Today a workspace has one sandbox, so that
+  is every write; a later release that rebuilds a lost machine in the same
+  workspace leaves a retired sandbox beside a live one, and a write to the
+  retired row (a release after a destroy, say) must not overwrite the live
+  machine's lease if this release ever runs against such a workspace.
   """
 
   import Ecto.Query
@@ -62,6 +81,7 @@ defmodule Fountain.Machines.Lease do
   alias Fountain.Conversations
   alias Fountain.Conversations.Sandbox
   alias Fountain.Repo
+  alias Fountain.Workspaces.Workspace
 
   require Logger
 
@@ -191,6 +211,15 @@ defmodule Fountain.Machines.Lease do
   def sweep_boot do
     prefix = boot_prefix() <> "%"
 
+    {:ok, count} = Repo.transaction(fn -> sweep_rows(prefix) end)
+
+    if count > 0, do: Logger.info("machine leases: cleared #{count} left by an earlier boot")
+    count
+  end
+
+  # The sweep and its copy onto the workspaces, in one transaction like every
+  # other write of these columns.
+  defp sweep_rows(prefix) do
     {count, _} =
       Repo.update_all(
         from(s in Sandbox,
@@ -219,7 +248,7 @@ defmodule Fountain.Machines.Lease do
         []
       )
 
-    if count > 0, do: Logger.info("machine leases: cleared #{count} left by an earlier boot")
+    _ = copy_current_to_workspaces()
     count
   end
 
@@ -263,10 +292,12 @@ defmodule Fountain.Machines.Lease do
   def release(sandbox_id, epoch) when is_binary(sandbox_id) and is_integer(epoch) do
     guarded(sandbox_id, fn ->
       if taken_epoch?(epoch) do
-        case Repo.update_all(held_by(sandbox_id, epoch), set: [lease_node: nil]) do
-          {1, _} -> :ok
-          {0, _} -> {:error, :lost}
-        end
+        written_twice(sandbox_id, fn ->
+          case Repo.update_all(held_by(sandbox_id, epoch), set: [lease_node: nil]) do
+            {1, _} -> {:copy, :ok}
+            {0, _} -> {:error, :lost}
+          end
+        end)
       else
         {:error, :lost}
       end
@@ -376,10 +407,12 @@ defmodule Fountain.Machines.Lease do
             |> select([s], s)
             |> preserve_destroying(sets)
 
-          case Repo.update_all(query, set: sets) do
-            {1, [sandbox]} -> {:ok, sandbox}
-            {0, _} -> {:error, zero_row_reason(sandbox_id, epoch, opts)}
-          end
+          written_twice(sandbox_id, fn ->
+            case Repo.update_all(query, set: sets) do
+              {1, [sandbox]} -> {:copy, {:ok, sandbox}}
+              {0, _} -> {:error, zero_row_reason(sandbox_id, epoch, opts)}
+            end
+          end)
         end
       else
         {:error, :stale}
@@ -414,6 +447,7 @@ defmodule Fountain.Machines.Lease do
 
           case Repo.update_all(claimed, set: [lease_epoch: epoch, lease_node: holder]) do
             {1, _} ->
+              :ok = copy_to_workspace(sandbox_id)
               log_claim(sandbox_id, holder, epoch, current)
               {:ok, epoch}
 
@@ -422,6 +456,87 @@ defmodule Fountain.Machines.Lease do
           end
       end
     end)
+  end
+
+  @doc """
+  Copy `sandbox_id`'s lease columns onto its workspace (ADR 0097, step 3a).
+
+  Called in the same transaction as every write of those columns: by this
+  module's own writes, and by the two writers of `transition` outside it,
+  `Machines.Destroy.stamp_intent!/2` (the fence) and
+  `Machines.Binding.clear_abandoned_transition/1` (registration). A sandbox
+  with no workspace copies nothing. Not for any other caller.
+  """
+  @spec copy_to_workspace(Ecto.UUID.t()) :: :ok
+  def copy_to_workspace(sandbox_id) when is_binary(sandbox_id) do
+    {_count, _} =
+      Repo.update_all(from(w in copy_query(), where: as(:sandbox).id == ^sandbox_id), [])
+
+    :ok
+  end
+
+  # The boot sweep's copy: every workspace's current sandbox onto it, once
+  # `sweep_boot/0` has cleared the sandbox rows, where the two differ (there
+  # is a workspace per launch, and most agree).
+  defp copy_current_to_workspaces do
+    Repo.update_all(
+      from([w, sandbox: s] in copy_query(),
+        where:
+          fragment("? IS DISTINCT FROM ?", w.lease_node, s.lease_node) or
+            fragment("? IS DISTINCT FROM ?", w.transition, s.transition) or
+            fragment("? IS DISTINCT FROM ?", w.transition_reason, s.transition_reason) or
+            w.lease_epoch < s.lease_epoch
+      ),
+      []
+    )
+  end
+
+  # A sandbox's four columns onto its workspace, where it is the workspace's
+  # current sandbox (see the moduledoc): live, or the workspace has no live
+  # one.
+  defp copy_query do
+    from(w in Workspace,
+      join: s in Sandbox,
+      as: :sandbox,
+      on: s.workspace_id == w.id,
+      where:
+        s.status not in @terminal_statuses or
+          not exists(
+            from(o in Sandbox,
+              where:
+                o.workspace_id == parent_as(:sandbox).workspace_id and
+                  o.status not in @terminal_statuses
+            )
+          ),
+      update: [
+        set: [
+          lease_epoch: fragment("GREATEST(?, ?)", w.lease_epoch, s.lease_epoch),
+          lease_node: s.lease_node,
+          transition: s.transition,
+          transition_reason: s.transition_reason
+        ]
+      ]
+    )
+  end
+
+  # A write of the sandbox's lease columns and its copy onto the workspace, in
+  # one transaction (joined, when the caller already has one open, which only
+  # `cas_update/4`'s `nest: true` permits). `fun` answers `{:copy, result}`
+  # when it wrote, and anything else when it did not.
+  defp written_twice(sandbox_id, fun) do
+    {:ok, result} =
+      Repo.transaction(fn ->
+        case fun.() do
+          {:copy, result} ->
+            :ok = copy_to_workspace(sandbox_id)
+            result
+
+          other ->
+            other
+        end
+      end)
+
+    result
   end
 
   defp superseded_holder(nil), do: nil
