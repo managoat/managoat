@@ -254,12 +254,16 @@ defmodule Fountain.Machines.RebuildTest do
   end
 
   describe "the setup seam" do
-    test "is refused until the caller says the network is settled", ctx do
+    test "is refused unless the caller names the network the steps run under", ctx do
       pending = insert_sandbox(user_id: ctx.user.id, status: "pending")
       reject(Managoat.Sandbox, :create, 2)
 
-      assert {:error, :network_unsettled} =
-               Machine.set_up(pending.id, %Setup{environment: nil, sprite_env: []})
+      for network <- [nil, :floored] do
+        assert {:error, :network_unsettled} =
+                 Machine.set_up(pending.id, %Setup{environment: nil, sprite_env: []},
+                   network: network
+                 )
+      end
 
       assert Repo.reload!(pending).status == "pending"
     end
@@ -274,7 +278,16 @@ defmodule Fountain.Machines.RebuildTest do
         write_env_file?: true
       }
 
-      %{pending: pending, setup: setup}
+      # The network is `Fountain.Workspaces.Network`'s to settle, and
+      # `workspace_provision_test.exs` drives it; here it is settled at once.
+      network = %Fountain.Workspaces.Network{
+        workspace_id: pending.workspace_id,
+        user_id: ctx.user.id
+      }
+
+      stub(Fountain.Workspaces.Network, :establish, fn net, _handle -> {:ok, net, [], []} end)
+
+      %{pending: pending, setup: setup, network: network}
     end
 
     test "an owner builds a machine with no conversation: env file, then the setup script",
@@ -293,7 +306,7 @@ defmodule Fountain.Machines.RebuildTest do
 
       capture_log(fn ->
         assert {:ok, :provisioned, :set_up} =
-                 Machine.set_up(ctx.pending.id, ctx.setup, network: :floored)
+                 Machine.set_up(ctx.pending.id, ctx.setup, network: ctx.network)
       end)
 
       assert_received :env_file
@@ -312,7 +325,7 @@ defmodule Fountain.Machines.RebuildTest do
 
       capture_log(fn ->
         assert {:error, {:setup_exit, 3}, %{}} =
-                 Machine.set_up(ctx.pending.id, ctx.setup, network: :floored)
+                 Machine.set_up(ctx.pending.id, ctx.setup, network: ctx.network)
       end)
 
       assert Repo.reload!(ctx.pending).status == "failed"

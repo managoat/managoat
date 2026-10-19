@@ -688,20 +688,20 @@ defmodule Fountain.Machines.Machine do
   machine-level steps of `setup` (`Fountain.Machines.Setup`) as the pipeline
   of `Fountain.Machines.Provision.run/3`, inline on the caller.
 
-  **The seam explicit workspaces will use** (ADR 0097, "An explicit workspace
-  is provisioned on create"; step 5). Nothing calls it yet. The owner's
-  lease, the create, the `ready` or `failed` finalize, the workspace's status
-  and the audit event are the bracket's, exactly as for a conversation's
-  provision; what it adds is that no `ConversationServer` is involved. The
-  actor defaults to `"system:machine"`.
+  **The seam explicit workspaces use** (ADR 0097, "An explicit workspace is
+  provisioned on create"; step 5): `Fountain.Workspaces.Provisioner` calls
+  it when a workspace is created. The owner's lease, the create, the `ready`
+  or `failed` finalize, the workspace's status and the audit event are the
+  bracket's, exactly as for a conversation's provision; what it adds is that
+  no `ConversationServer` is involved. The actor defaults to
+  `"system:machine"`.
 
-  **Refused unless the caller says the machine's network is settled**
-  (`network: :floored`), answering `{:error, :network_unsettled}` with
-  nothing done. Every step here runs packages and clones, with clone tokens,
-  on whatever network the machine has, and the broker floor and CA are a
-  conversation's today (ADR 0095); step 5 decides what an explicit
-  workspace's setup runs under, and this keeps the door from being wired
-  before it has.
+  **Refused unless the caller names the network the steps run under**
+  (`network: %Fountain.Workspaces.Network{}`), answering
+  `{:error, :network_unsettled}` with nothing done. Every step here runs
+  packages and clones, with clone tokens, so the broker's floor, its CA, the
+  relay and a broker session of the workspace's own are settled on the
+  machine before the first of them (`Fountain.Machines.Setup.pipeline/2`).
   """
   @spec set_up(String.t(), Fountain.Machines.Setup.t(), keyword()) ::
           {:ok, :provisioned, :set_up}
@@ -711,17 +711,16 @@ defmodule Fountain.Machines.Machine do
   def set_up(sandbox_id, %Fountain.Machines.Setup{} = setup, opts \\ [])
       when is_binary(sandbox_id) and is_list(opts) do
     case Keyword.pop(opts, :network) do
-      {:floored, opts} -> set_up_floored(sandbox_id, setup, opts)
-      {_unsettled, _opts} -> {:error, :network_unsettled}
-    end
-  end
+      {%Fountain.Workspaces.Network{} = network, opts} ->
+        provision(
+          sandbox_id,
+          Fountain.Machines.Setup.pipeline(setup, network),
+          Keyword.put_new(opts, :actor, "system:machine")
+        )
 
-  defp set_up_floored(sandbox_id, setup, opts) do
-    provision(
-      sandbox_id,
-      Fountain.Machines.Setup.pipeline(setup),
-      Keyword.put_new(opts, :actor, "system:machine")
-    )
+      {_unsettled, _opts} ->
+        {:error, :network_unsettled}
+    end
   end
 
   @doc """

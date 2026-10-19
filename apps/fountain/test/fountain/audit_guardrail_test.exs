@@ -86,6 +86,9 @@ defmodule Fountain.AuditGuardrailTest do
     {"vault update", &__MODULE__.do_vault_update/1, "vault.updated"},
     {"vault delete", &__MODULE__.do_vault_delete/1, "vault.deleted"},
     {"vault copy", &__MODULE__.do_vault_copy/1, "vault.created"},
+    # Explicit workspaces (ADR 0097, step 5): made and deleted by their owner.
+    {"workspace create", &__MODULE__.do_workspace_create/1, "workspace.created"},
+    {"workspace delete", &__MODULE__.do_workspace_delete/1, "workspace.deleted"},
     {"api key mint", &__MODULE__.do_key_create/1, "api_key.created"},
     {"api key revoke", &__MODULE__.do_key_revoke/1, "api_key.revoked"},
     {"conversation key mint", &__MODULE__.do_conversation_key_create/1, "api_key.created"},
@@ -179,11 +182,16 @@ defmodule Fountain.AuditGuardrailTest do
     "Fountain.Machines.Destroy.run/2 on a row whose user_id is nil" =>
       "account deletion nilifies user_id before its machines are torn down (#2329), so the " <>
         "destroy has no tenant to attribute; the deletion's own trail is the record of it",
-    "Workspaces.insert_implicit/1, settle_provision/1 and delete_for_account/1" =>
+    "Workspaces.insert_implicit/1, settle_provision/2 and delete_for_account/1" =>
       "an implicit workspace is made inside the launch's reservation transaction, where no " <>
         "audit can be recorded, and only gives the launch's own sandbox an owner record; " <>
         "conversation.created and sandbox.provisioned/provision_failed describe it, and " <>
-        "account.deleted records the account deletion that removes them (ADR 0097)",
+        "account.deleted records the account deletion that removes them; an explicit " <>
+        "workspace's status follows its provision, which sandbox.provisioned/provision_failed " <>
+        "record (ADR 0097)",
+    "Workspaces.Network's setup broker session" =>
+      "provisioning machinery created and released with the setup it serves, as a " <>
+        "conversation's broker session is; workspace.created and sandbox.provisioned record it",
     "Accounts.touch_api_key/1" => "a last-used stamp on every authenticated request",
     "ChatGPT.refresh/1 on success" =>
       "a token rotation keeps the subscription as it was; a refusal that revokes it is audited",
@@ -357,6 +365,19 @@ defmodule Fountain.AuditGuardrailTest do
 
   def do_vault_delete(user) do
     {:ok, _} = Vaults.delete_vault(insert_vault(user_id: user.id))
+  end
+
+  def do_workspace_create(user) do
+    stub(Fountain.Workspaces.Provisioner, :start, fn _workspace, _sandbox_id -> {:ok, self()} end)
+    env = insert_env(user_id: user.id)
+
+    {:ok, _} =
+      Fountain.Workspaces.create_workspace(user.id, %{"name" => "w", "environment_id" => env.id})
+  end
+
+  def do_workspace_delete(user) do
+    {:ok, workspace} = do_workspace_create(user)
+    {:ok, _} = Fountain.Workspaces.delete_workspace(workspace)
   end
 
   def do_vault_copy(user) do

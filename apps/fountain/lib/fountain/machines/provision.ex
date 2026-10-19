@@ -502,6 +502,9 @@ defmodule Fountain.Machines.Provision do
       {:ok, {%Sandbox{} = next, moved}} ->
         retired_predecessor(old, opts)
         tell_moved(old, moved, opts)
+        # The workspace is `provisioning` again (`Lease.succeed/3`): an
+        # explicit one says so on its owner's event stream (ADR 0097 step 5).
+        announce_provisioning(next)
 
         case build(next, epoch, false, pipeline_for(fun, next), opts) do
           {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
@@ -620,6 +623,16 @@ defmodule Fountain.Machines.Provision do
       "rebuilt",
       message
     )
+  end
+
+  defp announce_provisioning(%Sandbox{workspace_id: workspace_id}) do
+    case Repo.get(Fountain.Workspaces.Workspace, workspace_id) do
+      %Fountain.Workspaces.Workspace{} = workspace ->
+        Fountain.Workspaces.publish_status(workspace)
+
+      nil ->
+        :ok
+    end
   end
 
   # The pipeline for the new row. A caller whose pipeline has to know which
@@ -1177,7 +1190,7 @@ defmodule Fountain.Machines.Provision do
 
     case Lease.cas_update(sandbox.id, epoch, attrs, []) do
       {:ok, %Sandbox{} = failed} ->
-        :ok = Fountain.Workspaces.settle_provision(failed)
+        :ok = Fountain.Workspaces.settle_provision(failed, reason)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 
@@ -1329,7 +1342,7 @@ defmodule Fountain.Machines.Provision do
 
     case outcome do
       {:ok, %Sandbox{} = failed} ->
-        :ok = Fountain.Workspaces.settle_provision(failed)
+        :ok = Fountain.Workspaces.settle_provision(failed, reason)
         audit(failed, "sandbox.provision_failed", %{"reason" => reason_text(reason)}, opts)
         {:ok, :failed}
 

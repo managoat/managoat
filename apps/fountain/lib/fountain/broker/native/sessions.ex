@@ -27,6 +27,14 @@ defmodule Fountain.Broker.Native.Sessions do
   A session is not tenant-editable state and is not audited: it is
   provisioning machinery, created and deleted with the sandbox it serves,
   and the audit trail records the conversation's lifecycle instead.
+
+  **A workspace's session** (ADR 0097, step 5) is the same row with a
+  `workspace_id` and no conversation: the credentials an explicit
+  workspace's provision on create runs its packages, clones and setup script
+  with, before any conversation exists (`Fountain.Workspaces.Network`).
+  `create_workspace/1`, `update_workspace_rules/4` and `release_workspace/1`
+  are its three verbs; it is released when the setup ends and cascades with
+  the workspace.
   """
 
   @behaviour Managoat.Broker.Store
@@ -73,14 +81,38 @@ defmodule Fountain.Broker.Native.Sessions do
     end
   end
 
+  @doc """
+  Mint a workspace's session (ADR 0097, step 5): `create/1` with the
+  workspace as the owner in place of a conversation. Returns the plaintext
+  token exactly once.
+  """
+  @spec create_workspace(%{
+          required(:workspace_id) => String.t(),
+          required(:user_id) => String.t(),
+          required(:rules) => [Rule.t()],
+          required(:ttl_seconds) => pos_integer(),
+          optional(:unmatched_host_policy) => :passthrough | :deny,
+          optional(:meta) => map()
+        }) :: {:ok, Broker.session()} | {:error, term()}
+  def create_workspace(%{workspace_id: workspace_id, user_id: user_id} = attrs)
+      when is_binary(workspace_id) and is_binary(user_id) do
+    sweep_expired()
+
+    with {:ok, dek} <- Crypto.load_tenant_key(user_id) do
+      attrs |> Map.put(:conversation_id, nil) |> insert(dek)
+    end
+  end
+
   defp insert(%{conversation_id: conv_id, user_id: user_id} = attrs, dek) do
     token = "fb_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     expires_at = DateTime.add(DateTime.utc_now(), attrs.ttl_seconds, :second)
+    workspace_id = Map.get(attrs, :workspace_id)
 
     changeset =
       Session.changeset(%Session{}, %{
         token_hash: hash(token),
         conversation_id: conv_id,
+        workspace_id: workspace_id,
         user_id: user_id,
         rules_ciphertext: Crypto.encrypt(encode_rules(attrs.rules), dek, @aad),
         unmatched_host_policy:
@@ -91,7 +123,12 @@ defmodule Fountain.Broker.Native.Sessions do
 
     case Repo.insert(changeset) do
       {:ok, _} ->
-        {:ok, %{token: token, vault: Broker.vault_name(conv_id), expires_at: expires_at}}
+        {:ok,
+         %{
+           token: token,
+           vault: Broker.vault_name(conv_id || workspace_id),
+           expires_at: expires_at
+         }}
 
       {:error, changeset} ->
         {:error, {:broker, :session, changeset}}
@@ -163,9 +200,7 @@ defmodule Fountain.Broker.Native.Sessions do
          }}
 
       _ ->
-        Logger.warning(
-          "broker: session #{session.id} for conv #{session.conversation_id} is unreadable"
-        )
+        Logger.warning("broker: session #{session.id} for #{owner(session)} is unreadable")
 
         :error
     end
@@ -209,6 +244,59 @@ defmodule Fountain.Broker.Native.Sessions do
     end
   end
 
+  @doc """
+  `update_rules/4` for a workspace's live sessions (ADR 0097, step 5): a
+  secret written during the workspace's provision on create reaches the
+  setup's next tunnel through the broker. Scoped by the workspace's owner.
+  """
+  @spec update_workspace_rules(String.t(), String.t(), [Rule.t()], map()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def update_workspace_rules(workspace_id, user_id, rules, meta)
+      when is_binary(workspace_id) and is_binary(user_id) and is_list(rules) do
+    with {:ok, dek} <- Crypto.load_tenant_key(user_id) do
+      now = DateTime.utc_now()
+      ciphertext = Crypto.encrypt(encode_rules(rules), dek, @aad)
+
+      {n, _} =
+        Repo.update_all(
+          from(s in Session,
+            where:
+              s.workspace_id == ^workspace_id and s.user_id == ^user_id and
+                s.expires_at >= ^now
+          ),
+          set: [rules_ciphertext: ciphertext, meta: meta, updated_at: now]
+        )
+
+      {:ok, n}
+    end
+  end
+
+  @doc """
+  The workspaces among `workspace_ids` that have a live session, for the
+  refresh a secret write asks for.
+  """
+  @spec live_workspace_ids([String.t()]) :: [String.t()]
+  def live_workspace_ids([]), do: []
+
+  def live_workspace_ids(workspace_ids) when is_list(workspace_ids) do
+    now = DateTime.utc_now()
+
+    Repo.all(
+      from(s in Session,
+        where: s.workspace_id in ^workspace_ids and s.expires_at >= ^now,
+        distinct: true,
+        select: s.workspace_id
+      )
+    )
+  end
+
+  @doc "Delete every session of a workspace. Its tokens stop working at once."
+  @spec release_workspace(String.t()) :: :ok
+  def release_workspace(workspace_id) when is_binary(workspace_id) do
+    Repo.delete_all(from(s in Session, where: s.workspace_id == ^workspace_id))
+    :ok
+  end
+
   @doc "Revoke one worker's token without touching a replacement's sessions."
   @spec release_session(String.t(), String.t(), String.t()) :: :ok
   def release_session(user_id, conversation_id, token)
@@ -239,6 +327,9 @@ defmodule Fountain.Broker.Native.Sessions do
     {n, _} = Repo.delete_all(from(s in Session, where: s.expires_at < ^now))
     n
   end
+
+  defp owner(%Session{workspace_id: ws}) when is_binary(ws), do: "workspace #{ws}"
+  defp owner(%Session{conversation_id: conv}), do: "conv #{conv}"
 
   defp hash(token), do: :crypto.hash(:sha256, token)
 

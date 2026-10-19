@@ -101,6 +101,12 @@ defmodule Fountain.Accounts.Deletion do
       # an event each.
       |> Keyword.put(:audit, false)
 
+    # An explicit workspace being provisioned on create holds its machine's
+    # lease for the length of its setup, which the destroys below would wait
+    # out and then leave to a fence (ADR 0097 step 5). Stopped first, so they
+    # take the machine at once.
+    :ok = Fountain.Workspaces.stop_provisions(user.id)
+
     with sprites when is_integer(sprites) <- destroy_sprites(user, sprite_opts) do
       delete_user_row(user, sprites, opts)
     end

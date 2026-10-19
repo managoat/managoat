@@ -92,6 +92,11 @@ Mimic.copy(Fountain.Machines.Admission)
 Mimic.copy(Fountain.Machines.Binding)
 Mimic.copy(Fountain.Machines.Provision)
 Mimic.copy(Fountain.Machines.Resume)
+# An explicit workspace's provision on create (ADR 0097, step 5): the network
+# it settles before its setup, and the task that runs it.
+Mimic.copy(Fountain.Workspaces.Network)
+Mimic.copy(Fountain.Workspaces.Provisioner)
+Mimic.copy(Fountain.Broker.TransportRelay)
 
 # ─── The schema guard (#1427) ────────────────────────────────────────────────
 #

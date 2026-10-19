@@ -451,6 +451,8 @@ defmodule Fountain.Conversations.FreshProvision do
   #   guarantees: every step after this one waits for it.
   defp write_sandbox_config(handle, state, agent, runtime, sprite_env, conv) do
     home = ConfigHome.home(conv)
+    # ownership: the server's own machine, established at its init.
+    relay_owner = Fountain.Workspaces.relay_owner(state.sandbox_id, state.conversation_id)
 
     [
       {"runtime_config",
@@ -467,7 +469,7 @@ defmodule Fountain.Conversations.FreshProvision do
          Provisioning.write_env_file(handle, Fountain.Conversations.Identity.disk_env(sprite_env))
        end},
       {"broker_ca_install",
-       fn -> Egress.install_ca(state.broker, handle, state.conversation_id) end}
+       fn -> Egress.install_ca(state.broker, handle, state.conversation_id, relay_owner) end}
     ]
     |> Enum.map(fn {name, fun} ->
       async_step(fn -> step(state.conversation_id, name, fun) end)
