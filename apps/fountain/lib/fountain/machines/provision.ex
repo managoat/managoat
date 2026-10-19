@@ -558,7 +558,10 @@ defmodule Fountain.Machines.Provision do
         with :ok <- unoccupied(old),
              {:ok, {%Sandbox{} = next, moved, ended}} <-
                Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
-                 succeed_and_follow(old, epoch, attrs, refuse_running: not interrupt?)
+                 succeed_and_follow(old, epoch, attrs,
+                   refuse_running: not interrupt?,
+                   endings_asked: interrupt?
+                 )
                end) do
           # A reservation, like a create's: the workspace's provision stamps
           # it again when it claims the lease.
@@ -666,8 +669,19 @@ defmodule Fountain.Machines.Provision do
           set: [status: "interrupted", ended_at: now, orphaned_at: now]
         )
 
-      if stranded > 0,
-        do: Logger.info("machine #{old.id}: ended #{stranded} turn(s) with the move")
+      cond do
+        stranded == 0 ->
+          :ok
+
+        # A rebuild asked to interrupt them (#2986).
+        Keyword.get(opts, :endings_asked, false) ->
+          Logger.info("machine #{old.id}: ended #{stranded} turn(s) with the move")
+
+        # A rebuild after a loss ended the old machine's turns before the
+        # lock; these were admitted in between.
+        true ->
+          Logger.warning("machine #{old.id}: ended #{stranded} turn(s) admitted mid-rebuild")
+      end
 
       _ =
         Repo.update_all(
@@ -690,6 +704,26 @@ defmodule Fountain.Machines.Provision do
     end
   end
 
+  defp keep_reply_text(%Fountain.Conversations.Turn{reply_text: nil} = turn) do
+    case Conversations._unsafe_turn_reply_text(turn) do
+      nil ->
+        :ok
+
+      text ->
+        _ =
+          Repo.update_all(
+            from(t in Fountain.Conversations.Turn,
+              where: t.id == ^turn.id and is_nil(t.reply_text)
+            ),
+            set: [reply_text: text]
+          )
+
+        :ok
+    end
+  end
+
+  defp keep_reply_text(_turn), do: :ok
+
   # The turns the succession ended, said after its commit as an owner's
   # ending says them (`Conversations._unsafe_orphan_turn/3`): the `turn`
   # stage a client waits on, `interrupted` with `machine_destroyed`, and a
@@ -698,8 +732,13 @@ defmodule Fountain.Machines.Provision do
 
   defp announce_ended_turns(turns, %Sandbox{} = old, opts) do
     actor = Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
+    if old.user_id, do: Conversations.broadcast_sidebar_update(old.user_id)
 
     Enum.each(turns, fn turn ->
+      # The reply so far, as an owner's ending keeps it
+      # (`Conversations._unsafe_orphan_turn/3`), for search and the turn read.
+      keep_reply_text(turn)
+
       metadata = %{
         outcome: "turn_orphaned",
         turn_id: turn.id,

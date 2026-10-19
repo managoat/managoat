@@ -151,10 +151,18 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
   test "interrupt: true ends the running turns as interrupted and keeps the transcripts", ctx do
     conv = conversation(ctx, "running")
     turn = insert_turn(conv, status: "running")
+    :ok = Phoenix.PubSub.subscribe(Fountain.PubSub, "sidebar:#{ctx.user.id}")
+
+    insert_log_event(conv,
+      turn_id: turn.id,
+      stream: "acp",
+      data:
+        ~s({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"half an answer"}}}})
+    )
 
     assert {:ok, %Workspace{status: "provisioning"}} = rebuild(ctx, interrupt: true)
 
-    assert %Turn{status: "interrupted"} = Repo.reload!(turn)
+    assert %Turn{status: "interrupted", reply_text: "half an answer"} = Repo.reload!(turn)
     moved = Repo.reload!(conv)
     assert moved.status == "idle"
     assert moved.sandbox_id != ctx.old.id
@@ -170,6 +178,7 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
 
     assert orphaned.actor == "api"
     assert orphaned.resource_id == turn.id
+    assert_received {:sidebar_update, _}
   end
 
   test "interrupt: true with a refusal (a full fleet) ends no turn", ctx do
