@@ -543,8 +543,8 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
     test "a launch's own cwd is created, with the config home, before the runtime prepares" do
       test = self()
 
-      stub(Managoat.Sandbox, :exec, fn _handle, "bash", ["-c", script], _opts ->
-        send(test, {:exec, script})
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", ["-c", script | args], _opts ->
+        send(test, {:exec, script, args})
         {:ok, "", 0}
       end)
 
@@ -559,8 +559,16 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
                  nil
                )
 
-      assert_received {:exec, script}
-      assert script == "mkdir -p -- '#{@home}' '/home/sprite/work/app'"
+      assert_received {:exec, script, args}
+      assert script == Fountain.Conversations.ConfigHome.directories_script()
+
+      assert args == [
+               "fountain-dirs",
+               @home,
+               "/home/sprite/work/app",
+               "/home/sprite/.managoat",
+               ""
+             ]
     end
 
     test "the runtime's default cwd always exists, so it costs no exec" do
