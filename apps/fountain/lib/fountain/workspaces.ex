@@ -1132,8 +1132,16 @@ defmodule Fountain.Workspaces do
   @spec describe_failure(Sandbox.t(), term()) :: String.t()
   def describe_failure(%Sandbox{} = sandbox, reason) do
     case redaction_values(sandbox) do
-      {:ok, values} -> values |> redact(failure_words(reason)) |> within_limit()
-      :error -> @unredactable
+      # The values as they are, and as a cleaned quote shows them.
+      {:ok, values} ->
+        (values ++ Fountain.Workspaces.SetupOutput.matchable(values))
+        |> Enum.uniq()
+        |> Enum.sort_by(&byte_size/1, :desc)
+        |> redact(failure_words(reason))
+        |> within_limit()
+
+      :error ->
+        @unredactable
     end
   rescue
     # Nothing to redact with is nothing safe to say.

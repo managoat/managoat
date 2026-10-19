@@ -316,7 +316,7 @@ defmodule Fountain.Conversations.Rebuild do
         "conv #{conv.id}: machine not rebuilt: #{inspect(Provision.without_output(reason))}"
       )
 
-      retryable_stop(state, to_string_reason(reason), reason)
+      retryable_stop(state, to_string_reason(reason), Provision.without_output(reason))
     end
 
     {:stop, :normal, state}

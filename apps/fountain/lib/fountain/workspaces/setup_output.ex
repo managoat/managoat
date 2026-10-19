@@ -501,7 +501,11 @@ defmodule Fountain.Workspaces.SetupOutput do
   # carriage returns, cleaned as output is. A value with no control in it is
   # itself. Pieces shorter than `Redaction.min_length/0` are left out, as the
   # lines of a multi-line value are.
-  defp matchable(values) do
+  @doc false
+  # Also what a workspace's `error` is redacted with (`Workspaces.describe_failure/2`),
+  # whose quoted tail is cleaned the same way.
+  @spec matchable([String.t()]) :: [String.t()]
+  def matchable(values) do
     values
     |> Enum.flat_map(fn value ->
       value |> :binary.split("\r", [:global]) |> Enum.map(&strip/1)
