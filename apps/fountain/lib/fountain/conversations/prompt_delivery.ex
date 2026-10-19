@@ -132,4 +132,28 @@ defmodule Fountain.Conversations.PromptDelivery do
   end
 
   def hand_over(_pid, _nothing, _images), do: :ok
+
+  @doc """
+  Take the prompts already queued for the calling server (`hand_over/3`'s
+  casts) out of its mailbox, answering what travels with each. For a server
+  that is stopping before it ran them: the report that they did not run
+  carries each one's receipt and `client_request_id` (#3001), where a report
+  without them reached no client waiting on its own request and left the
+  receipt to be reported again at the next boot.
+
+  Only what is already in the mailbox, as `MachineLoss.requeue/1` reads it: a
+  wake casts the prompt as soon as the server is registered, well before a
+  provision or a reattach can stop it.
+  """
+  @spec take_queued() :: [travelling()]
+  def take_queued, do: take_queued([])
+
+  defp take_queued(taken) do
+    receive do
+      {:"$gen_cast", {:initial_prompt, _prompt, _images}} -> take_queued([[] | taken])
+      {:"$gen_cast", {:initial_prompt, _prompt, _images, meta}} -> take_queued([meta | taken])
+    after
+      0 -> Enum.reverse(taken)
+    end
+  end
 end

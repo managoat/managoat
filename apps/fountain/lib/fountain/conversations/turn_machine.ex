@@ -1568,16 +1568,18 @@ defmodule Fountain.Conversations.TurnMachine do
   caller's previous current-span in its `after`; the span this ends is the
   turn span opened a few lines above the call.
   """
-  @spec fail_before_start(Conversations.Turn.t(), String.t(), String.t() | nil, String.t()) :: :ok
-  def fail_before_start(turn, conversation_id, sandbox_id, detail) do
+  @spec fail_before_start(
+          Conversations.Turn.t(),
+          String.t(),
+          String.t() | nil,
+          String.t(),
+          keyword()
+        ) :: :ok
+  def fail_before_start(turn, conversation_id, sandbox_id, detail, opts \\ []) do
     # The server owns this turn and supplies its captured sandbox binding.
     case Machine.end_turn(turn, {:finish, "failed", [exit_code: nil]}, sandbox_id: sandbox_id) do
       {:ok, _} ->
-        publish_stage(conversation_id, "turn", "failed", %{
-          turn_id: turn.id,
-          reason: detail,
-          exit_code: nil
-        })
+        publish_stage(conversation_id, "turn", "failed", failed_stage(turn, detail, opts))
 
       # The conversation was set to "running" just before the spawn attempt;
       # `_unsafe_complete_turn/4` idles it in the same transaction as the
@@ -1594,6 +1596,29 @@ defmodule Fountain.Conversations.TurnMachine do
     # current span here (kick_turn made it current), which is what no-arg ends.
     OpenTelemetry.Tracer.end_span()
     :ok
+  end
+
+  # The spawn's own words are the reason, unless the caller knows a better
+  # one: `reason: "machine_lost"` for a machine the provider says is gone
+  # (`MachineLoss`, #3001), with the spawn's words kept as `detail`, and the
+  # fields the withdrawn turn's report carries (`Wake.report_unrun_prompt/3`:
+  # `turn_number`, `retryable`, `client_request_id`) beside the turn's id.
+  defp failed_stage(turn, detail, opts) do
+    case Keyword.get(opts, :reason) do
+      nil ->
+        %{turn_id: turn.id, reason: detail, exit_code: nil}
+
+      reason ->
+        %{
+          turn_id: turn.id,
+          turn_number: turn.turn_number,
+          reason: reason,
+          detail: detail,
+          retryable: Keyword.get(opts, :retryable, false),
+          exit_code: nil,
+          client_request_id: turn.client_request_id
+        }
+    end
   end
 
   @fresh_sandbox_detail "the previous runtime session lived on a sandbox that no longer exists"

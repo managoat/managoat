@@ -596,14 +596,22 @@ defmodule Fountain.Machines.Provision do
     case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
            succeed_and_follow(old, epoch, attrs)
          end) do
-      {:ok, {%Sandbox{} = next, moved, _ended}} ->
+      {:ok, {%Sandbox{} = next, moved, ended}} ->
+        # First after the commit: a caller whose pipeline is a function of
+        # the new row learns which row its succession made before anything
+        # here can raise (`Conversations.Rebuild` records it, #3001).
+        pipeline = pipeline_for(fun, next)
         retired_predecessor(old, opts)
+        # A turn admitted on the lost machine mid-rebuild, which the
+        # succession ended under its lock, is announced and audited as the
+        # deliberate rebuild's are (#3001).
+        announce_ended_turns(ended, old, opts)
         tell_moved(old, moved, opts)
         # The workspace is `provisioning` again (`Lease.succeed/3`): an
         # explicit one says so on its owner's event stream (ADR 0097 step 5).
         announce_provisioning(next)
 
-        case build(next, epoch, false, pipeline_for(fun, next), opts) do
+        case build(next, epoch, false, pipeline, opts) do
           {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
           other -> other
         end

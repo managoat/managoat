@@ -953,3 +953,27 @@ A PR sequence, each releasable alone:
   and a full fleet `503 fleet_full`, both with nothing changed; and the
   interrupted turns' reason is `machine_destroyed`, which clients already
   read as a cut-off turn, rather than a new word.
+- 2026-10-19 — The known limits step 4's reviews left are closed (#3001).
+  - A second wake of one workspace waits out a co-tenant's moment on the
+    lease at registration, as it already waited before its probe, rather
+    than answering 503. It waits only while the machine is still one to
+    attach to (`ready` or `suspended`, no destroy asked for), and on a retry
+    the registration door refuses a terminal row under its lock, so a
+    holder that retired or destroyed it, even between two polls, ends the
+    wait with the 503 it always got.
+  - A config home that a conversation leaves on a parked machine by ending
+    is removed when a wake next resumes that machine. The machine's homes
+    are listed, and each one whose conversation is not live is removed.
+  - Turns a rebuild after a loss ends under its succession's lock are
+    announced and audited after the commit (`conversation.turn.orphaned`),
+    as the deliberate rebuild's endings already were (#3018). The ceiling's
+    and a destroy's endings already were, through `Admission.end_turns_on/3`.
+  - A rebuild's failure fails only the row this server's own succession
+    made, judged by id rather than by status, so a co-tenant's failed
+    rebuild no longer fails this conversation. It records the failure's own
+    reason rather than `provision_raised`.
+  - A prompt a stopping server reports as not run carries its receipt and
+    `client_request_id`, taken from the server's mailbox. A reattach refused
+    its machine now reports it too.
+  - A turn on a machine lost again inside the ten-minute window fails with
+    `reason: "machine_lost"`, retryable, with the spawn's words as `detail`.

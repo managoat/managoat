@@ -490,6 +490,13 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
       end)
 
       assert :counters.get(creates, 1) == 1
+
+      # The failed turn's reason is a lost machine, as the hand-off's report
+      # says it, with the spawn's words kept as the detail (#3001).
+      assert {"failed", ended} = failed_stage(conv.id, "turn")
+      assert ended["reason"] == "machine_lost"
+      assert ended["retryable"] == true
+      assert ended["detail"] =~ "acp_adapter_install" or ended["detail"] =~ "APIError"
     end
 
     test "the wake's retire of a lost machine stops a co-tenant quietly, leaving it one note",

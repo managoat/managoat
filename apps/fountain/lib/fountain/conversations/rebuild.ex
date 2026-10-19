@@ -56,6 +56,12 @@ defmodule Fountain.Conversations.Rebuild do
   @follow_wait_ms :timer.minutes(10)
   @poll_ms 1_000
 
+  # Where a server records the row its rebuild's succession made (`failed/4`).
+  # The server's own process dictionary: `machine/2`'s succession callback and
+  # `failed/4` both run in it (the rebuild is the server's bracket, inline),
+  # and one server makes at most one rebuild attempt before it stops.
+  @attempt_key {__MODULE__, :attempt}
+
   @doc false
   @spec follow_wait_ms() :: pos_integer()
   def follow_wait_ms, do: Application.get_env(:fountain, :rebuild_follow_wait_ms, @follow_wait_ms)
@@ -141,15 +147,27 @@ defmodule Fountain.Conversations.Rebuild do
 
   @doc """
   What a server whose terminal row will not be rebuilt says before it stops:
-  nothing for a conversation no wake asked for (a restart), and the prompt
-  reported as not run for one a wake did (its workspace went, or no longer
-  matches), so the next prompt takes a fresh machine.
+  the prompt reported as not run for a conversation a wake asked to rebuild
+  (its workspace went, or no longer matches), so the next prompt takes a
+  fresh machine. With no such mark (a restart from the child spec, or a
+  server registered onto a machine that went in the instant after its wake
+  saw it up), only a prompt the server holds is reported (#3001), and
+  nothing is said without one.
   """
   @spec not_rebuilt(map(), map()) :: {:stop, :normal, map()}
   def not_rebuilt(state, conv) do
-    if conv.status == "pending" do
-      retryable_stop(state, "workspace_not_kept")
-      Fountain.Conversations.Wake.report_unrun_prompt(state.conversation_id, :machine_lost)
+    cond do
+      conv.status == "pending" ->
+        retryable_stop(state, "workspace_not_kept", :machine_lost)
+
+      # An ended conversation takes no prompt: a retry is refused as gone.
+      conv.status in @terminal_statuses ->
+        Fountain.Conversations.Wake.report_queued_unrun(state.conversation_id, :gone, bare: false)
+
+      true ->
+        Fountain.Conversations.Wake.report_queued_unrun(state.conversation_id, :machine_lost,
+          bare: false
+        )
     end
 
     {:stop, :normal, state}
@@ -180,7 +198,12 @@ defmodule Fountain.Conversations.Rebuild do
 
     old.id
     |> Machine.rebuild(
-      fn next -> fn handle, epoch -> pipeline.(aim(ctx, next), handle, epoch) end end,
+      fn next ->
+        # Called in this server's process right after the succession commits,
+        # before the create: the row this attempt made (`failed/4`).
+        remember_attempt(next)
+        fn handle, epoch -> pipeline.(aim(ctx, next), handle, epoch) end
+      end,
       actor: "system:conversation_server",
       conversation_id: conv.id,
       attrs: %{machine_name: name, agent_id: conv.agent_id},
@@ -228,7 +251,7 @@ defmodule Fountain.Conversations.Rebuild do
   # No room for a machine. Retryable, and not the conversation's failure:
   # the prompt is reported as not run and the conversation stays as it was.
   defp answer({:error, :fleet_full}, state, _conv) do
-    retryable_stop(state, "fleet_full")
+    retryable_stop(state, "fleet_full", :fleet_full, bare: false)
     {:rebuild, {:stop, :normal, state}}
   end
 
@@ -275,11 +298,10 @@ defmodule Fountain.Conversations.Rebuild do
         Conversations._unsafe_get_sandbox(current.sandbox_id)
 
     if this_attempts?(sandbox) do
-      Fountain.Conversations.ConversationServer.fail_machine(
-        sandbox.id,
-        :provision_raised,
-        conv.id
-      )
+      # The failure's own reason on the row and the workspace's `error`
+      # (#3001): `:provision_raised` only for a raise. `Provision` keeps a
+      # step's output off the row, and the workspace's error is redacted.
+      Fountain.Conversations.ConversationServer.fail_machine(sandbox.id, reason, conv.id)
 
       Fountain.Conversations.ActorStatus.fail(
         %{conversation_id: conv.id, sandbox_id: sandbox.id},
@@ -287,32 +309,48 @@ defmodule Fountain.Conversations.Rebuild do
       )
     else
       Logger.warning("conv #{conv.id}: machine not rebuilt: #{inspect(reason)}")
-      retryable_stop(state, to_string_reason(reason))
-      Fountain.Conversations.Wake.report_unrun_prompt(conv.id, reason)
+      retryable_stop(state, to_string_reason(reason), reason)
     end
 
     {:stop, :normal, state}
   end
 
-  # The row this attempt's succession made and could not finish: failed, or
-  # still mid-provision with nobody holding its lease (this server's lease
-  # was released when the bracket unwound). A live or building row is a
-  # co-tenant's.
-  defp this_attempts?(%Sandbox{status: "failed"}), do: true
-
-  defp this_attempts?(%Sandbox{status: status} = sandbox) when status in ["pending", "starting"],
-    do: not Machine.busy?(sandbox)
+  # The row this attempt's succession made and could not finish: the one
+  # `machine/2` recorded when its succession committed, failed, or still
+  # mid-provision with nobody holding its lease (this server's lease was
+  # released when the bracket unwound).
+  #
+  # By id, not by status alone (#3001): a co-tenant's rebuild can move this
+  # conversation to a row that then fails, and an error in this server before
+  # its own succession would otherwise read that failed row as its own and
+  # fail the conversation for the co-tenant's failure. A row this attempt did
+  # not make is never this attempt's to fail.
+  defp this_attempts?(%Sandbox{id: id} = sandbox) do
+    Process.get(@attempt_key) == id and unfinished?(sandbox)
+  end
 
   defp this_attempts?(_sandbox), do: false
 
-  # A retryable stop's stage, and the wake's `pending` mark undone, so the
-  # conversation does not read as active until its next prompt.
-  defp retryable_stop(state, reason) do
+  defp unfinished?(%Sandbox{status: "failed"}), do: true
+
+  defp unfinished?(%Sandbox{status: status} = sandbox) when status in ["pending", "starting"],
+    do: not Machine.busy?(sandbox)
+
+  defp unfinished?(_sandbox), do: false
+
+  defp remember_attempt(%Sandbox{id: id}), do: Process.put(@attempt_key, id)
+
+  # A retryable stop's stage, the prompts this server was started for
+  # reported as not run with their receipts (#3001), and the wake's `pending`
+  # mark undone, so the conversation does not read as active until its next
+  # prompt. `bare: false` for a stop that reports only a prompt it holds.
+  defp retryable_stop(state, reason, unrun, opts \\ []) do
     Output.publish_stage(state.conversation_id, "provision", "failed", %{
       reason: reason,
       retryable: true
     })
 
+    Fountain.Conversations.Wake.report_queued_unrun(state.conversation_id, unrun, opts)
     unmark(state.conversation_id)
   end
 
@@ -405,10 +443,9 @@ defmodule Fountain.Conversations.Rebuild do
         {:follow, %{state | sandbox_id: sandbox.id, runtime_session_id: nil}, sandbox}
 
       sandbox.status == "suspended" ->
-        case Machine.ensure_up(sandbox.id,
-               actor: "system:wake",
-               requesting_conversation_id: conv_id
-             ) do
+        case sandbox.id
+             |> Machine.ensure_up(actor: "system:wake", requesting_conversation_id: conv_id)
+             |> Fountain.Conversations.Termination.tidy_after_resume(sandbox.id) do
           {:ok, _} -> await(state, conv_id, deadline)
           {:error, reason} -> not_followed(state, reason)
         end
@@ -428,9 +465,16 @@ defmodule Fountain.Conversations.Rebuild do
       "conv #{state.conversation_id}: not following the workspace's machine (#{inspect(reason)})"
     )
 
-    retryable_stop(state, to_string_reason(reason))
+    retryable_stop(state, to_string_reason(reason), unrun_reason(reason), bare: false)
     {:stop, :normal, state}
   end
+
+  # A follow that did not happen: the refusal's own word when it has one (a
+  # resume's `fleet_full`), otherwise a machine still lost, which the next
+  # prompt rebuilds.
+  defp unrun_reason(reason) when is_atom(reason), do: reason
+  defp unrun_reason({reason, _detail} = refusal) when is_atom(reason), do: refusal
+  defp unrun_reason(_reason), do: :machine_lost
 
   defp to_string_reason(reason) when is_binary(reason), do: reason
   defp to_string_reason(reason) when is_atom(reason), do: Atom.to_string(reason)

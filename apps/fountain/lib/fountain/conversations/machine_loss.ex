@@ -119,7 +119,14 @@ defmodule Fountain.Conversations.MachineLoss do
           "retiring it, and leaving the rebuild to the next prompt"
       )
 
-      TurnMachine.fail_before_start(turn, conv_id, sandbox_id, detail)
+      # One reason for a lost machine, whichever way it is reported (#3001):
+      # `machine_lost`, as the withdrawn turn's report says it, with the
+      # spawn's words as the detail. Retryable: the next prompt rebuilds.
+      TurnMachine.fail_before_start(turn, conv_id, sandbox_id, detail,
+        reason: "machine_lost",
+        retryable: true
+      )
+
       retire_and_stop(sandbox_id, conv_id)
     else
       Logger.warning(

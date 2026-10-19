@@ -113,7 +113,8 @@ defmodule Fountain.Conversations.Termination do
   follows removes the directory regardless; on an explicit one, whose machine
   stays, this is what keeps it from being left behind. A conversation ended
   while its explicit workspace's machine is parked leaves its home on the
-  disk (the dead-server path, `release_kept/2`, has the same rule).
+  disk (the dead-server path, `release_kept/2`, has the same rule) until the
+  next wake resumes the machine (`tidy_after_resume/2`, #3001).
 
   `state` is the server's: its `handle`, `sandbox_id` and `conversation_id`.
 
@@ -369,6 +370,131 @@ defmodule Fountain.Conversations.Termination do
     error ->
       Logger.info("conv #{conv.id}: kept machine not tidied: #{Exception.message(error)}")
       :ok
+  end
+
+  @doc """
+  After a wake resumed `sandbox_id` (`Machine.ensure_up/2` answered
+  `{:ok, :resumed}`): on an explicit workspace's machine, remove the config
+  homes that conversations which ended while it was parked left behind
+  (#3001), in a supervised task. Answers `result` unchanged, so a caller
+  wraps its `ensure_up/2` in it.
+
+  Ending a conversation removes its home only from an awake machine
+  (`remove_config_home/1`, `release_kept/2`), since an exec on a parked one
+  would resume it to delete a directory. The next wake is the first moment
+  the machine is up anyway. This also collects a home whose removal failed
+  or was skipped because the machine was mid-operation.
+  """
+  @spec tidy_after_resume({:ok, term()} | {:error, term()}, String.t()) ::
+          {:ok, term()} | {:error, term()}
+  def tidy_after_resume({:ok, :resumed} = result, sandbox_id) do
+    # ownership: the woken machine of the caller's own conversation.
+    if Application.get_env(:fountain, :tidy_homes_after_resume, true) and
+         explicit_machine?(sandbox_id) do
+      _ =
+        Task.Supervisor.start_child(Fountain.TaskSupervisor, fn ->
+          sweep_ended_homes(sandbox_id)
+        end)
+    end
+
+    result
+  end
+
+  def tidy_after_resume(result, _sandbox_id), do: result
+
+  defp explicit_machine?(sandbox_id) do
+    # ownership: the woken machine of the caller's own conversation, passed
+    # down by `tidy_after_resume/2`'s caller.
+    case Conversations._unsafe_get_sandbox(sandbox_id) do
+      %Sandbox{} = sandbox -> Fountain.Workspaces.machine_kind(sandbox) == :explicit
+      nil -> false
+    end
+  end
+
+  # How long the sweep waits for the machine to come to rest: the woken
+  # conversation's server takes its lease briefly to confirm the machine.
+  @sweep_rest_wait_ms 30_000
+  @sweep_rest_poll_ms 500
+
+  @doc """
+  Remove from an explicit workspace's awake machine every conversation's
+  config home whose conversation is no longer live: the directories under
+  `Managoat.Runtimes.Layout.config_homes/0` are listed on the machine, and a
+  directory is removed only when no non-terminal conversation has its id.
+
+  Listed before the database is read: a conversation's row exists before
+  its home is created, so a home on the listing whose conversation is
+  launching is found live. Best effort; only on a machine at rest (see
+  `at_rest?/1`), waited for briefly; a legacy home is outside the directory.
+  """
+  @spec sweep_ended_homes(String.t()) :: :ok
+  def sweep_ended_homes(sandbox_id) do
+    deadline = System.monotonic_time(:millisecond) + @sweep_rest_wait_ms
+
+    # The kind first: it is fixed at create, and an implicit machine (the
+    # common resume) has nothing to wait for.
+    # ownership: the woken machine, read by a system sweep.
+    with %Sandbox{} = found <- Conversations._unsafe_get_sandbox(sandbox_id),
+         :explicit <- Fountain.Workspaces.machine_kind(found),
+         %Sandbox{} = sandbox <- rested(sandbox_id, deadline) do
+      handle =
+        Managoat.Sandbox.build_handle(
+          Conversations.sandbox_provider_atom(sandbox),
+          sandbox.machine_name
+        )
+
+      with {:ok, ids} <- Fountain.Conversations.ConfigHome.listed_homes(handle),
+           live = live_ids(ids),
+           [_ | _] = ended <- Enum.reject(ids, &(&1 in live)),
+           # Again, just before the removal: a co-tenant's park between the
+           # listing and the `rm` would otherwise meet an exec.
+           %Sandbox{} <- rested(sandbox_id, System.monotonic_time(:millisecond)) do
+        Fountain.Conversations.ConfigHome.remove_homes(handle, ended)
+      end
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.info("sandbox #{sandbox_id}: ended homes not swept: #{Exception.message(error)}")
+      :ok
+  end
+
+  # ownership: the woken machine, read by a system sweep that writes nothing
+  # to the database.
+  defp rested(sandbox_id, deadline) do
+    case Conversations._unsafe_get_sandbox(sandbox_id) do
+      %Sandbox{status: "ready"} = sandbox ->
+        cond do
+          at_rest?(sandbox) ->
+            sandbox
+
+          System.monotonic_time(:millisecond) < deadline ->
+            Process.sleep(@sweep_rest_poll_ms)
+            rested(sandbox_id, deadline)
+
+          true ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  # Any live conversation with one of these ids, whatever its workspace: a
+  # superset of the ones a home on this machine can belong to.
+  defp live_ids([]), do: []
+
+  defp live_ids(ids) do
+    import Ecto.Query, only: [from: 2]
+
+    Fountain.Repo.all(
+      from(c in Conversation,
+        where: c.id in ^ids and c.status not in ["terminated", "failed"],
+        select: c.id
+      )
+    )
   end
 
   # Awake and nobody operating on it: an exec under a co-tenant's park could

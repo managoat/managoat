@@ -39,6 +39,12 @@ config :fountain, FountainWeb.Endpoint,
 
 config :fountain, :skip_rehydrate, true
 
+# A wake that resumes an explicit workspace's machine tidies ended
+# conversations' config homes in a task (`Termination.tidy_after_resume/2`),
+# an exec the suite's wake tests do not stub. Off here; its own tests turn it
+# on or call the sweep directly.
+config :fountain, :tidy_homes_after_resume, false
+
 # The machine boot sweep (ADR 0072) clears every lease an earlier boot left;
 # the suite drives `Fountain.Machines.Lease.sweep_boot/0` itself.
 config :fountain, :machine_boot_sweep, false
