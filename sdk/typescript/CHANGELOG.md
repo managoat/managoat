@@ -31,7 +31,10 @@ Release dates are the UTC day npm published the version.
 
 ---
 
-## [Unreleased]
+## [13.1.0] - 2026-10-19
+
+Follows Managoat v0.39.0, which adds a workspace's setup log and live setup
+events. Both additions need a server at v0.39.0 or later.
 
 ### Added
 
@@ -40,12 +43,12 @@ Release dates are the UTC day npm published the version.
   step by step and redacted, typed `WorkspaceSetupLog` with its
   `WorkspaceSetupStep`s, or `null` when none has been kept yet. Each step
   keeps its last 64 KiB and says what it dropped.
-  Needs a Managoat server later than v0.38.0.
+  Needs Managoat v0.39.0 or later.
 - `workspace.setup` frames on `events()`, typed `WorkspaceSetupEvent` and
   tagged `kind: "workspace.setup"`: the whole, redacted lines a workspace's
   setup prints, as it runs, with the step (`WorkspaceSetupStepName`) and its
   status. `Workspace.setup_step` says which step is running while it is
-  `provisioning`. Needs a Managoat server later than v0.38.0.
+  `provisioning`. Needs Managoat v0.39.0 or later.
 
 ### Changed
 
