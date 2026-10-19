@@ -31,26 +31,42 @@ function control(command) {
   return new Promise((resolve, reject) => {
     const socket = net.connect(controlPath);
     let data = '';
-    socket.setTimeout(1000, () => socket.destroy(new Error('control timeout')));
+    socket.setTimeout(1000, () =>
+      socket.destroy(Object.assign(new Error('control timeout'), { code: 'ETIMEDOUT' })));
     socket.on('connect', () => socket.end(command));
     socket.on('data', chunk => { data += chunk; });
     socket.on('end', () => {
+      if (!data) return reject(Object.assign(new Error('no reply'), { code: 'ENOREPLY' }));
       try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
     });
     socket.on('error', reject);
   });
 }
 
-async function status() {
-  try { return await control('status'); } catch (e) {
-    if (['ENOENT', 'ECONNREFUSED'].includes(e.code)) return null;
-    throw e;
+// Only a missing socket or one with no listener proves there is no
+// supervisor. A hang-up without a reply (EOF, ECONNRESET, EPIPE) or a timeout
+// comes either from a supervisor exiting with the request in flight, whose
+// server.close() has already removed the socket path, or from a live one
+// stalled under load. Asking again tells them apart: the first now gives
+// ENOENT (ECONNREFUSED if it crashed), the second answers or, still stalled
+// after five attempts, fails the call (#3021).
+const GONE = ['ENOENT', 'ECONNREFUSED'];
+const UNCERTAIN = ['ECONNRESET', 'EPIPE', 'ENOREPLY', 'ETIMEDOUT'];
+
+async function request(command) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await control(command); } catch (e) {
+      if (GONE.includes(e.code)) return null;
+      if (!UNCERTAIN.includes(e.code) || attempt === 5) throw e;
+    }
+    await delay(100);
   }
 }
 
+const status = () => request('status');
+
 async function stop() {
-  if (!await status()) return;
-  await control('stop');
+  if (!await request('stop')) return;
   for (let i = 0; i < 100; i++) {
     if (!await status()) return;
     await delay(50);
@@ -83,7 +99,7 @@ async function ensure() {
 }
 
 function supervise() {
-  let child, ready = false, stopping = false, ownsSocket = false;
+  let child, ready = false, stopping = false;
   let failures = [];
   const server = net.createServer({ allowHalfOpen: true }, socket => {
     let request = '';
@@ -105,17 +121,16 @@ function supervise() {
     stopping = true;
     ready = false;
     // Keep status reachable until the worker has exited. Closing it here
-    // makes stop() return while the old listener still owns the TCP port,
-    // and finish() can then unlink a replacement supervisor's socket.
+    // makes stop() return while the old listener still owns the TCP port.
     if (child) child.kill('SIGTERM');
     else finish();
     setTimeout(() => { if (child) child.kill('SIGKILL'); }, 1000).unref();
   }
   function finish() {
+    // close() removes the socket path before it closes the listener, so a
+    // client never sees this supervisor gone while its path remains, and no
+    // separate unlink is needed.
     server.close();
-    if (ownsSocket) {
-      try { fs.unlinkSync(controlPath); } catch (_) { /* already removed */ }
-    }
     process.exit(0);
   }
   function startWorker() {
@@ -137,7 +152,7 @@ function supervise() {
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
   server.on('error', () => process.exit(1));
-  server.listen(controlPath, () => { ownsSocket = true; startWorker(); });
+  server.listen(controlPath, startWorker);
 }
 
 function upstream() {
