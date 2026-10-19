@@ -318,6 +318,7 @@ defmodule FountainWeb.WorkspaceControllerTest do
                Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt")
 
       # A second one while it builds.
+      stub(Fountain.Workspaces.Provisioner, :running?, fn _id -> true end)
       assert %{"error" => "rebuild_in_progress"} = rebuild!(ctx, %{}, 409)
     end
 

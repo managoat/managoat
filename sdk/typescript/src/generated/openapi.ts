@@ -3681,7 +3681,7 @@ export interface components {
             /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. It describes the machine as built: a conversation started after an edit to env_vars or the networking fields already runs with the new values. */
             stale: boolean;
             /**
-             * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, or on a rebuild after a loss), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
+             * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, on a rebuild after a loss, or on a rebuild asked for), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
              * @enum {string}
              */
             status: "provisioning" | "ready" | "failed";

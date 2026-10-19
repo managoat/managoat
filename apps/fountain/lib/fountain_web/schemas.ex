@@ -171,7 +171,8 @@ defmodule FountainWeb.Schemas do
           enum: Fountain.Workspaces.Workspace.statuses(),
           description:
             "The provision's outcome: provisioning while its machine is being set up (on " <>
-              "create, on a retry, or on a rebuild after a loss), then ready or failed. A " <>
+              "create, on a retry, on a rebuild after a loss, or on a rebuild asked for), " <>
+              "then ready or failed. A " <>
               "park does not move it; sandbox_status does. Each change is a " <>
               "workspace.status event on GET /api/events/stream."
         },

@@ -928,9 +928,13 @@ A PR sequence, each releasable alone:
   conversation re-attaches on its next prompt, through the follow logic of
   4b and #3007. Without `interrupt` a running turn refuses it, decided under
   the machine's advisory lock in the succession's transaction, so nothing is
-  written (`409 turns_running`, naming the conversations); with it, the old
-  machine's running turns are ended first, as interrupted with
-  `machine_destroyed`, transcripts kept. Audited as `workspace.rebuilt` with
+  written (`409 turns_running`, naming the conversations); with it, those
+  turns are ended in the same commit, as interrupted with
+  `machine_destroyed`, transcripts kept, and announced and audited after it,
+  so a rebuild refused for another reason (a full fleet) ends none. A
+  workspace left `provisioning` on a row nobody is building (a rebuild whose
+  provision never started) is rebuilt by starting that build, rather than
+  refused until the reaper's pass. Audited as `workspace.rebuilt` with
   the caller; the vault is not touched. The Refused list and the Reset door
   row are amended. Calls made here: an implicit workspace is `404`, as on
   `DELETE`, not `422`; any workspace that is `provisioning` (its create, a

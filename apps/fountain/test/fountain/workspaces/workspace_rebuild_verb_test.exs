@@ -158,11 +158,59 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
     moved = Repo.reload!(conv)
     assert moved.status == "idle"
     assert moved.sandbox_id != ctx.old.id
+
+    # A client following the turn hears it end, and the caller is on the trail.
+    assert Enum.any?(Fountain.Conversations._unsafe_list_log_events(conv.id), fn e ->
+             e.kind == "stage" and e.stage == "turn" and e.state == "interrupted" and
+               Jason.decode!(e.data)["reason"] == "machine_destroyed"
+           end)
+
+    assert [orphaned] =
+             Audit.list_for_user(ctx.user.id, action_prefix: "conversation.turn.orphaned")
+
+    assert orphaned.actor == "api"
+    assert orphaned.resource_id == turn.id
+  end
+
+  test "interrupt: true with a refusal (a full fleet) ends no turn", ctx do
+    conv = conversation(ctx, "running")
+    turn = insert_turn(conv, status: "running")
+    fill_fleet(-1)
+
+    assert {:error, :fleet_full} = rebuild(ctx, interrupt: true)
+    assert Repo.reload!(turn).status == "running"
+    assert Repo.reload!(conv).sandbox_id == ctx.old.id
+    assert Repo.reload!(ctx.old).status == "ready"
+  end
+
+  test "a workspace left provisioning with nobody building is rebuilt by starting its build",
+       ctx do
+    stub(Provisioner, :start, fn _workspace, _id -> {:error, :boom} end)
+    assert {:ok, _} = rebuild(ctx)
+    workspace = Repo.reload!(ctx.workspace)
+    assert workspace.status == "provisioning"
+
+    test = self()
+
+    stub(Provisioner, :start, fn w, id ->
+      send(test, {:resumed, w.id, id})
+      {:ok, self()}
+    end)
+
+    assert {:ok, %Workspace{status: "provisioning"}} = rebuild(%{ctx | workspace: workspace})
+    assert_received {:resumed, _, pending_id}
+    assert Repo.get!(Sandbox, pending_id).status == "pending"
+
+    assert ctx.user.id
+           |> Audit.list_for_user(action_prefix: "workspace.rebuilt")
+           |> Enum.any?(&(&1.metadata["resumed"] == true))
   end
 
   test "a second rebuild while one builds is rebuild_in_progress", ctx do
     assert {:ok, _} = rebuild(ctx)
     workspace = Repo.reload!(ctx.workspace)
+    # Its provision is running (the stubbed start ran nothing).
+    stub(Provisioner, :running?, fn id -> id == workspace.id end)
     assert {:error, :rebuild_in_progress} = rebuild(%{ctx | workspace: workspace})
   end
 

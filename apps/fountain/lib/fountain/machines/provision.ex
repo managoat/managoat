@@ -503,9 +503,10 @@ defmodule Fountain.Machines.Provision do
   1. Revalidate as `rebuild/3` does: a fenced machine is `:fenced`, one
      still being provisioned is `{:not_rebuildable, status}`, and a
      workspace with another live machine is `:occupied`.
-  2. With `interrupt: true`, the old machine's running turns are ended
-     first, as the ceiling ends them before it parks (marked interrupted,
-     with `"machine_destroyed"`, transcripts kept). Without it, a running
+  2. With `interrupt: true`, every running turn of the workspace's
+     conversations is ended in the succession's commit, marked interrupted
+     with `"machine_destroyed"` (transcripts kept) and announced and audited
+     after it, so a refused replacement ends none. Without it, a running
      turn on any conversation of the workspace refuses the replacement,
      `{:turns_running, conversation_ids}`, decided under the machine's
      advisory lock in the succession's transaction, so a turn admitted
@@ -549,22 +550,24 @@ defmodule Fountain.Machines.Provision do
         attrs = opts |> Keyword.fetch!(:attrs) |> Map.new()
         interrupt? = Keyword.get(opts, :interrupt, false)
 
-        if interrupt? do
-          Fountain.Machines.Admission.end_turns_on(old.id, "machine_destroyed",
-            actor: Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
-          )
-        end
-
+        # The running turns are ended in the succession's own commit, under
+        # its lock, not before it as `rebuild/3` ends them: this machine is
+        # healthy, and a replacement refused after an early ending (a full
+        # fleet, a co-tenant's machine) would have cut live turns off for
+        # nothing (review of #2986).
         with :ok <- unoccupied(old),
-             {:ok, {%Sandbox{} = next, moved}} <-
+             {:ok, {%Sandbox{} = next, moved, ended}} <-
                Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
                  succeed_and_follow(old, epoch, attrs, refuse_running: not interrupt?)
                end) do
           # A reservation, like a create's: the workspace's provision stamps
           # it again when it claims the lease.
           _ = Lease.cas_update(next.id, epoch, [transition: nil, transition_reason: nil], [])
-          retired_predecessor(old, opts)
+          announce_ended_turns(ended, old, opts)
+          # The servers first, so none keeps taking prompts for a machine
+          # that is being destroyed.
           tell_moved(old, moved, opts)
+          retired_predecessor(old, opts)
           announce_provisioning(next)
           {:ok, Lease.get(next.id)}
         end
@@ -590,7 +593,7 @@ defmodule Fountain.Machines.Provision do
     case Quotas.with_sandbox_reservation([provider: old.provider, exclude: old.id], fn ->
            succeed_and_follow(old, epoch, attrs)
          end) do
-      {:ok, {%Sandbox{} = next, moved}} ->
+      {:ok, {%Sandbox{} = next, moved, _ended}} ->
         retired_predecessor(old, opts)
         tell_moved(old, moved, opts)
         # The workspace is `provisioning` again (`Lease.succeed/3`): an
@@ -654,16 +657,17 @@ defmodule Fountain.Machines.Provision do
       # ending is refused by the moved binding. Ended here, under the lock and
       # in the move's commit, as interrupted; no audit row, which may not be
       # written inside a transaction (review of step 4b).
-      {stranded, _} =
+      {stranded, ended} =
         Repo.update_all(
           from(t in Fountain.Conversations.Turn,
-            where: t.conversation_id in ^moving and t.status == "running"
+            where: t.conversation_id in ^moving and t.status == "running",
+            select: t
           ),
           set: [status: "interrupted", ended_at: now, orphaned_at: now]
         )
 
       if stranded > 0,
-        do: Logger.warning("machine #{old.id}: ended #{stranded} turn(s) admitted mid-rebuild")
+        do: Logger.info("machine #{old.id}: ended #{stranded} turn(s) with the move")
 
       _ =
         Repo.update_all(
@@ -682,8 +686,46 @@ defmodule Fountain.Machines.Provision do
           ]
         )
 
-      {:ok, {next, moving}}
+      {:ok, {next, moving, ended}}
     end
+  end
+
+  # The turns the succession ended, said after its commit as an owner's
+  # ending says them (`Conversations._unsafe_orphan_turn/3`): the `turn`
+  # stage a client waits on, `interrupted` with `machine_destroyed`, and a
+  # `conversation.turn.orphaned` audit row carrying the caller.
+  defp announce_ended_turns([], _old, _opts), do: :ok
+
+  defp announce_ended_turns(turns, %Sandbox{} = old, opts) do
+    actor = Lifecycle.teardown_actor(Keyword.fetch!(opts, :actor))
+
+    Enum.each(turns, fn turn ->
+      metadata = %{
+        outcome: "turn_orphaned",
+        turn_id: turn.id,
+        turn_number: turn.turn_number,
+        reason: "machine_destroyed"
+      }
+
+      Conversations.publish_stage(turn.conversation_id, "reattach", "interrupted", metadata)
+      Conversations.publish_stage(turn.conversation_id, "turn", "interrupted", metadata)
+
+      if old.user_id do
+        Audit.record(%{
+          user_id: old.user_id,
+          action: "conversation.turn.orphaned",
+          resource_type: "turn",
+          resource_id: turn.id,
+          actor: actor,
+          request_ip: Keyword.get(opts, :request_ip),
+          metadata: %{
+            "conversation_id" => turn.conversation_id,
+            "turn_number" => turn.turn_number,
+            "reason" => "machine_destroyed"
+          }
+        })
+      end
+    end)
   end
 
   defp refuse_running(_moving, false), do: :ok

@@ -590,17 +590,72 @@ defmodule Fountain.Workspaces do
 
   def rebuild_workspace(%Workspace{implicit: false, user_id: user_id} = workspace, opts)
       when is_binary(user_id) do
-    cond do
-      Repo.in_transaction?() -> {:error, :provider_transaction_open}
-      rebuilding?(workspace) -> {:error, :rebuild_in_progress}
-      true -> do_rebuild(workspace, opts)
+    if Repo.in_transaction?() do
+      {:error, :provider_transaction_open}
+    else
+      case build_state(workspace) do
+        :building -> {:error, :rebuild_in_progress}
+        {:stranded, %Sandbox{} = pending} -> resume_build(workspace, pending, opts)
+        :settled -> do_rebuild(workspace, opts)
+      end
     end
   end
 
   def rebuild_workspace(%Workspace{}, _opts), do: {:error, :not_found}
 
-  defp rebuilding?(%Workspace{id: id, status: status}),
-    do: status == "provisioning" or Fountain.Workspaces.Provisioner.running?(id)
+  # Whether anybody is building the workspace's machine now: its provision on
+  # create (or an earlier rebuild's) running here, or an owner holding the
+  # lease of a row mid-provision (a conversation's rebuild after a loss). A
+  # workspace `provisioning` on a `pending` row nobody holds is stranded (a
+  # rebuild whose provision never started, a node lost mid-build), and a
+  # rebuild starts its build rather than refusing until the reaper's hourly
+  # pass (review of #2986).
+  defp build_state(%Workspace{id: id, status: status} = workspace) do
+    cond do
+      Fountain.Workspaces.Provisioner.running?(id) ->
+        :building
+
+      status != "provisioning" ->
+        :settled
+
+      true ->
+        case current_sandbox(workspace) do
+          %Sandbox{status: s} = sandbox when s in ["pending", "starting"] ->
+            if Fountain.Machines.Machine.busy?(sandbox), do: :building, else: {:stranded, sandbox}
+
+          _settled_or_none ->
+            :settled
+        end
+    end
+  end
+
+  # The conversations already follow the stranded row: building it is the
+  # rebuild, from the environment as it is now.
+  defp resume_build(%Workspace{} = workspace, %Sandbox{} = pending, opts) do
+    case Fountain.Workspaces.Provisioner.start(workspace, pending.id) do
+      {:ok, _pid} ->
+        Fountain.Audit.record(%{
+          user_id: workspace.user_id,
+          action: "workspace.rebuilt",
+          resource_type: "workspace",
+          resource_id: workspace.id,
+          actor: Keyword.get(opts, :actor, "self"),
+          request_ip: Keyword.get(opts, :request_ip),
+          metadata: %{
+            "name" => workspace.name,
+            "interrupt" => Keyword.get(opts, :interrupt, false) == true,
+            "resumed" => true,
+            "sandbox_id" => pending.id
+          }
+        })
+
+        {:ok, Repo.get(Workspace, workspace.id) || workspace}
+
+      {:error, reason} ->
+        Logger.error("workspace #{workspace.id}: rebuild did not start: #{inspect(reason)}")
+        {:error, :sandbox_unavailable}
+    end
+  end
 
   defp do_rebuild(%Workspace{} = workspace, opts) do
     attribution = [
