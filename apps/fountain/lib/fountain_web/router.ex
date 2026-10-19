@@ -391,6 +391,8 @@ defmodule FountainWeb.Router do
     post "/workspaces/:id/rebuild", WorkspaceController, :rebuild
     # A failed workspace's setup run again with no prompt (#3013).
     post "/workspaces/:id/retry", WorkspaceController, :retry
+    # Its last setup's output, kept after the machine (#3009).
+    get "/workspaces/:id/setup-log", WorkspaceController, :setup_log
   end
 
   # No `:accepts_json`, for the same reason as the conversation stream below.

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -48,9 +47,10 @@ secrets overriding the environment's. The environment, vault and provider are
 fixed for the workspace's life.
 
 Without --wait the command returns as soon as the workspace exists, with
-status provisioning. With --wait it follows the setup and exits non-zero if it
-fails. Conversations can be launched into a workspace before it is ready;
-their first prompt waits for it.`,
+status provisioning. With --wait it follows the setup, printing each step and
+what it prints as it runs, and exits non-zero if it fails. Conversations can
+be launched into a workspace before it is ready; their first prompt waits for
+it. ` + "`managoat workspace logs`" + ` shows what the last setup printed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return workspaceCreate(cmd, args[0]) },
 	}
@@ -133,6 +133,7 @@ setup; a retry and a prompt arriving together set it up once.`,
 		waitCmd,
 		rebuildCmd,
 		retryCmd,
+		workspaceLogsCmd(),
 		&cobra.Command{
 			Use:   "delete <id-or-name>",
 			Short: "Delete a workspace: terminate its conversations and destroy its machine",
@@ -166,6 +167,13 @@ func workspaceCreate(cmd *cobra.Command, name string) error {
 	var resp struct {
 		Data map[string]any `json:"data"`
 	}
+	// Following the setup's lines starts before the create, so its first
+	// lines are not missed.
+	var setup *setupFollower
+	if wait {
+		setup = startSetupFollower(activeClient(), workspaceProgress)
+		defer setup.stop()
+	}
 	if err := activeClient().Post("/workspaces", body, &resp); err != nil {
 		return explainAPIError(err)
 	}
@@ -175,7 +183,8 @@ func workspaceCreate(cmd *cobra.Command, name string) error {
 		fmt.Printf("workspace  +  %s (%s)  %s\n", output.ToString(ws["name"]), id, output.ToString(ws["status"]))
 	}
 	if wait {
-		final, err := waitForWorkspace(activeClient(), id, timeout, os.Stderr)
+		setup.follow(id)
+		final, err := waitForWorkspace(activeClient(), id, timeout, workspaceProgress)
 		if final != nil {
 			ws = final
 		}
@@ -246,6 +255,9 @@ func workspaceShow(cmd *cobra.Command, target string) error {
 	fmt.Printf("workspace %s\n", output.ToString(ws["id"]))
 	fmt.Printf("  name:         %s\n", dash(output.ToString(ws["name"])))
 	fmt.Printf("  status:       %s\n", output.ToString(ws["status"]))
+	if step := output.ToString(ws["setup_step"]); step != "" {
+		fmt.Printf("  setup:        %s (`managoat workspace logs` shows its output)\n", setupStepLabel(step))
+	}
 	if e := output.ToString(ws["error"]); e != "" {
 		fmt.Printf("  error:        %s\n", e)
 	}
@@ -337,6 +349,11 @@ func workspaceRebuild(cmd *cobra.Command, target string) error {
 	var resp struct {
 		Data map[string]any `json:"data"`
 	}
+	if wait {
+		setup := startSetupFollower(c, workspaceProgress)
+		setup.follow(id)
+		defer setup.stop()
+	}
 	if err := c.Post("/workspaces/"+id+"/rebuild", body, &resp); err != nil {
 		if api.StatusCode(err) == 404 {
 			return fmt.Errorf("no workspace %s (an implicit workspace is a conversation's own sandbox and is not rebuilt)", id)
@@ -348,7 +365,7 @@ func workspaceRebuild(cmd *cobra.Command, target string) error {
 		fmt.Printf("workspace  ↻  %s (%s)  %s\n", output.ToString(ws["name"]), id, output.ToString(ws["status"]))
 	}
 	if wait {
-		final, err := waitForWorkspace(c, id, timeout, os.Stderr)
+		final, err := waitForWorkspace(c, id, timeout, workspaceProgress)
 		if final != nil {
 			ws = final
 		}
@@ -372,7 +389,11 @@ func workspaceWaitCmd(cmd *cobra.Command, target string) error {
 	if err != nil {
 		return err
 	}
-	_, err = waitForWorkspace(c, id, timeout, os.Stderr)
+	// The lines from here on; `managoat workspace logs` has the earlier ones.
+	setup := startSetupFollower(c, workspaceProgress)
+	setup.follow(id)
+	defer setup.stop()
+	_, err = waitForWorkspace(c, id, timeout, workspaceProgress)
 	return err
 }
 
@@ -390,6 +411,11 @@ func workspaceRetry(cmd *cobra.Command, target string) error {
 	var resp struct {
 		Data map[string]any `json:"data"`
 	}
+	if wait {
+		setup := startSetupFollower(c, workspaceProgress)
+		setup.follow(id)
+		defer setup.stop()
+	}
 	if err := c.Post("/workspaces/"+id+"/retry", nil, &resp); err != nil {
 		if api.StatusCode(err) == 404 {
 			return fmt.Errorf("no workspace %s (an implicit workspace is set up again by its conversation's next prompt)", id)
@@ -401,7 +427,7 @@ func workspaceRetry(cmd *cobra.Command, target string) error {
 		fmt.Printf("workspace  ↻  %s (%s)  %s\n", output.ToString(ws["name"]), id, output.ToString(ws["status"]))
 	}
 	if wait {
-		final, err := waitForWorkspace(c, id, timeout, os.Stderr)
+		final, err := waitForWorkspace(c, id, timeout, workspaceProgress)
 		if final != nil {
 			ws = final
 		}
@@ -485,7 +511,7 @@ func waitForWorkspace(c *api.Client, id string, timeout time.Duration, progress 
 				if reason == "" {
 					return ws, errWorkspaceFailed
 				}
-				return ws, fmt.Errorf("%w: %s\n  Fix the environment if it is at fault, then `managoat workspace retry %s`: that runs the setup again with the environment as it is now", errWorkspaceFailed, reason, id)
+				return ws, fmt.Errorf("%w: %s\n  `managoat workspace logs %s` shows what the setup printed. Fix the environment if it is at fault, then `managoat workspace retry %s`: that runs the setup again with the environment as it is now", errWorkspaceFailed, reason, id, id)
 			}
 		case api.StatusCode(err) == 404:
 			return ws, fmt.Errorf("no workspace %s (deleted while waiting?)", id)

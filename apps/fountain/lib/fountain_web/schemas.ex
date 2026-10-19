@@ -206,6 +206,17 @@ defmodule FountainWeb.Schemas do
         built_from_revision: FountainWeb.Schemas.WorkspaceStaleness.built_from_revision(),
         stale: FountainWeb.Schemas.WorkspaceStaleness.stale(),
         changed_fields: FountainWeb.Schemas.WorkspaceStaleness.changed_fields(),
+        setup_step: %Schema{
+          type: :string,
+          nullable: true,
+          enum: Fountain.Workspaces.SetupOutput.steps(),
+          description:
+            "The setup step running while status is provisioning: machine, broker, " <>
+              "environment, packages, repositories, setup_script or runtime_template. " <>
+              "Null otherwise, for an implicit workspace, and in the moment before a " <>
+              "setup's machine is asked for. The workspace.setup events carry each step " <>
+              "as it starts; this is for a client that missed them."
+        },
         inserted_at: %Schema{type: :string, format: :"date-time"},
         updated_at: %Schema{type: :string, format: :"date-time"}
       },
@@ -224,6 +235,7 @@ defmodule FountainWeb.Schemas do
         :built_from_revision,
         :stale,
         :changed_fields,
+        :setup_step,
         :inserted_at,
         :updated_at
       ]
@@ -323,6 +335,170 @@ defmodule FountainWeb.Schemas do
         :stale,
         :changed_fields
       ]
+    })
+  end
+
+  defmodule WorkspaceSetupStepName do
+    @moduledoc false
+    # The step names a setup reports (#3009), defined once for the log and the
+    # event.
+
+    def step,
+      do: %Schema{
+        type: :string,
+        enum: Fountain.Workspaces.SetupOutput.steps(),
+        description:
+          "machine (the provider creates it), broker (the egress broker's floor, CA and " <>
+            "relay), environment (the environment's and vault's variables written to it), " <>
+            "packages, repositories, setup_script, or runtime_template (the runtime " <>
+            "template copied into the config home of a conversation whose provision built " <>
+            "the machine). A step is reported only when it runs."
+      }
+  end
+
+  defmodule StreamWorkspaceSetup do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "StreamWorkspaceSetup",
+      description:
+        "A `workspace.setup` frame on the events SSE stream (#3009): output from the setup " <>
+          "of one of the caller's explicit workspaces, as it runs. One is sent as each step " <>
+          "starts (status running, no lines) and ends (succeeded or failed, with the lines " <>
+          "held for it), and output in between at most every 500 ms, with at most 16 KiB " <>
+          "of lines each. Lines are whole, redacted like the transcript, and cut at 4 KiB. " <>
+          "Each setup's first frame is its machine step starting; sandbox_id says which " <>
+          "setup a frame is from. Sent live only, with no event id; " <>
+          "GET /api/workspaces/{id}/setup-log has the setup's kept output.",
+      type: :object,
+      properties: %{
+        workspace_id: %Schema{type: :string, format: :uuid},
+        sandbox_id: %Schema{
+          type: :string,
+          format: :uuid,
+          description: "The machine this setup builds: a new one for each setup."
+        },
+        step: FountainWeb.Schemas.WorkspaceSetupStepName.step(),
+        status: %Schema{type: :string, enum: Fountain.Workspaces.SetupLog.statuses()},
+        lines: %Schema{
+          type: :array,
+          items: %Schema{type: :string},
+          description: "Whole lines printed since the previous frame, without newlines."
+        },
+        omitted_lines: %Schema{
+          type: :integer,
+          description:
+            "Lines printed since the previous frame and left out of this one to keep it " <>
+              "within 16 KiB, oldest first. They are in the setup log."
+        },
+        at: %Schema{type: :string, format: :"date-time"}
+      },
+      required: [:workspace_id, :sandbox_id, :step, :status, :lines, :omitted_lines, :at]
+    })
+  end
+
+  defmodule WorkspaceSetupStep do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "WorkspaceSetupStep",
+      description: "One step of a workspace's setup, with the end of what it printed.",
+      type: :object,
+      properties: %{
+        step: FountainWeb.Schemas.WorkspaceSetupStepName.step(),
+        status: %Schema{
+          type: :string,
+          enum: Fountain.Workspaces.SetupLog.statuses(),
+          description:
+            "A step the setup was in when it was cut short (its deadline) reads failed."
+        },
+        started_at: %Schema{type: :string, format: :"date-time"},
+        finished_at: %Schema{type: :string, format: :"date-time", nullable: true},
+        output: %Schema{
+          type: :string,
+          description:
+            "What the step printed, as whole lines each ending in a newline, redacted like " <>
+              "the transcript: its last 64 KiB, less when the whole log passes 256 KiB. A " <>
+              "line is cut at 4 KiB."
+        },
+        omitted_lines: %Schema{
+          type: :integer,
+          description: "Lines dropped from the start of output to keep it within bounds."
+        },
+        omitted_bytes: %Schema{type: :integer, description: "The bytes of those lines."}
+      },
+      required: [
+        :step,
+        :status,
+        :started_at,
+        :finished_at,
+        :output,
+        :omitted_lines,
+        :omitted_bytes
+      ]
+    })
+  end
+
+  defmodule WorkspaceSetupLog do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "WorkspaceSetupLog",
+      description:
+        "The output of a workspace's last setup (#3009): on create, a retry, a rebuild after " <>
+          "a loss, or a rebuild asked for. Each setup replaces the previous one's. Kept by " <>
+          "Managoat, not on the machine, so it is readable once the machine is gone. While " <>
+          "the setup runs it is written as each step starts and ends, and at most every 5 s.",
+      type: :object,
+      properties: %{
+        workspace_id: %Schema{type: :string, format: :uuid},
+        sandbox_id: %Schema{
+          type: :string,
+          format: :uuid,
+          description: "The machine this setup built, or tried to."
+        },
+        status: %Schema{type: :string, enum: Fountain.Workspaces.SetupLog.statuses()},
+        step: %Schema{
+          type: :string,
+          nullable: true,
+          enum: Fountain.Workspaces.SetupOutput.steps(),
+          description: "The step running, or the last one that ran."
+        },
+        started_at: %Schema{type: :string, format: :"date-time"},
+        finished_at: %Schema{type: :string, format: :"date-time", nullable: true},
+        steps: %Schema{
+          type: :array,
+          items: FountainWeb.Schemas.WorkspaceSetupStep,
+          description: "Each step that ran, in order."
+        }
+      },
+      required: [:workspace_id, :sandbox_id, :status, :step, :started_at, :finished_at, :steps]
+    })
+  end
+
+  defmodule WorkspaceSetupLogResponse do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "WorkspaceSetupLogResponse",
+      type: :object,
+      properties: %{
+        data: %Schema{
+          anyOf: [
+            %Schema{allOf: [FountainWeb.Schemas.WorkspaceSetupLog]},
+            %Schema{nullable: true, enum: [nil]}
+          ],
+          nullable: true,
+          description:
+            "The last setup's log, or null when none is kept: a setup that has not " <>
+              "started yet, or one that ran before Managoat kept them."
+        }
+      },
+      required: [:data]
     })
   end
 

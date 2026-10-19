@@ -1081,8 +1081,21 @@ defmodule Fountain.Workspaces do
            ),
            set: [status: status, error: error, updated_at: now]
          ) do
-      {1, [%Workspace{implicit: false} = workspace]} -> publish_status(workspace)
-      _ -> :ok
+      {1, [%Workspace{implicit: false} = workspace]} ->
+        # A setup that ended without saying so (its deadline killed it, the
+        # reaper failed its row) ends with its machine. One that finished
+        # itself already has; another setup's log is not this one's.
+        :ok =
+          Fountain.Workspaces.SetupLog.close_running(
+            workspace_id,
+            sandbox.id,
+            if(status == "ready", do: "succeeded", else: "failed")
+          )
+
+        publish_status(workspace)
+
+      _ ->
+        :ok
     end
 
     :ok
@@ -1116,7 +1129,7 @@ defmodule Fountain.Workspaces do
   """
   @spec describe_failure(Sandbox.t(), term()) :: String.t()
   def describe_failure(%Sandbox{} = sandbox, reason) do
-    case failure_values(sandbox) do
+    case redaction_values(sandbox) do
       {:ok, values} -> values |> redact(failure_words(reason)) |> String.slice(0, @error_limit)
       :error -> @unredactable
     end
@@ -1125,11 +1138,20 @@ defmodule Fountain.Workspaces do
     _ -> @unredactable
   end
 
-  # The values to take out, and each line of a value that spans lines (a PEM
-  # key, a JSON credential): a quoted tail may begin part-way through one, and
-  # its later lines would match no whole value. Refused when the tenant's key
-  # cannot be loaded, since then the values cannot be read either.
-  defp failure_values(%Sandbox{user_id: user_id} = sandbox) when is_binary(user_id) do
+  @doc """
+  What a workspace's setup output is redacted with, longest first: the values
+  `Fountain.SandboxFiles.redaction_values/1` gives for `sandbox` (its
+  environment's and vault's, and what a live conversation on it registered),
+  and each line of a value that spans lines (a PEM key, a JSON credential),
+  since output read a line at a time, or a quoted tail that may begin
+  part-way through such a value, would match no whole value. `:error` when
+  the tenant's key cannot be loaded, since then the values cannot be read
+  either: the caller withholds the output. Used for a failed workspace's
+  `error` (`describe_failure/2`) and its setup log
+  (`Fountain.Workspaces.SetupOutput`). `sandbox` is the machine's owner's.
+  """
+  @spec redaction_values(Sandbox.t()) :: {:ok, [String.t()]} | :error
+  def redaction_values(%Sandbox{user_id: user_id} = sandbox) when is_binary(user_id) do
     case Fountain.Crypto.load_tenant_key(user_id) do
       {:ok, _dek} ->
         values = Fountain.SandboxFiles.redaction_values(sandbox)
@@ -1146,7 +1168,7 @@ defmodule Fountain.Workspaces do
     end
   end
 
-  defp failure_values(%Sandbox{}), do: :error
+  def redaction_values(%Sandbox{}), do: :error
 
   defp redact([], text), do: text
 
@@ -1298,7 +1320,10 @@ defmodule Fountain.Workspaces do
   @doc """
   Subscribe the caller to `user_id`'s explicit workspaces' status changes:
   `{:workspace_status, %{workspace_id:, name:, status:, error:, revision:,
-  built_from_revision:, stale:, changed_fields:}}`.
+  built_from_revision:, stale:, changed_fields:}}`; and to their setups'
+  output while it runs (#3009): `{:workspace_setup, %{workspace_id:,
+  sandbox_id:, step:, status:, lines:, omitted_lines:, at:}}`, redacted and
+  rate-bounded by `Fountain.Workspaces.SetupOutput`.
   """
   @spec subscribe(Ecto.UUID.t()) :: :ok | {:error, term()}
   def subscribe(user_id) when is_binary(user_id),
@@ -1337,6 +1362,42 @@ defmodule Fountain.Workspaces do
   end
 
   def publish_status(%Workspace{}, _standing), do: :ok
+
+  @doc """
+  `workspace`'s last setup log (`Fountain.Workspaces.SetupLog`, #3009), or
+  `nil` when none is kept. `workspace` is the caller's, fetched scoped to its
+  owner (`get_workspace/2`); the read is scoped to that owner again.
+  """
+  @spec setup_log(Workspace.t()) :: Fountain.Workspaces.SetupLog.t() | nil
+  def setup_log(%Workspace{id: id, user_id: user_id, implicit: false}) when is_binary(user_id),
+    do: Fountain.Workspaces.SetupLog.get(id, user_id)
+
+  def setup_log(%Workspace{}), do: nil
+
+  @doc """
+  The setup step each of `workspaces` is running, for the explicit ones that
+  are `provisioning` and whose setup has begun: `%{workspace_id => step}`
+  (#3009). One query per owner; each workspace is its caller's.
+  """
+  @spec setup_steps([Workspace.t()]) :: %{Ecto.UUID.t() => String.t()}
+  def setup_steps(workspaces) when is_list(workspaces) do
+    workspaces
+    |> Enum.filter(&(not &1.implicit and &1.status == "provisioning" and is_binary(&1.user_id)))
+    |> Enum.group_by(& &1.user_id, & &1.id)
+    |> Enum.reduce(%{}, fn {user_id, ids}, acc ->
+      Map.merge(acc, Fountain.Workspaces.SetupLog.running_steps(ids, user_id))
+    end)
+  end
+
+  @doc false
+  # One `workspace.setup` event for `user_id`'s explicit workspace, from its
+  # running setup (`Fountain.Workspaces.SetupOutput`, which has redacted and
+  # bounded it). Local, never raises.
+  @spec publish_setup(Ecto.UUID.t(), map()) :: :ok
+  def publish_setup(user_id, %{workspace_id: _} = payload) when is_binary(user_id) do
+    _ = Phoenix.PubSub.broadcast(Fountain.PubSub, topic(user_id), {:workspace_setup, payload})
+    :ok
+  end
 
   # A broadcast never raises (review of #2987): its callers run after their
   # commits, some with nothing to catch it. A read that fails says nothing is

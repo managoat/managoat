@@ -824,7 +824,9 @@ It also carries a `workspace.status` event whenever one of the caller's
 environment moves its revision, with data `{workspace_id, name, status, error,
 revision, built_from_revision, stale, changed_fields}`. The event has no id and is not
 replayed after a reconnect, and `?streams=` does not filter it. A client that
-reconnects reads the workspace again with `GET /api/workspaces/{id}`.
+reconnects reads the workspace again with `GET /api/workspaces/{id}`. While a
+workspace's setup runs, `workspace.setup` events carry what it prints, in the
+same way: see [Follow a workspace's setup](#follow-a-workspaces-setup).
 [Follow every conversation on one stream](guides/http-api.md#follow-every-conversation-on-one-stream)
 walks through it.
 
@@ -849,7 +851,8 @@ the task. Every workspace route needs a full-scope key; a sandbox's own key is
 |---|---|
 | `POST /api/workspaces` | Create one: `name` and `environment_id`, optional `vault_id` and `sandbox_provider`. Answers `201` with `status: "provisioning"` and starts the setup at once. |
 | `GET /api/workspaces` | The caller's workspaces, newest first. `?implicit=true` adds the implicit ones, one per conversation launched without a workspace. |
-| `GET /api/workspaces/{id}` | One workspace, with its machine's state. |
+| `GET /api/workspaces/{id}` | One workspace, with its machine's state, and `setup_step`, the step its setup is running while it is `provisioning`. |
+| `GET /api/workspaces/{id}/setup-log` | What its last setup printed, step by step, redacted. See [Follow a workspace's setup](#follow-a-workspaces-setup). |
 | `POST /api/workspaces/{id}/rebuild` | Destroy its machine, **with everything on its disk**, and set up a new one from the environment as it is now. Every conversation keeps its transcript and stays in the workspace. Optional body `{"interrupt": true}`. Answers `202` with `status: "provisioning"`. See [Rebuild a workspace](#rebuild-a-workspace). |
 | `DELETE /api/workspaces/{id}` | Terminate every live conversation in it, keeping their transcripts, and destroy its machine. `204`. Not refused while conversations are running. |
 | `POST /api/workspaces/{id}/retry` | Set a `failed` workspace up again, with no prompt, from its environment and vault as they are now. Answers `202` with `status: "provisioning"`; `workspace.status` events follow, as on create. |
@@ -897,6 +900,63 @@ is every edit that moves the `revision` of a ready workspace's environment.
 The event carries the four fields above, so a client can show "rebuild
 needed" without polling. It is live only, so read the workspace after a
 reconnect.
+
+### Follow a workspace's setup
+
+A setup runs these steps, each reported only when it has something to do:
+`machine` (the provider creates it), `broker` (the egress broker's floor, CA
+and relay), `environment` (the environment's and vault's variables written to
+the machine), `packages`, `repositories`, `setup_script`, and
+`runtime_template` (copying the runtime template into a conversation's config
+home, when a conversation's prompt rebuilds a lost machine). The same steps
+run on create, on a retry, on a rebuild after a loss and on
+`POST /api/workspaces/{id}/rebuild`.
+
+While it runs, each step is a series of `workspace.setup` events on
+[the account event stream](#every-conversation-on-one-stream):
+
+```json
+{"workspace_id": "…", "sandbox_id": "…", "step": "packages", "status": "running",
+ "lines": ["Reading package lists...", "Setting up jq (1.7.1-3)"], "omitted_lines": 0,
+ "at": "2026-10-19T12:00:03.120Z"}
+```
+
+- One event as a step starts (`status: "running"`, no lines) and one as it
+  ends (`succeeded` or `failed`, with any lines still held). A setup's first
+  event is its `machine` step starting; `sandbox_id`, the machine it builds,
+  is new for each setup, so a client clears what it showed when it changes.
+- Output comes as **whole lines**, at most one event every 500 ms with at
+  most 16 KiB of lines. Lines printed faster than that are left out of the
+  event, oldest first, and counted in `omitted_lines`; they are still in the
+  log below. A line is cut at 4 KiB, and a progress bar shows its last state.
+- Lines are **redacted** like a transcript: every value of the environment
+  and vault, each line of a value that spans lines, and the setup's own
+  broker token are replaced with `[REDACTED]`. A value split across two
+  chunks of output is still redacted, because a line is redacted only once
+  it is whole. If Managoat cannot read the secrets, the step's output is
+  withheld and one line says so.
+- The events are live only, like `workspace.status`. A client that connects
+  late reads `setup_step` on `GET /api/workspaces/{id}` and the log.
+
+`GET /api/workspaces/{id}/setup-log` answers what the last setup printed:
+
+```json
+{"data": {"workspace_id": "…", "sandbox_id": "…", "status": "failed", "step": "setup_script",
+  "started_at": "…", "finished_at": "…",
+  "steps": [{"step": "machine", "status": "succeeded", "started_at": "…", "finished_at": "…",
+             "output": "", "omitted_lines": 0, "omitted_bytes": 0},
+            {"step": "setup_script", "status": "failed", "started_at": "…", "finished_at": "…",
+             "output": "npm ERR! missing script: build\n", "omitted_lines": 0, "omitted_bytes": 0}]}}
+```
+
+Each setup replaces the previous one's log. Managoat keeps it, not the
+machine, so it is there after a loss or a rebuild, and reading it never wakes
+a parked machine. While the setup runs it is written as each step starts and
+ends, and at most every 5 s in between. Each step keeps its last 64 KiB of
+whole lines and the log 256 KiB in all, the earliest step giving way first;
+`omitted_lines` and `omitted_bytes` say what a step dropped. `data` is `null`
+until a setup has begun. An implicit workspace's setup is in its
+conversation's transcript, so the route answers `404` for one.
 
 | Refusal | When |
 |---|---|

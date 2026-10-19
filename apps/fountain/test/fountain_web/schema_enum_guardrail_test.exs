@@ -120,6 +120,19 @@ defmodule FountainWeb.SchemaEnumGuardrailTest do
       {Fountain.Workspaces.Staleness, :field_names},
     {FountainWeb.Schemas.StreamWorkspaceStatus, "changed_fields.[]"} =>
       {Fountain.Workspaces.Staleness, :field_names},
+    # A workspace's setup (#3009): the steps it reports and a setup's status,
+    # on the workspace, its log, the log's steps and the live event.
+    {FountainWeb.Schemas.Workspace, "setup_step"} => {Fountain.Workspaces.SetupOutput, :steps},
+    {FountainWeb.Schemas.WorkspaceSetupLog, "step"} => {Fountain.Workspaces.SetupOutput, :steps},
+    {FountainWeb.Schemas.WorkspaceSetupLog, "status"} =>
+      {Fountain.Workspaces.SetupLog, :statuses},
+    {FountainWeb.Schemas.WorkspaceSetupStep, "step"} => {Fountain.Workspaces.SetupOutput, :steps},
+    {FountainWeb.Schemas.WorkspaceSetupStep, "status"} =>
+      {Fountain.Workspaces.SetupLog, :statuses},
+    {FountainWeb.Schemas.StreamWorkspaceSetup, "step"} =>
+      {Fountain.Workspaces.SetupOutput, :steps},
+    {FountainWeb.Schemas.StreamWorkspaceSetup, "status"} =>
+      {Fountain.Workspaces.SetupLog, :statuses},
     # The sandbox listing (ADR 0023 gate 3): a sandbox with its conversations.
     {FountainWeb.Schemas.SandboxDetail, "status"} => {Sandbox, :statuses},
     {FountainWeb.Schemas.SandboxConversation, "status"} => {Conversation, :statuses},

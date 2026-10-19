@@ -41,7 +41,11 @@ defmodule FountainWeb.EventsController do
         "changed_fields}`) is sent when one of the caller's workspaces changes status, " <>
         "and, for a ready one, after every edit that moves its environment's revision; " <>
         "it carries no id and is not replayed, so a client that reconnects " <>
-        "re-reads its workspaces. Heartbeats every 15 s; closes after " <>
+        "re-reads its workspaces. While a workspace's setup runs, `workspace.setup` events " <>
+        "(data `{workspace_id, sandbox_id, step, status, lines, omitted_lines, at}`) carry " <>
+        "its output as whole, redacted lines: one as each step starts and ends, and output " <>
+        "at most every 500 ms with at most 16 KiB of lines each. They are live only too; " <>
+        "GET /api/workspaces/{id}/setup-log has what was missed. Heartbeats every 15 s; closes after " <>
         "60 s idle so the client reconnects. The first byte is a `: connected` comment.",
     parameters: [
       "Last-Event-ID": [
@@ -69,7 +73,12 @@ defmodule FountainWeb.EventsController do
       ok:
         {"SSE stream", "text/event-stream",
          %OpenApiSpex.Schema{
-           oneOf: [Schemas.StreamLogEvent, Schemas.StreamSignal, Schemas.StreamWorkspaceStatus]
+           oneOf: [
+             Schemas.StreamLogEvent,
+             Schemas.StreamSignal,
+             Schemas.StreamWorkspaceStatus,
+             Schemas.StreamWorkspaceSetup
+           ]
          }}
     ]
   )
@@ -200,6 +209,14 @@ defmodule FountainWeb.EventsController do
       # replayed; a client that reconnects reads the workspace.
       {:workspace_status, payload} ->
         case Plug.Conn.chunk(conn, "event: workspace.status\ndata: #{Jason.encode!(payload)}\n\n") do
+          {:ok, conn} -> sse_loop(conn, state)
+          {:error, _} -> conn
+        end
+
+      # A setup's output, live only like its status (#3009): what was missed
+      # is in GET /api/workspaces/:id/setup-log.
+      {:workspace_setup, payload} ->
+        case Plug.Conn.chunk(conn, "event: workspace.setup\ndata: #{Jason.encode!(payload)}\n\n") do
           {:ok, conn} -> sse_loop(conn, state)
           {:error, _} -> conn
         end

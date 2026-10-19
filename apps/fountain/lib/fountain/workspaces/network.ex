@@ -159,6 +159,8 @@ defmodule Fountain.Workspaces.Network do
     # The brokered values as they are now: the machine has been created
     # since `inputs/1` read them, and a secret written in between found no
     # session for `refresh_live/3` to rewrite.
+    :ok = Fountain.Workspaces.SetupOutput.step(:broker)
+
     with {:ok, net} <- reread(net),
          :ok <- Provisioning.check_broker_support(handle.provider, nil),
          {:ok, session} <-

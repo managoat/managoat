@@ -31,6 +31,31 @@ Release dates are the UTC day npm published the version.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `managoat.workspaces.setupLog(nameOrId)`: the output of the workspace's
+  last setup (on create, a retry, a rebuild after a loss, or a `rebuild`),
+  step by step and redacted, typed `WorkspaceSetupLog` with its
+  `WorkspaceSetupStep`s, or `null` when none has been kept yet. Each step
+  keeps its last 64 KiB and says what it dropped.
+  Needs a Managoat server later than v0.38.0.
+- `workspace.setup` frames on `events()`, typed `WorkspaceSetupEvent` and
+  tagged `kind: "workspace.setup"`: the whole, redacted lines a workspace's
+  setup prints, as it runs, with the step (`WorkspaceSetupStepName`) and its
+  status. `Workspace.setup_step` says which step is running while it is
+  `provisioning`. Needs a Managoat server later than v0.38.0.
+
+### Changed
+
+- `AccountEvent` gains a member, `WorkspaceSetupEvent & {kind:
+  "workspace.setup"}`. A switch on `kind` whose last branch assumed a log
+  event no longer type-checks until it rules `workspace.setup` out first.
+  Against an older server nothing changes at runtime: it sends no such frame.
+
+---
+
 ## [13.0.0] - 2026-10-19
 
 Follows Managoat v0.38.0, which changes the body of every refusal for a key's

@@ -1214,7 +1214,25 @@ defmodule Fountain.Machines.Provision do
   end
 
   defp build_under_lease(%Sandbox{} = sandbox, epoch, interrupted?, fun, opts) do
-    outcome = create_and_run(sandbox, epoch, interrupted?, fun)
+    # An explicit workspace's setup is collected from here to its pipeline's
+    # answer (#3009): every setup of such a machine (a create, a retry, a
+    # rebuild asked for, a rebuild after a loss) is a build under this one
+    # owner, in the process that runs its steps. The log is written whole
+    # before the finalize, so the `ready` or `failed` a client hears next
+    # follows a complete log. Nothing for any other machine.
+    :ok = Fountain.Workspaces.SetupOutput.begin(sandbox)
+
+    outcome =
+      try do
+        create_and_run(sandbox, epoch, interrupted?, fun)
+      catch
+        # A raise out of the build leaves its setup failed, and goes on up.
+        kind, reason ->
+          Fountain.Workspaces.SetupOutput.abandon()
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    :ok = Fountain.Workspaces.SetupOutput.finish(setup_outcome(outcome))
 
     case outcome do
       %{step: :built} = attempt ->
@@ -1236,6 +1254,11 @@ defmodule Fountain.Machines.Provision do
         orphaned(sandbox, epoch, attempt)
     end
   end
+
+  # How the setup collected for an explicit workspace's machine ended: its
+  # steps all ran, or one of them (the create included) did not.
+  defp setup_outcome(%{step: :built}), do: :succeeded
+  defp setup_outcome(_failed_or_orphaned), do: :failed
 
   # The machine exists and the row refused `starting`. Three situations, and
   # `main` had none of them because it wrote `starting` *before* the create

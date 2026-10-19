@@ -80,6 +80,10 @@ export type {
   Workspace,
   WorkspaceField,
   WorkspaceInput,
+  WorkspaceSetupEvent,
+  WorkspaceSetupLog,
+  WorkspaceSetupStep,
+  WorkspaceSetupStepName,
   WorkspaceStatusEvent,
   ConversationsChangedEvent,
 } from "./types.ts";

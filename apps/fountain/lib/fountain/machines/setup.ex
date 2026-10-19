@@ -90,6 +90,10 @@ defmodule Fountain.Machines.Setup do
     fn handle, _epoch ->
       case Network.establish(network, handle) do
         {:ok, settled, ca_env, proxy_env} ->
+          # The session's token stands in the proxy variables a step can
+          # print: the setup log redacts it too (#3009).
+          :ok = Fountain.Workspaces.SetupOutput.add_values(Network.secrets(settled))
+
           try do
             setup = %{setup | sprite_env: ca_env ++ setup.sprite_env ++ proxy_env}
 

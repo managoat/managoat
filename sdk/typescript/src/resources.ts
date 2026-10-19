@@ -22,6 +22,7 @@ import type {
   VaultSecretMetadataPatch,
   Workspace,
   WorkspaceInput,
+  WorkspaceSetupLog,
 } from "./types.ts";
 import { ManagoatError, WorkspaceFailedError } from "./errors.ts";
 
@@ -360,6 +361,28 @@ export class Workspaces {
    */
   async retry(nameOrId: string): Promise<Workspace> {
     return this.http.data<Workspace>("POST", `${this.path}/${await this.id(nameOrId)}/retry`);
+  }
+
+  /**
+   * The output of the workspace's last setup (on create, a retry, a rebuild
+   * after a loss, or a `rebuild`), step by step, redacted like a transcript,
+   * or `null` when none has been kept yet. Each setup replaces the previous
+   * one's. Managoat keeps it, not the machine, so it is readable while the
+   * setup runs (written as each step starts and ends, and at most every 5 s)
+   * and after the machine is gone; reading it never wakes a parked machine.
+   * Each step keeps its last 64 KiB of whole lines, the log 256 KiB in all,
+   * and says what it dropped (`omitted_lines`, `omitted_bytes`).
+   *
+   * While it runs, `events()` carries the same lines as `workspace.setup`
+   * events, and `get` says which step is running (`setup_step`). An
+   * implicit workspace is a `NotFoundError`: its setup is in its
+   * conversation's transcript.
+   */
+  async setupLog(nameOrId: string): Promise<WorkspaceSetupLog | null> {
+    return this.http.data<WorkspaceSetupLog | null>(
+      "GET",
+      `${this.path}/${await this.id(nameOrId)}/setup-log`,
+    );
   }
 
   /**

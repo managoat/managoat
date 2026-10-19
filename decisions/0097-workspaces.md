@@ -111,7 +111,10 @@ fleet ceiling is full is refused with the launch's `503 fleet_full`.
 A workspace also says whether its machine is behind its environment
 (`revision`, `built_from_revision`, `stale`, `changed_fields`; see History,
 2026-10-19, #2987), and an edit that moves a ready one's environment is a
-`workspace.status` event too.
+`workspace.status` event too. An explicit workspace's setup output is a
+`workspace.setup` event as it runs, its running step is `setup_step`, and
+its last setup's output is kept, bounded and redacted, at
+`GET /api/workspaces/:id/setup-log` (see History, 2026-10-19, #3009).
 `DELETE /api/workspaces/:id` deletes it (see Lifecycle). Create and delete
 are audited in the context, with the caller, outside any transaction.
 
@@ -1109,3 +1112,35 @@ A PR sequence, each releasable alone:
     the rebuild's own setup waits for the retry's task to finish before it
     builds. A rebuild after a retry has already failed again starts once
     more from the failed row, as the caller asked.
+- 2026-10-19 — A setup's output, live and kept (#3009). Step 5 left an
+  explicit workspace's setup with no transcript, so a client saw only
+  `provisioning`, then a failure's redacted tail or nothing. Now every setup
+  of an explicit workspace's machine (create, retry, a rebuild after a loss,
+  the rebuild on request) is collected by its build under the one owner
+  (`Fountain.Workspaces.SetupOutput`, begun in `Provision` before the create
+  and finished before the finalize, in the process that runs the steps),
+  sent as `workspace.setup` events on the account stream, and kept as the
+  workspace's setup log; `GET /api/workspaces/:id` shows the running step as
+  `setup_step`. The steps are `machine`, `broker`, `environment`,
+  `packages`, `repositories`, `setup_script` and `runtime_template`, each
+  reported only when it runs. Calls made here: output is framed into whole
+  lines before it is redacted, never sent as chunks, so a value split across
+  two chunks is matched whole, and each line of a multi-line value is
+  matched too, as for the `error`; the redaction values are the
+  environment's, the vault's and the live conversations' (re-read as each
+  step begins) plus the setup session's token, and output is withheld when
+  they cannot be read. The log is a row per workspace
+  (`workspace_setup_logs`), not a file on the machine, so it outlives the
+  machine; each setup replaces the previous one's, since the question is
+  what built (or failed to build) the machine there is now, and one row keeps
+  storage bounded. Bounds: a line is cut at 4 KiB, a line unfinished at
+  64 KiB is cut short of any value lying across the cut; each step keeps its
+  last 64 KiB and the log 256 KiB, the earliest step giving way first; the
+  row is written as steps start and end and at most every 5 s; events go at
+  most every 500 ms with at most 16 KiB of lines each, the rest counted in
+  `omitted_lines`. Every write is conditional on the row still being that
+  setup's, and `settle_provision/2` closes a setup that ended without saying
+  so (its deadline). An implicit workspace's setup emits no event and keeps
+  no log: its conversation's transcript has had it since #2550, and
+  `workspace.status` is explicit-only too. A rebuild after a loss run by a
+  conversation goes to both.

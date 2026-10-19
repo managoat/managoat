@@ -44,6 +44,7 @@ defmodule Fountain.Conversations.Provisioning do
   alias Fountain.Conversations
   alias Fountain.Conversations.StageOutput
   alias Fountain.Environments.Environment
+  alias Fountain.Workspaces.SetupOutput
   alias Managoat.Sandbox.Retry
   alias Managoat.Sandbox
   alias Managoat.Sandbox.Handle
@@ -75,6 +76,7 @@ defmodule Fountain.Conversations.Provisioning do
   def write_env_file(handle, nil), do: write_env_file(handle, [])
 
   def write_env_file(handle, sprite_env) do
+    :ok = SetupOutput.step(:environment)
     body = render_env_file(sprite_env)
 
     case Retry.with_backoff(fn -> Sandbox.write_file(handle, @env_file, body, mode: 0o600) end,
@@ -137,6 +139,7 @@ defmodule Fountain.Conversations.Provisioning do
           [:packages],
           %{conv_id: conv_id, commands: length(cmds)},
           fn ->
+            :ok = SetupOutput.step(:packages)
             publish_stage(conv_id, "packages", "started", %{commands: length(cmds)})
 
             result =
@@ -318,6 +321,7 @@ defmodule Fountain.Conversations.Provisioning do
   """
   @spec apply_broker_floor(Handle.t(), String.t() | nil) :: :ok | {:error, term()}
   def apply_broker_floor(handle, conv_id) do
+    :ok = SetupOutput.step(:broker)
     host = Fountain.Broker.proxy_host()
 
     if Sandbox.supports?(handle, :network_policy) do
@@ -448,6 +452,7 @@ defmodule Fountain.Conversations.Provisioning do
   """
   @spec install_broker_ca(Handle.t(), String.t() | nil) :: :ok | {:error, term()}
   def install_broker_ca(handle, conv_id) do
+    :ok = SetupOutput.step(:broker)
     path = Fountain.Broker.ca_path()
     staging = Fountain.Broker.ca_staging_path() <> "." <> Ecto.UUID.generate()
     bundle = Fountain.Broker.system_ca_bundle()
@@ -583,6 +588,7 @@ defmodule Fountain.Conversations.Provisioning do
       [:clone_repositories],
       %{conv_id: conv_id, count: length(repos)},
       fn ->
+        :ok = SetupOutput.step(:repositories)
         publish_stage(conv_id, "clone", "started", %{count: length(repos)})
 
         result =
@@ -676,6 +682,9 @@ defmodule Fountain.Conversations.Provisioning do
                ) do
             {:ok, output, code} ->
               log_output(conv_id, "clone", scrub_token(output))
+              # An explicit workspace's setup log (#3009), which redacts it too.
+              :ok = SetupOutput.output(scrub_token(output))
+              :ok = SetupOutput.flush()
 
               cond do
                 code == 0 -> :ok
@@ -892,6 +901,7 @@ defmodule Fountain.Conversations.Provisioning do
       [:setup_script],
       %{conv_id: conv_id, script_size: byte_size(script)},
       fn ->
+        :ok = SetupOutput.step(:setup_script)
         publish_stage(conv_id, "setup", "started")
 
         case exec_streamed(handle, conv_id, "setup", "fountain-setup", script,
@@ -929,7 +939,13 @@ defmodule Fountain.Conversations.Provisioning do
   defp exec_streamed(handle, conv_id, stage, name, script, opts) do
     key = {__MODULE__, :stage_output, make_ref()}
     Process.put(key, StageOutput.new(conv_id, stage))
-    sink = fn chunk -> Process.put(key, StageOutput.feed(Process.get(key), chunk)) end
+
+    # An explicit workspace's setup is collected too (#3009), as it arrives.
+    sink = fn chunk ->
+      :ok = SetupOutput.output(chunk)
+      Process.put(key, StageOutput.feed(Process.get(key), chunk))
+    end
+
     {prelude, opts} = Keyword.pop(opts, :prelude, "")
 
     result =
@@ -944,10 +960,16 @@ defmodule Fountain.Conversations.Provisioning do
 
     output =
       case result do
-        {:ok, rest, _code} -> StageOutput.feed(output, rest)
-        {:error, _reason} -> output
+        {:ok, rest, _code} ->
+          :ok = SetupOutput.output(rest)
+          StageOutput.feed(output, rest)
+
+        {:error, _reason} ->
+          output
       end
       |> StageOutput.finish()
+
+    :ok = SetupOutput.flush()
 
     case result do
       {:ok, _rest, code} -> {{:ok, code}, StageOutput.tail(output)}

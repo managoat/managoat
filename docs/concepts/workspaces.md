@@ -145,6 +145,21 @@ runs with no `MANAGOAT_TOKEN`, no conversation id and no config home
 variables. To configure the runtimes the agents will use, the setup script
 writes into the runtime template instead, described next.
 
+You can watch the setup as it runs. While the workspace is `provisioning`,
+`setup_step` says which step is running (creating the machine, settling the
+broker, writing the environment, installing packages, cloning repositories,
+running the setup script), and the account's event stream carries what each
+step prints as `workspace.setup` events, a line at a time and redacted like a
+transcript. Managoat keeps the last setup's output, so you can read it during
+the setup or afterwards, when it failed or when it succeeded but did the
+wrong thing: `GET /api/workspaces/{id}/setup-log`, `managoat workspace logs`,
+or `workspaces.setupLog` in the SDK. Each setup (a create, a retry, a
+rebuild) replaces the previous one's log. It is kept by Managoat, not on the
+machine, so it outlives a lost or rebuilt machine. It is bounded: each step
+keeps its last 64 KiB. [Follow a workspace's setup](../api.md#follow-a-workspaces-setup)
+has the details. An implicit workspace's setup goes to its conversation's
+transcript instead, as it always has.
+
 You can launch conversations into a workspace before it is ready. Their first
 prompt waits for the setup.
 

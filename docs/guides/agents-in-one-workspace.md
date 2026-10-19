@@ -273,7 +273,8 @@ destroys the machine with its disk. Push the work first.
 
 | You see | Why | Do this |
 |---|---|---|
-| `workspace setup failed: …` | The setup script, a package or a clone failed. The message names the step. | Fix the environment, then `managoat workspace retry app-box --wait`: that runs the setup again with the environment as it is now. A prompt into a conversation in the workspace does the same. |
+| `workspace setup failed: …` | The setup script, a package or a clone failed. The message names the step and quotes the end of what it printed. | Read the rest with `managoat workspace logs app-box`. Fix the environment, then `managoat workspace retry app-box --wait`: that runs the setup again with the environment as it is now. A prompt into a conversation in the workspace does the same. |
+| The setup succeeded, but the machine is not as the script should have left it | The script did something you did not expect, and exited 0. | `managoat workspace logs <name> --step setup_script` shows what it printed. |
 | `422 workspace_fixes_environment` | The launch named an environment or vault other than the workspace's. | Drop `--environment` and `--vault`. |
 | A conversation fails with `runtime_template` and `not_a_json_object` or `unreadable` | A `settings.json` or `.claude.json` the setup script wrote into the template is not valid JSON, or a file in it is one the sandbox user cannot read (written with `sudo`). | Fix the setup script, then create the workspace again: a ready workspace does not run its setup again. |
 | An agent ignores a setting you added to the template | The template is copied when a conversation's config home is made, so a conversation started before the change kept the old copy. Managoat also owns `mcpServers` and `showThinkingSummaries`. | Start a new conversation. Put MCP servers on the agent. |
