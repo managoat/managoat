@@ -643,10 +643,18 @@ curl --fail-with-body \
 ```
 
 The path must be `/home/sprite` or a directory under it, or for a `gemini`
-agent, also under `/tmp`. It may not be inside `/home/sprite/.managoat`, where
-Managoat keeps each conversation's config home. Anything else returns
-`422 validation_failed` with the reason under `errors.cwd`. Managoat
-normalises the path (`/home/sprite/a/../b/` is `/home/sprite/b`).
+agent, also under `/tmp`. It may also be a repository's `mount_path` in the
+environment the launch runs with, or a directory under one: the agent's
+environment, the one the launch names, or with `workspace_id`, the
+workspace's. So an environment that clones to `/work/app` can run an agent in
+`/work/app`. A `mount_path` that is `/`, `/home/sprite` or one of its
+ancestors, inside `/home/sprite/.managoat`, or in a system tree (`/bin`,
+`/boot`, `/dev`, `/etc`, `/lib*`, `/proc`, `/root`, `/run`, `/sbin`, `/snap`,
+`/sys`, `/usr`, `/var`) is still cloned, but does not widen this rule. The
+path may not be inside `/home/sprite/.managoat`, where Managoat keeps each
+conversation's config home. Anything else returns `422 validation_failed`
+with the reason under `errors.cwd`. Managoat normalises the path
+(`/home/sprite/a/../b/` is `/home/sprite/b`).
 
 The directory is fixed for the conversation's life. The conversation object
 reports it as `cwd`, the default included. A create request that resumes a
@@ -920,6 +928,12 @@ A diff compares tracked content
 only. To see a file the agent made and never staged, use the git status
 operation. Its entry paths are relative to the repository root, not to the
 sandbox home.
+
+A path may lie under `/home/sprite`, the conversation's working directory, or
+a repository mount of the sandbox's environment, by the same rule as a
+[launch's `cwd`](#choose-the-working-directory). Paths are checked where they
+physically lie, so a symlink that leads out of them, or a working directory or
+mount replaced by a symlink to somewhere else, is refused.
 
 The same four reads are served by workspace, at
 `/api/workspaces/{id}/files`, `/file`, `/diff` and `/git-status`. They read the

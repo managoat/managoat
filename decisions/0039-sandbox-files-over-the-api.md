@@ -86,8 +86,9 @@ its files are all of theirs (decision 11).
 4. **Confined to the home and the workspace.** A path resolves against the
    conversation's runtime working directory (`Managoat.Runtimes.ACP.cwd/1`)
    and must be `/home/sprite`, that directory, or inside one of them
-   (`422 path_outside_sandbox`). Paths cross `Managoat.Sandbox.host_path/2`.
-   Both git reads find their repository with `git rev-parse
+   (`422 path_outside_sandbox`), or since #2999 inside an eligible
+   repository mount of the sandbox's environment (decision 11). Paths
+   cross `Managoat.Sandbox.host_path/2`. Both git reads find their repository with `git rev-parse
    --show-toplevel`, which walks up the request path's ancestors, so the
    root it lands on is checked against the same bounds, and a root outside
    them is `not_a_repository`.
@@ -183,7 +184,11 @@ its files are all of theirs (decision 11).
     workspace's shared machine a relative path resolves from `/home/sprite`,
     and the confinement roots are `/home/sprite` and the working directory of
     every live conversation on it; redaction already covers every
-    conversation on the machine. The `/api/sandboxes/:id` routes stay, and
+    conversation on the machine. On every machine, the repository mounts of
+    its environment that `ConfigHome.eligible_mounts/1` keeps are roots too
+    (#2999), and every root but the home counts only where it physically is
+    its own name, or under the physical home (or `/tmp`, for one named
+    there). The `/api/sandboxes/:id` routes stay, and
     on such a machine read it the same way.
 
 ## Consequences
@@ -248,3 +253,4 @@ its files are all of theirs (decision 11).
 - 2026-10-15 — "Never a wake" narrowed to what Managoat parked; a provider's own sleep may be woken by a read (#2395).
 - 2026-10-17 — Context names the `admin` scope added since; the `full`/`sprite` reasoning is unchanged.
 - 2026-10-18 — Amended by [0097](0097-workspaces.md) step 5c: the reads are also addressed by workspace, and on an explicit workspace's shared machine resolve from `/home/sprite` with every live conversation's working directory as a root (decision 11); "a sandbox belongs to exactly one conversation" holds for implicit workspaces only.
+- 2026-10-19 — Amended by [0097](0097-workspaces.md) (#2999): the eligible repository mounts of the machine's environment are roots on every machine, a root other than the home counts where it physically is its own name, and with no resolvable home nothing is a root (decisions 4 and 11).

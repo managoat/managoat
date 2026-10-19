@@ -25,9 +25,10 @@ terminals on one laptop do. The machine is a [workspace](../concepts/workspaces.
 
 ## 1. Describe the machine and the agents
 
-Write one manifest with the environment and the three agents. Clone the
-repository under `/home/sprite`: a conversation's working directory must lie
-there, so a checkout elsewhere cannot be an agent's folder.
+Write one manifest with the environment and the three agents. A
+conversation's working directory must lie under `/home/sprite` or under one of
+the environment's repository mounts, so the checkout can live at either. This
+guide clones it to `/home/sprite/app`.
 
 ```yaml
 ---
@@ -140,8 +141,8 @@ as it was and that agent's session intact.
 
 ## 5. Look at the shared disk
 
-The workspace's disk reads see everything under `/home/sprite`, and every
-live conversation's working directory:
+The workspace's disk reads see everything under `/home/sprite`, every live
+conversation's working directory, and the environment's repository mounts:
 
 ```bash
 WORKSPACE_ID=$(managoat workspace show app-box --json | jq -r .id)
@@ -212,7 +213,7 @@ destroys the machine with its disk. Push the work first.
 | `422 environment_not_allowed` or `vault_not_allowed` | The agent's allowlist does not include the workspace's environment or vault. | Add them to the agent's `allowed_environment_ids` or `allowed_vault_ids`. |
 | `403` with `required_scope: "full"` | A sandbox's own key, such as `MANAGOAT_TOKEN` inside a sandbox, cannot use workspaces. | Use a key from `managoat auth login`. |
 | `503 fleet_full` on create | Every sandbox slot on the provider is in use. | Try again in a minute. |
-| `422 validation_failed` on `cwd` | The folder is not under `/home/sprite` (or `/tmp` for gemini), or is inside `/home/sprite/.managoat`. | Choose a folder under `/home/sprite`. |
+| `422 validation_failed` on `cwd` | The folder is not under `/home/sprite` (or `/tmp` for gemini) or a repository mount of the workspace's environment, or is inside `/home/sprite/.managoat`. | Choose a folder under `/home/sprite` or under a repository's `mount_path`. |
 | `409 source_in_use_by_workspace` deleting the environment or vault | A workspace was created from it. | Delete the workspace first. |
 | A turn ends `interrupted`, `machine_parked` | The operator's lifetime ceiling parked the machine. | Prompt again; the machine wakes with its disk. |
 

@@ -59,9 +59,10 @@ defmodule Fountain.Conversations.Launch do
     - `model`                 — optional model override (ADR 0061), checked as the agent's
                                 own model is; nil runs the agent's model
     - `cwd`                   — optional absolute working directory for the agent, under
-                                `/home/sprite` (or `/tmp` for gemini), created if missing and
+                                `/home/sprite` (or `/tmp` for gemini) or a repository mount of
+                                the environment the launch resolves, created if missing and
                                 fixed for the conversation's life; nil runs the runtime's
-                                default (`Fountain.Conversations.ConfigHome.validate_cwd/2`)
+                                default (`Fountain.Conversations.ConfigHome.validate_cwd/3`)
     - `session_config`        — refused unless nil or `{}`: a conversation requests its
                                 agent's ACP session config options, copied here and not
                                 read again (ADR 0062, addendum of 2026-10-15, agent only)
@@ -130,7 +131,13 @@ defmodule Fountain.Conversations.Launch do
          {:ok, perm_policy} <-
            Conversations.resolve_permission_policy(attrs["permission_policy"], agent),
          {:ok, model} <- Conversations.resolve_model(attrs["model"], agent),
-         {:ok, cwd} <- ConfigHome.validate_cwd(attrs["cwd"], agent.runtime),
+         {:ok, cwd} <-
+           ConfigHome.validate_launch_cwd(
+             attrs["cwd"],
+             agent.runtime,
+             env_id || agent.environment_id,
+             user_id
+           ),
          sandbox_key_id = Keyword.get(opts, :sandbox_key_id),
          {:ok, parent} <- resolve_parent(attrs["parent_conversation_id"], user_id, sandbox_key_id),
          {:ok, depth} <- resolve_depth(parent, user_id, sandbox_key_id),

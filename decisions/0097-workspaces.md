@@ -129,8 +129,10 @@ are audited in the context, with the caller, outside any transaction.
 - `cwd`: an absolute path the conversation's agent runs in, fixed for the
   conversation's life. Today `Fountain.RuntimeDispatch.cwd/1` fixes it per
   runtime; that stays the default. The path must lie under `/home/sprite`
-  (for gemini, also under `/tmp`, where its default working directory is)
-  and is created if missing. It is accepted with or without a workspace.
+  (for gemini, also under `/tmp`, where its default working directory is),
+  or since #2999 under an eligible repository mount of the environment the
+  launch resolves (the workspace's, in a workspace), and is created if
+  missing. It is accepted with or without a workspace.
 
 `sandbox_id` keeps its refusal, `422 sandbox_attach_unsupported`, with the
 message pointing at `workspace_id`. A sandbox row is a
@@ -304,8 +306,9 @@ The four read routes of [0039](0039-sandbox-files-over-the-api.md) are also
 served at `/api/workspaces/:id/files`, `/file`, `/diff` and `/git-status`,
 resolving to the workspace's current sandbox, full scope only, with the same
 admission, bounds and never-resume rule. A relative path resolves from
-`/home/sprite`, and the confinement roots are `/home/sprite` and the `cwd` of
-every live conversation on the workspace. Redaction covers the
+`/home/sprite`, and the confinement roots are `/home/sprite`, the `cwd` of
+every live conversation on the workspace and, since #2999, the eligible
+repository mounts of the workspace's environment. Redaction covers the
 workspace's environment and vault plus whatever every live conversation on it
 registered. The `/api/sandboxes/:id` routes stay.
 
@@ -844,3 +847,18 @@ A PR sequence, each releasable alone:
   machine gone while attaching (a workspace launch onto a `ready` machine
   nobody knew was lost) retires it the same quiet way and hands the prompt it
   was started for to the rebuild.
+- 2026-10-19 — A `cwd` may lie under a repository mount (#2999). Besides
+  `/home/sprite` (and `/tmp` for gemini), a launch's `cwd` may be, or lie
+  under, the `mount_path` of a repository of the environment the launch
+  resolves: the agent's, the one it names, or the workspace's. Only an
+  eligible mount counts: normalised, not `/`, neither inside nor around
+  `/home/sprite/.managoat` (so never the home or an ancestor), and outside
+  the system trees (`/bin`, `/boot`, `/dev`, `/etc`, `/lib*`, `/proc`,
+  `/root`, `/run`, `/sbin`, `/snap`, `/sys`, `/usr`, `/var`). The same mounts,
+  read from the machine's environment, are file-read roots on every machine.
+  The shell check now admits a root other than the home where it physically
+  is its own name, or physically under the home, or under `/tmp` for one
+  named there; with no resolvable home it admits nothing, `/tmp` roots
+  included. A channel resume naming the conversation's own `cwd` resumes
+  whatever the environment's mounts are now. Environment validation is
+  unchanged: an ineligible mount is still cloned. 0039 is amended.

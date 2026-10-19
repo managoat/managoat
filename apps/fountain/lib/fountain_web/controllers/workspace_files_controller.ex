@@ -6,8 +6,9 @@ defmodule FountainWeb.WorkspaceFilesController do
   never-resume rule, all of which are `Fountain.SandboxFiles`'.
 
   A workspace's machine is shared, so a relative path resolves from
-  `/home/sprite`, and a path may lie under `/home/sprite` or the working
-  directory of any live conversation on it. Redaction covers the
+  `/home/sprite`, and a path may lie under `/home/sprite`, the working
+  directory of any live conversation on it, or an eligible repository mount
+  of the workspace's environment (#2999). Redaction covers the
   workspace's environment and vault and whatever every live conversation
   there registered. Full scope only, as every workspace route is.
   """
@@ -34,9 +35,12 @@ defmodule FountainWeb.WorkspaceFilesController do
     type: :string,
     required: false,
     description:
-      "In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite` " <>
-        "and the working directory of every live conversation in the workspace: anything " <>
-        "else is `422 path_outside_sandbox`."
+      "In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, " <>
+        "the working directory of every live conversation in the workspace, and the " <>
+        "repository mounts of the workspace's environment (each `mount_path`, unless it is " <>
+        "`/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a " <>
+        "system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is " <>
+        "`422 path_outside_sandbox`."
   ]
 
   @max_bytes_param [

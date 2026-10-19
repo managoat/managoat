@@ -30,8 +30,11 @@ defmodule FountainWeb.SandboxFilesController do
     description:
       "In-sandbox path, absolute or relative to the conversation's working directory " <>
         "(its launch's `cwd`, else `/home/sprite` for claude and codex and " <>
-        "`/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that " <>
-        "directory: anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, " <>
+        "`/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that " <>
+        "directory and the repository mounts of the sandbox's environment (each " <>
+        "`mount_path`, unless it is `/`, the home or an ancestor of it, inside " <>
+        "`/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or " <>
+        "`/var`): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, " <>
         "which several conversations share, a relative path resolves from `/home/sprite` " <>
         "and the working directory of every live conversation there is also allowed."
   ]

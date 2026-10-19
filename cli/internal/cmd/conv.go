@@ -94,7 +94,7 @@ func init() {
 	runCmd.Flags().String("client-request-id", "", "caller-provided prompt correlation ID (not an idempotency key)")
 	runCmd.Flags().String("vault", "", "vault name or id")
 	runCmd.Flags().String("environment", "", "environment name or id to provision from, instead of the agent's own")
-	runCmd.Flags().String("cwd", "", "working directory inside the sandbox for the agent (absolute, under /home/sprite; created if missing)")
+	runCmd.Flags().String("cwd", "", "working directory inside the sandbox for the agent (absolute, under /home/sprite or a repository mount; created if missing)")
 	runCmd.Flags().String("workspace", "", "workspace name or id to run on, beside the conversations already there")
 	rootCmd.AddCommand(runCmd)
 }

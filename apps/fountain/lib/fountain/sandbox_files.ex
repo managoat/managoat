@@ -30,7 +30,8 @@ defmodule Fountain.SandboxFiles do
   default, `Fountain.Conversations.ConfigHome.cwd/1`), or on an explicit
   workspace's shared machine, the home or the working directory of any live
   conversation on it, with a relative path resolved from the home (ADR
-  0097) — including the one
+  0097), and either way the eligible repository mounts of the machine's
+  environment (#2999) — including the one
   the caller never names, the repository root `git rev-parse --show-toplevel`
   finds by walking up. A root outside those is `not_a_repository`, not a
   listing of it.
@@ -175,14 +176,33 @@ defmodule Fountain.SandboxFiles do
   On an explicit workspace's machine, which several conversations share
   (ADR 0097, Files), the home and the working directory of every live
   conversation on it.
+
+  Either way, also each repository mount of the environment the machine was
+  provisioned from (the workspace's), as far as
+  `Fountain.Conversations.ConfigHome.eligible_mounts/1` keeps it (#2999).
+  The home is always first: the scripts treat the first root as the home.
   """
   @spec roots(Sandbox.t()) :: [String.t()]
   def roots(%Sandbox{} = sandbox) do
-    case Fountain.Workspaces.machine_kind(sandbox) do
-      :explicit -> Enum.uniq([@home | live_cwds(sandbox)])
-      :implicit -> Enum.uniq([@home, cwd(sandbox)])
-    end
+    working =
+      case Fountain.Workspaces.machine_kind(sandbox) do
+        :explicit -> live_cwds(sandbox)
+        :implicit -> [cwd(sandbox)]
+      end
+
+    Enum.uniq([@home | working] ++ mount_roots(sandbox))
   end
+
+  # ownership: the caller fetched `sandbox` tenant-scoped, and the
+  # environment is read scoped to its owner.
+  defp mount_roots(%Sandbox{environment_id: env_id, user_id: user_id})
+       when is_binary(env_id) and is_binary(user_id) do
+    env_id
+    |> Fountain.Conversations.ConfigHome.repository_mounts(user_id)
+    |> Fountain.Conversations.ConfigHome.eligible_mounts()
+  end
+
+  defp mount_roots(%Sandbox{}), do: []
 
   # ownership: the caller fetched `sandbox` tenant-scoped; its conversations
   # are the same tenant's.
@@ -657,32 +677,36 @@ defmodule Fountain.SandboxFiles do
     home=
     first=1
     while [ "$#" -ge 2 ]; do
-      r=$1
+      named=$1
       logical=${2#sandbox:}
       shift 2
-      if r=$(cd -- "$r" 2>/dev/null && pwd -P && printf '.'); then
+      if r=$(cd -- "$named" 2>/dev/null && pwd -P && printf '.'); then
         r=${r%$'\n.'}
       else
         r=
       fi
       # The first root is the home, whether or not it resolves: one that does
       # not is no root, and nothing lies under it. Any other is a working
-      # directory, and is a root only where it physically lies: under the
-      # home, or under /tmp for one that names /tmp. A working directory
-      # replaced by a symlink to somewhere else (another process on a shared
-      # machine can make one) does not carry the read there. `/tmp` is read
-      # in the execution namespace as it is named, so an adapter that mapped
-      # it elsewhere would refuse such roots rather than widen them.
+      # directory or a repository mount, and is a root only where it
+      # physically lies: exactly where it is named (no symlink anywhere on
+      # its path), under the home, or under /tmp for one that names /tmp. A
+      # root replaced by a symlink to somewhere else (another process on a
+      # shared machine can make one) does not carry the read there; which
+      # names may be roots at all is the server's rule. `/tmp` is read in the
+      # execution namespace as it is named, so an adapter that mapped it
+      # elsewhere would refuse such roots rather than widen them.
       if [ -n "$first" ]; then
         first=
         home=$r
         [ -n "$r" ] || continue
-      else
-        [ -n "$r" ] || continue
+      elif [ -z "$r" ] || [ -z "$home" ]; then
+        # With no home, no other root counts either: the home that did not
+        # resolve may be the one a working directory was checked against.
+        continue
+      elif [ "$r" != "$named" ]; then
         case $logical in
           /tmp|/tmp/*) base=$(cd /tmp 2>/dev/null && pwd -P) || continue ;;
-          # With no home, nothing lies under it ("$base"/* would be "/*").
-          *) [ -n "$home" ] || continue; base=$home ;;
+          *) base=$home ;;
         esac
         case $r in
           "$base"|"$base"/*) ;;

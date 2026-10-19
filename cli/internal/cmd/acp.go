@@ -66,7 +66,8 @@ ACP's kind (execute, edit, read, fetch, …), and a launch may only narrow what
 the agent already allows.
 
 --cwd is the directory, inside the sandbox, the agent runs in: an absolute
-path under /home/sprite (or /tmp for a gemini agent), created if missing.
+path under /home/sprite (or /tmp for a gemini agent) or under a repository
+mount_path of the environment it launches with, created if missing.
 Without it the runtime's default stands. It is not your editor's project
 directory, which session/new sends and the sandbox cannot see.
 
@@ -90,7 +91,7 @@ not on your machine.`,
 	acpCmd.Flags().StringVar(&acpVault, "vault", "", "vault name or id to attach to each session's conversation")
 	acpCmd.Flags().StringVar(&acpEnvironment, "environment", "", "environment name or id to provision each session's conversation from, instead of the agent's own")
 	acpCmd.Flags().StringVar(&acpPermission, "permission", "", `what happens before the agent runs a tool: auto_allow, ask, auto_deny, or key=verdict pairs (for example "execute=ask")`)
-	acpCmd.Flags().StringVar(&acpCwd, "cwd", "", "working directory inside the sandbox for each session's agent (absolute, under /home/sprite)")
+	acpCmd.Flags().StringVar(&acpCwd, "cwd", "", "working directory inside the sandbox for each session's agent (absolute, under /home/sprite or a repository mount)")
 	acpCmd.Flags().StringVar(&acpWorkspace, "workspace", "", "workspace name or id every session's conversation runs on, instead of a sandbox of its own")
 	acpCmd.Flags().StringVar(&acpLogLevel, "log-level", "info", "stderr log level: debug, info, warn, error")
 	rootCmd.AddCommand(acpCmd)

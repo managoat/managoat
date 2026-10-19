@@ -38,6 +38,11 @@ defmodule Fountain.SandboxFilesScriptTest do
     [{"GIT_CONFIG_GLOBAL", "/dev/null"}, {"GIT_CONFIG_SYSTEM", "/dev/null"}]
   end
 
+  defp physical!(dir) do
+    {out, 0} = System.cmd("sh", ["-c", "cd -- \"$1\" && pwd -P", "sh", dir])
+    String.trim_trailing(out, "\n")
+  end
+
   defp git!(dir, args) do
     {out, code} = System.cmd("git", args, cd: dir, env: git_env(), stderr_to_stdout: true)
     assert code == 0, "git #{Enum.join(args, " ")} failed: #{out}"
@@ -146,6 +151,72 @@ defmodule Fountain.SandboxFilesScriptTest do
                run(:read, ["100", Path.join(nested, "inside.txt"), c.root, nested], [], [
                  "/home/sprite",
                  "/home/sprite/nested"
+               ])
+    end
+
+    # #2999: a repository mount outside the home (`/work/app`) is a root
+    # where it physically is its own name, and nowhere else.
+    test "a repository mount outside the home is a root where it really lies", c do
+      # Physical, so a host whose $TMPDIR has a symlink on its path still
+      # hands the script a mount that is its own name.
+      mount = Path.join(physical!(c.outside), "mount")
+      File.mkdir_p!(Path.join(mount, "src"))
+      File.write!(Path.join(mount, "src/app.txt"), "inside")
+      logical = ["/home/sprite", "/work/app"]
+
+      assert {"6\naW5zaWRl\n", 0} =
+               run(:read, ["100", Path.join(mount, "src/app.txt"), c.root, mount], [], logical)
+
+      assert {"directory\t\tsrc\0", 0} = run(:list, [mount, c.root, mount], [], logical)
+
+      # Not past it: a sibling of the mount is outside every root.
+      assert {"", 9} =
+               run(:read, ["100", Path.join(c.outside, "secret.txt"), c.root, mount], [], logical)
+
+      # A symlink inside the mount that leaves it does not carry the read.
+      File.ln_s!(Path.join(c.outside, "secret.txt"), Path.join(mount, "leak.txt"))
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(mount, "leak.txt"), c.root, mount], [], logical)
+    end
+
+    test "a repository mount replaced by a symlink, or under one, is no root", c do
+      # The mount swapped for a link to somewhere else (another process on
+      # the machine can make one): the read does not follow it there.
+      real = Path.join(c.outside, "elsewhere")
+      File.mkdir_p!(real)
+      File.write!(Path.join(real, "secret.txt"), "outside")
+      link = Path.join(c.outside, "mount")
+      File.ln_s!(real, link)
+      logical = ["/home/sprite", "/work/app"]
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(link, "secret.txt"), c.root, link], [], logical)
+
+      assert {"", 9} = run(:list, [link, c.root, link], [], logical)
+
+      # An ancestor of the mount swapped for a link: the same.
+      parent = Path.join(c.outside, "work")
+      File.ln_s!(c.outside, parent)
+      via_parent = Path.join(parent, "elsewhere")
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(via_parent, "secret.txt"), c.root, via_parent], [], [
+                 "/home/sprite",
+                 "/work/elsewhere"
+               ])
+    end
+
+    test "with a home that does not resolve, a repository mount admits nothing either", c do
+      mount = Path.join(physical!(c.outside), "mount")
+      File.mkdir_p!(mount)
+      File.write!(Path.join(mount, "a.txt"), "inside")
+      missing = Path.join(c.root, "no-such-home")
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(mount, "a.txt"), missing, mount], [], [
+                 "/home/sprite",
+                 "/work/app"
                ])
     end
 

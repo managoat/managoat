@@ -87,7 +87,98 @@ defmodule Fountain.Conversations.ConfigHomeTest do
     end
   end
 
+  # #2999: an environment's repository mounts widen the rule, as far as
+  # `eligible_mounts/1` lets them.
+  describe "eligible_mounts/1" do
+    test "keeps a normalised mount outside the home, and one under it" do
+      assert ConfigHome.eligible_mounts(["/work/app", "/work/app/", "/srv/./x/../y"]) ==
+               ["/work/app", "/srv/y"]
+
+      assert ConfigHome.eligible_mounts(["/home/sprite/app", "/tmp/repo"]) ==
+               ["/home/sprite/app", "/tmp/repo"]
+    end
+
+    test "drops the root, the home and its ancestors, the config homes, and system trees" do
+      for mount <- [
+            "/",
+            "/home",
+            "/home/sprite",
+            "/home/sprite/",
+            "/home/sprite/.managoat",
+            "/home/sprite/.managoat/c/x",
+            "/home/sprite/app/../.managoat",
+            "/etc",
+            "/etc/app",
+            "/proc/self",
+            "/sys",
+            "/dev/shm",
+            "/usr/local/app",
+            "/var/www",
+            "/root/app",
+            "/run/x",
+            "/work/../etc",
+            "/home/sprite/../../etc",
+            "relative/app",
+            "/work/a\nb",
+            "/" <> String.duplicate("a", 1100)
+          ] do
+        assert ConfigHome.eligible_mounts([mount]) == [], inspect(mount)
+      end
+
+      assert ConfigHome.eligible_mounts(nil) == []
+      assert ConfigHome.eligible_mounts([nil, 42, "/work/app"]) == ["/work/app"]
+    end
+
+    test "a prefix of a system tree's name is not that tree" do
+      assert ConfigHome.eligible_mounts(["/etcetera", "/variant", "/home/spriteish"]) ==
+               ["/etcetera", "/variant", "/home/spriteish"]
+    end
+  end
+
+  describe "validate_cwd/3 with repository mounts" do
+    test "a cwd at or under an eligible mount is accepted, normalised" do
+      mounts = ["/work/app"]
+      assert {:ok, "/work/app"} = ConfigHome.validate_cwd("/work/app/", "claude", mounts)
+
+      assert {:ok, "/work/app/api"} =
+               ConfigHome.validate_cwd("/work/app/x/../api", "codex", mounts)
+
+      assert {:ok, "/home/sprite/x"} = ConfigHome.validate_cwd("/home/sprite/x", "codex", mounts)
+    end
+
+    test "a sibling, a parent, an escape by `..` and an ineligible mount are refused" do
+      mounts = ["/work/app", "/etc", "/", "/home/sprite/.managoat"]
+
+      for cwd <- [
+            "/work",
+            "/work/application",
+            "/work/app/../other",
+            "/etc",
+            "/etc/x",
+            "/usr",
+            "/home/sprite/.managoat/c/x"
+          ] do
+        assert {:error, cs} = ConfigHome.validate_cwd(cwd, "claude", mounts), cwd
+        assert [cwd: _] = cs.errors
+      end
+    end
+
+    test "the refusal names the mounts that would have been accepted" do
+      assert {:error, cs} = ConfigHome.validate_cwd("/srv", "claude", ["/work/app"])
+      assert message(cs) =~ "/home/sprite or /work/app"
+    end
+  end
+
   describe "check_resume/2" do
+    test "the directory a conversation runs in under a mount resumes, whatever the environment says now" do
+      conv = conv(%{cwd: "/work/app"})
+      assert :ok = ConfigHome.check_resume(conv, "/work/app/")
+      assert {:error, cs} = ConfigHome.check_resume(conv, "/work/other")
+      assert [cwd: _] = cs.errors
+      assert {:error, _} = ConfigHome.check_resume(conv, "relative")
+      assert {:error, _} = ConfigHome.check_resume(conv, 42)
+    end
+
     test "nothing named, or the directory the conversation runs in, resumes" do
       assert :ok = ConfigHome.check_resume(conv(%{}), nil)
       assert :ok = ConfigHome.check_resume(conv(%{}), "/home/sprite")
