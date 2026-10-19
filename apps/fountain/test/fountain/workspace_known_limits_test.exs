@@ -526,14 +526,15 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
     # `FreshProvision`'s silent arms: the machine is another owner's, so
     # nothing is said about it, but a prompt queued for this server dies with
     # its mailbox unless it is reported (#3001).
-    for answer <- [
-          {:ok, :claimed_elsewhere},
-          {:ok, :already_terminal},
-          {:error, :sandbox_reset_pending}
+    for {answer, word} <- [
+          {{:ok, :claimed_elsewhere}, "machine_busy"},
+          {{:ok, :already_terminal}, "machine_lost"},
+          {{:error, :sandbox_reset_pending}, "sandbox_unavailable"}
         ] do
       test "reports a queued prompt with its receipt on #{inspect(answer)}, and nothing without one",
            ctx do
         answer = unquote(Macro.escape(answer))
+        word = unquote(word)
         stub(Machine, :provision, fn _id, _pipeline, _opts -> answer end)
         state = %{conversation_id: ctx.conv.id, sandbox_id: ctx.sandbox.id}
         run = fn -> FreshProvision.run(state, ctx.conv, ctx.sandbox, ctx.agent, nil, %{}) end
@@ -547,7 +548,7 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
         assert {:stop, :normal, _} = run.()
 
         assert [{"failed", data}] = stages(ctx.conv.id, "wake")
-        assert data["reason"] == "sandbox_unavailable"
+        assert data["reason"] == word
         assert data["retryable"] == true
         assert data["client_request_id"] == "req-4"
         assert data["prompt_receipt_id"] == meta[:prompt_receipt_id]
@@ -556,18 +557,20 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
       end
     end
 
-    test "reports it as gone when the conversation has ended", ctx do
-      stub(Machine, :provision, fn _id, _pipeline, _opts -> {:ok, :already_terminal} end)
-      conv = ctx.conv |> Ecto.Changeset.change(status: "terminated") |> Repo.update!()
-      meta = PromptReceipt.accept(conv.id, client_request_id: "req-5")
-      send(self(), {:"$gen_cast", {:initial_prompt, "hello", [], meta}})
+    for status <- ["terminated", "failed"] do
+      test "reports it as gone when the conversation is #{status}", ctx do
+        stub(Machine, :provision, fn _id, _pipeline, _opts -> {:ok, :already_terminal} end)
+        conv = ctx.conv |> Ecto.Changeset.change(status: unquote(status)) |> Repo.update!()
+        meta = PromptReceipt.accept(conv.id, client_request_id: "req-5")
+        send(self(), {:"$gen_cast", {:initial_prompt, "hello", [], meta}})
 
-      state = %{conversation_id: conv.id, sandbox_id: ctx.sandbox.id}
+        state = %{conversation_id: conv.id, sandbox_id: ctx.sandbox.id}
 
-      assert {:stop, :normal, _} =
-               FreshProvision.run(state, conv, ctx.sandbox, ctx.agent, nil, %{})
+        assert {:stop, :normal, _} =
+                 FreshProvision.run(state, conv, ctx.sandbox, ctx.agent, nil, %{})
 
-      assert [{"failed", %{"reason" => "gone", "retryable" => false}}] = stages(conv.id, "wake")
+        assert [{"failed", %{"reason" => "gone", "retryable" => false}}] = stages(conv.id, "wake")
+      end
     end
   end
 end

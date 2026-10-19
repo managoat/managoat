@@ -850,9 +850,10 @@ defmodule Fountain.Machines.Provision do
   end
 
   # A receipt outlives its prompt when the server it was cast to stopped
-  # before the cast arrived (ADR 0097's known limit; a stop reports every
-  # prompt already in its mailbox since #3001), and the next boot's recovery
-  # is what clears it. So one counts as a prompt in flight
+  # before the cast arrived (ADR 0097's known limit; since #3001 every
+  # stand-down reports a prompt already in its mailbox, and a failed
+  # provision fails the conversation), and the next boot's recovery is what
+  # clears it. So one counts as a prompt in flight
   # only while something could still be carrying it (review of #2986): its
   # conversation's server is setting up, with the prompt queued behind that,
   # or the receipt is young enough for a wake still bringing that server up

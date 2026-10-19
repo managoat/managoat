@@ -493,11 +493,12 @@ directory" or `cwd` when this is built.
   review 0058 asks for (#2262), and the migration must carry any
   `destroying` stamp from a sandbox row to its workspace.
 - `Machines.Occupancy` stops being degenerate, and the park reads it for real.
-- **Known limit: a woken prompt can go unreported if its server stops
-  before the prompt arrives.** A woken conversation's prompt reaches its new
-  server in a cast sent just after the server is registered. A server whose
-  setup stops it at once (a rebuild not kept for a `pending` conversation,
-  `workspace_not_kept`) can be gone before that cast arrives, and a message
+- **Known limit: a woken or launched prompt can go unreported if its
+  server stops before the prompt arrives.** A woken conversation's prompt,
+  and a launch's first, reach the new server in a cast sent just after the
+  server is registered. A server whose setup stops it at once (a rebuild not
+  kept for a `pending` conversation, `workspace_not_kept`, or a provision
+  that stands down for another owner) can be gone before that cast arrives, and a message
   to a dead process is dropped. Its stop then reports bare, with no
   `prompt_receipt_id` or `client_request_id`, or, where a stop reports only
   a prompt it holds, says nothing. The receipt stays pending, counts against
@@ -1184,9 +1185,10 @@ A PR sequence, each releasable alone:
   per conversation: the machine is a workspace's, or the conversation's own.
   A provision that stands down for another owner (`FreshProvision`'s
   `:already_terminal`, `:claimed_elsewhere`, reassignment and reset-fence
-  answers) reports a prompt queued for it as not run, with its receipt
-  (`sandbox_unavailable`, retryable, or `gone` for an ended conversation),
-  where it used to drop it with its mailbox. It still says nothing about the
-  machine, which is another owner's, and nothing when no prompt is queued. A
-  woken prompt that reaches a server already stopped is a known limit, under
-  Consequences.
+  answers) reports a prompt queued for it as not run, with its receipt, in
+  the words a reattach's stand-down uses (`machine_lost`, `machine_busy`,
+  otherwise `sandbox_unavailable`, all retryable; `gone` for an ended
+  conversation), where it used to drop it with its mailbox. It still says
+  nothing about the machine, which is another owner's, and nothing when no
+  prompt is queued. A woken or launched prompt that reaches a server already
+  stopped is a known limit, under Consequences.
