@@ -33,6 +33,12 @@ Release dates are the UTC day npm published the version.
 
 ## [12.5.0] - 2026-10-19
 
+The next release is a major one. `managoat.events()` changes type, from
+`LogEvent` to `AccountEvent`, and its `workspace.status` and `conversations`
+notices, which arrived with no `kind`, now arrive with `kind` set to their
+event name: code that told them
+apart by a missing `kind` has to switch on it instead. See **Changed**.
+
 ### Added
 
 - `managoat.workspaces` (ADR 0097): `create`, `list` (`{ implicit: true }`
@@ -42,8 +48,9 @@ Release dates are the UTC day npm published the version.
   `/api/workspaces` (Managoat v0.37.0 or later).
 - `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
 - The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
-  workspace refusal codes on `ManagoatErrorCode`, `insufficient_scope` and
-  `sandbox_provider_disabled` among them.
+  workspace refusal codes on `ManagoatErrorCode`, `sandbox_provider_disabled`
+  among them. `insufficient_scope`, the code of every refusal for a key's
+  scope, joins them.
 - The `AccountEvent`, `AccountLogEvent` and `ConversationsChangedEvent` types.
 
 ### Changed

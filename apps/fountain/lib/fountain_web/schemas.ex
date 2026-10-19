@@ -2899,18 +2899,21 @@ defmodule FountainWeb.Schemas do
           description:
             "The machine-readable code: `validation_failed`, `not_found`, " <>
               "`fleet_full`, `expired`, `insufficient_scope`, " <>
-              "`invalid_token` and the rest. On the key-authentication refusals " <>
-              "(401, and 403 `email_unverified`) it is a sentence and `reason` " <>
-              "carries the code.",
+              "`invalid_token` and the rest. A few refusals put a sentence here " <>
+              "and the code, if any, in `reason`: the key-authentication ones " <>
+              "(401, and 403 `email_unverified`), an unmatched `/api` path (404), " <>
+              "a rejected inference credential, and POST /api/auth/token's own.",
           example: "validation_failed"
         },
         message: %Schema{type: :string, description: "A sentence for a human, when there is one."},
         reason: %Schema{
           type: :string,
           description:
-            "A second stable word. On the key-authentication refusals, `error` is " <>
-              "prose and this is the code (`api_key_invalid`, `api_key_expired`, " <>
-              "`email_unverified`). On a 403 `insufficient_scope` it repeats " <>
+            "A second stable word. Where `error` is prose, this is the code: " <>
+              "`api_key_invalid`, `api_key_expired`, `api_key_revoked` and " <>
+              "`email_unverified` on the key-authentication refusals, `not_found` on " <>
+              "an unmatched `/api` path, `invalid`, `timeout` and the like on a " <>
+              "rejected inference credential. On a 403 `insufficient_scope` it repeats " <>
               "`insufficient_scope`, where clients written before the scope refusals " <>
               "carried their code in `error` look for it."
         },

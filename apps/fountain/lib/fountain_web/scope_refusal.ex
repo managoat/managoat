@@ -15,8 +15,8 @@ defmodule FountainWeb.ScopeRefusal do
   `error` is the code to branch on, as on every other error the API sends,
   and `message` the sentence. `required_scope` names the scope a key needs
   for the request: `full`, the only one that passes every scope check.
-  `reason` repeats the code: until 2026-10-19 `error` was the sentence and
-  `reason` the only code, and a client that branches on `reason` keeps
+  `reason` repeats the code: through v0.37.0 `error` was the sentence
+  and `reason` the only code, and a client that branches on `reason` keeps
   working.
   """
 
