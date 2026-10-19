@@ -44,6 +44,7 @@ defmodule Fountain.Machines.RebuildTest do
     Keyword.merge(
       [
         actor: "system:wake",
+        environment: nil,
         attrs: %{machine_name: "rebuilt-#{System.unique_integer([:positive])}"}
       ],
       extra

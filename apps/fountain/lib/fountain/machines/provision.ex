@@ -276,8 +276,8 @@ defmodule Fountain.Machines.Provision do
     * `:environment` — the `%Environment{}` (or `nil`) the pipeline builds
       from, as its caller read it. Its revision and field digests are
       recorded on the row with the `provisioning` stamp
-      (`Fountain.Workspaces.Staleness`, #2987). Every production caller
-      passes it; without it nothing is recorded.
+      (`Fountain.Workspaces.Staleness`, #2987). Required: `nil` says the
+      machine is built from no environment.
   """
   @spec run(Ecto.UUID.t(), pipeline(), keyword()) ::
           {:ok, :provisioned, term()}
@@ -287,6 +287,7 @@ defmodule Fountain.Machines.Provision do
   def run(sandbox_id, fun, opts)
       when is_binary(sandbox_id) and is_function(fun, 2) and is_list(opts) do
     _actor = Keyword.fetch!(opts, :actor)
+    _environment = Keyword.fetch!(opts, :environment)
 
     if Repo.in_transaction?() do
       {:error, :transaction_open}
@@ -450,6 +451,7 @@ defmodule Fountain.Machines.Provision do
              is_list(opts) do
     _actor = Keyword.fetch!(opts, :actor)
     _attrs = Keyword.fetch!(opts, :attrs)
+    _environment = Keyword.fetch!(opts, :environment)
 
     if Repo.in_transaction?() do
       {:error, :transaction_open}
@@ -688,14 +690,12 @@ defmodule Fountain.Machines.Provision do
     |> Repo.insert()
   end
 
-  # The `:environment` option as the row's record of it, or nothing when the
-  # caller did not say (`Fountain.Workspaces.Staleness.built_from/1`).
-  defp built_from(opts) do
-    case Keyword.fetch(opts, :environment) do
-      {:ok, env} -> Fountain.Workspaces.Staleness.built_from(env)
-      :error -> %{}
-    end
-  end
+  # The `:environment` option as the row's record of it
+  # (`Fountain.Workspaces.Staleness.built_from/1`). Required by `run/3` and
+  # `rebuild/3`, so no caller can build a machine and leave an earlier
+  # attempt's record, or none, behind it (review of #2987).
+  defp built_from(opts),
+    do: opts |> Keyword.fetch!(:environment) |> Fountain.Workspaces.Staleness.built_from()
 
   @doc """
   How long `run/3` waits for a lease somebody else holds before refusing.

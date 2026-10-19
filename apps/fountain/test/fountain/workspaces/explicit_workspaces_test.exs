@@ -605,6 +605,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
                    ctx.sandbox.id,
                    fn _h, _e -> {:ok, :built} end,
                    actor: "system:wake",
+                   environment: nil,
                    attrs: %{machine_name: "rebuilt-#{System.unique_integer([:positive])}"}
                  )
       end)

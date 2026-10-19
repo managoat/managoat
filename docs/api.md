@@ -877,10 +877,16 @@ edit to the environment does not change a machine already built:
 
 | Field | Says |
 |---|---|
-| `revision` | The environment's current revision. It changes on every edit of a field a machine is built from: `repositories`, `packages`, `setup_script`, `setup_timeout_seconds`, `env_vars`, `networking_type` and `networking_config`. Editing `name`, `metadata` or a secret leaves it alone; secrets reach a running machine without a rebuild. |
+| `revision` | The environment's current revision. It changes on every edit of a field a machine is built from: `repositories`, `packages`, `setup_script`, `setup_timeout_seconds`, `env_vars`, `networking_type` and `networking_config`. Editing `name`, `metadata` or a secret leaves it alone; secrets reach a running machine without a rebuild. The environment itself carries the same `revision`. |
 | `built_from_revision` | The revision the current machine was built from, or `null` when there is no live machine or it was built before Managoat recorded this. |
 | `stale` | `true` when at least one of those fields differs from what the machine was built from. An edit that was then reverted moves `revision` but is not stale. |
 | `changed_fields` | The names of the fields that differ, such as `["packages", "env_vars"]`. Only names: no value is ever sent, `env_vars` included. |
+
+`stale` describes the machine as built. A conversation launched or woken after
+an edit to `env_vars` or the networking fields already runs with the new
+values; the machine's env file and the conversations already running keep
+the old ones until a rebuild. See
+[About workspaces](concepts/workspaces.md#what-a-workspace-is).
 
 Each change of `status` on a workspace you created is a `workspace.status`
 event on [the account event stream](#every-conversation-on-one-stream), and so

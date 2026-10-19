@@ -332,8 +332,6 @@ func TestACPCreateConversationCarriesTheWorkspace(t *testing.T) {
 	}
 }
 
-// The refusals a workspace adds keep the server's words and gain the flag
-// that gets past them; any other error is left exactly as it was.
 // A workspace whose machine is behind its environment says so in list and
 // show, by field name (#2987); one that matches says nothing.
 func TestWorkspaceStaleLabels(t *testing.T) {
@@ -357,6 +355,8 @@ func TestWorkspaceStaleLabels(t *testing.T) {
 	}
 }
 
+// The refusals a workspace adds keep the server's words and gain the flag
+// that gets past them; any other error is left exactly as it was.
 func TestExplainAPIError(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

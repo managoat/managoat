@@ -2559,6 +2559,11 @@ export interface components {
                 [key: string]: unknown;
             };
             repositories?: components["schemas"]["Repository"][];
+            /**
+             * Format: uuid
+             * @description Changes on every edit of a field a machine is built from (repositories, packages, setup_script, setup_timeout_seconds, env_vars, networking_type, networking_config), and not for name, metadata or secrets. A workspace reports the revision its machine was built from (built_from_revision).
+             */
+            revision?: string;
             /** @description Secrets stored on this environment. */
             secret_count?: number;
             setup_script?: string;
@@ -3419,7 +3424,7 @@ export interface components {
              * @description The environment's current revision. It changes on every edit of a field the machine is built from (repositories, packages, setup_script, setup_timeout_seconds, env_vars, networking_type, networking_config), and not for its name, metadata or secrets. Null with no environment.
              */
             revision: string | null;
-            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. */
+            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. It describes the machine as built: a conversation started after an edit to env_vars or the networking fields already runs with the new values. */
             stale: boolean;
             /** @enum {string} */
             status: "provisioning" | "ready" | "failed";
@@ -3651,7 +3656,7 @@ export interface components {
             sandbox_provider: string;
             /** @description Its current machine's own status (pending, starting, ready or suspended): suspended while parked, which the next prompt wakes. Null when it has none live: lost at its provider, or a failed provision, and the next prompt builds the next. */
             sandbox_status: string | null;
-            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. */
+            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. It describes the machine as built: a conversation started after an edit to env_vars or the networking fields already runs with the new values. */
             stale: boolean;
             /**
              * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, or on a rebuild after a loss), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.

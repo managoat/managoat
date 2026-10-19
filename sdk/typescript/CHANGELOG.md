@@ -48,7 +48,8 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
   current revision), `built_from_revision` (the one its machine was built
   from), `stale` and `changed_fields`, the names of the environment's fields
   that changed since, typed as the new `WorkspaceField`. A `workspace.status`
-  event is also sent when an edit to the environment moves its revision.
+  event is also sent when an edit to the environment moves its revision, and
+  `Environment` carries `revision` too.
   Needs a Managoat server later than v0.37.2.
 
 ### Changed

@@ -121,7 +121,9 @@ defmodule FountainWeb.Schemas do
         description:
           "True when at least one field the machine was built from has changed since " <>
             "(changed_fields). An edit that was reverted moves revision but is not stale. " <>
-            "False with no live machine, or with no record of what it was built from."
+            "False with no live machine, or with no record of what it was built from. It " <>
+            "describes the machine as built: a conversation started after an edit to " <>
+            "env_vars or the networking fields already runs with the new values."
       }
 
     def changed_fields,
@@ -129,7 +131,7 @@ defmodule FountainWeb.Schemas do
         type: :array,
         items: %Schema{
           type: :string,
-          enum: Enum.map(Fountain.Workspaces.Staleness.fields(), &Atom.to_string/1)
+          enum: Fountain.Workspaces.Staleness.field_names()
         },
         description:
           "The names of the environment's fields that differ from what the machine was " <>
@@ -1853,6 +1855,15 @@ defmodule FountainWeb.Schemas do
         },
         repositories: %Schema{type: :array, items: Repository},
         metadata: %Schema{type: :object, additionalProperties: true},
+        revision: %Schema{
+          type: :string,
+          format: :uuid,
+          description:
+            "Changes on every edit of a field a machine is built from (repositories, " <>
+              "packages, setup_script, setup_timeout_seconds, env_vars, networking_type, " <>
+              "networking_config), and not for name, metadata or secrets. A workspace " <>
+              "reports the revision its machine was built from (built_from_revision)."
+        },
         secret_count: %Schema{type: :integer, description: "Secrets stored on this environment."},
         agent_count: %Schema{
           type: :integer,

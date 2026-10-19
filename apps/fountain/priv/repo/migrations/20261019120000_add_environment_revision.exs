@@ -18,6 +18,11 @@ defmodule Fountain.Repo.Migrations.AddEnvironmentRevision do
   A trigger rather than the context, so every writer moves the revision: the
   API, `managoat apply` and anything later that updates the row.
 
+  The column's default is volatile, so adding it rewrites `environments`
+  under an exclusive lock: a small table (a few rows per account), and the
+  ten-second `lock_timeout` makes a busy one fail the migration rather than
+  queue behind it.
+
   The previous release never reads or writes these columns, so it runs
   against this schema; `down/0` drops them.
   """

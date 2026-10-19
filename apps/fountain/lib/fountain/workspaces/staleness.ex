@@ -59,6 +59,10 @@ defmodule Fountain.Workspaces.Staleness do
   @spec fields() :: [atom()]
   def fields, do: @fields
 
+  @doc "`fields/0` as the names `changed_fields` carries."
+  @spec field_names() :: [String.t()]
+  def field_names, do: Enum.map(@fields, &Atom.to_string/1)
+
   @doc """
   What a provision records on the sandbox row it builds from `env`: the
   revision and each field's digest, as the columns' attrs. Both nil for no

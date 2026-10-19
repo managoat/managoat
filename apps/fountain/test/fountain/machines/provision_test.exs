@@ -52,7 +52,8 @@ defmodule Fountain.Machines.ProvisionTest do
 
   # ── helpers ────────────────────────────────────────────────────────────────
 
-  defp opts(extra \\ []), do: Keyword.merge([actor: "system:conversation_server"], extra)
+  defp opts(extra \\ []),
+    do: Keyword.merge([actor: "system:conversation_server", environment: nil], extra)
 
   defp row(ctx), do: Repo.reload!(ctx.sandbox)
 
@@ -1031,7 +1032,7 @@ defmodule Fountain.Machines.ProvisionTest do
 
           first =
             independent(fn ->
-              Provision.run(tenant.sandbox.id, pipeline, actor: "system:conversation_server")
+              Provision.run(tenant.sandbox.id, pipeline, opts())
             end)
 
           assert_receive {:backend, _, _}, 5_000
@@ -1041,10 +1042,7 @@ defmodule Fountain.Machines.ProvisionTest do
           # protocol's full five seconds proving a refusal.
           second =
             independent(fn ->
-              Provision.run(tenant.sandbox.id, pipeline,
-                actor: "system:conversation_server",
-                busy_wait_ms: 100
-              )
+              Provision.run(tenant.sandbox.id, pipeline, opts(busy_wait_ms: 100))
             end)
 
           assert_receive {:backend, _, _}, 5_000
@@ -1093,7 +1091,7 @@ defmodule Fountain.Machines.ProvisionTest do
 
           task =
             independent(fn ->
-              Provision.run(tenant.sandbox.id, pipeline, actor: "system:conversation_server")
+              Provision.run(tenant.sandbox.id, pipeline, opts())
             end)
 
           assert_receive {:backend, _, _}, 5_000

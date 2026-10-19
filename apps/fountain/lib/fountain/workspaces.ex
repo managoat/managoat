@@ -765,12 +765,18 @@ defmodule Fountain.Workspaces do
     end)
   end
 
-  # ownership: each environment is used above only for a workspace of its
-  # own owner.
+  # Scoped by the workspaces' owners, and each environment is used above
+  # only for a workspace of its own owner.
   defp environments_of(workspaces) do
-    case workspaces |> Enum.map(& &1.environment_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
-      [] -> %{}
-      ids -> from(e in Environment, where: e.id in ^ids) |> Repo.all() |> Map.new(&{&1.id, &1})
+    ids = workspaces |> Enum.map(& &1.environment_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+    owners = workspaces |> Enum.map(& &1.user_id) |> Enum.reject(&is_nil/1) |> Enum.uniq()
+
+    if ids == [] or owners == [] do
+      %{}
+    else
+      from(e in Environment, where: e.id in ^ids and e.user_id in ^owners)
+      |> Repo.all()
+      |> Map.new(&{&1.id, &1})
     end
   end
 
@@ -787,7 +793,9 @@ defmodule Fountain.Workspaces do
   one local broadcast each, all on the owner's one topic. An implicit
   workspace is not told: its conversation's own stream reports its machine.
   Best effort and outside every transaction: a fault is logged and the edit
-  stands.
+  stands. Two edits committed at once may deliver their events in either
+  order; each carries the standing its own read saw, and `GET` has the last
+  word.
   """
   @spec environment_changed(Environment.t()) :: :ok
   def environment_changed(%Environment{id: env_id, user_id: user_id}) when is_binary(user_id) do
@@ -868,9 +876,16 @@ defmodule Fountain.Workspaces do
 
   def publish_status(%Workspace{}, _standing), do: :ok
 
+  # A broadcast never raises (review of #2987): its callers run after their
+  # commits, some with nothing to catch it. A read that fails says nothing is
+  # known, and a client's next GET has the rest.
   defp standing_of(%Workspace{id: id} = workspace) do
     workspaces = [workspace]
     workspaces |> staleness(current_sandboxes(workspaces)) |> Map.fetch!(id)
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning("workspace #{id}: its standing was not read: " <> Exception.message(error))
+      %{revision: nil, built_from_revision: nil, stale: false, changed_fields: []}
   end
 
   @doc """

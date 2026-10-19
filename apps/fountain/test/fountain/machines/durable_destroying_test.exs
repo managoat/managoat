@@ -412,6 +412,7 @@ defmodule Fountain.Machines.DurableDestroyingTest do
                capture_answer(fn ->
                  Provision.run(ctx.sandbox.id, fn _sandbox, _handle -> {:ok, %{}} end,
                    actor: "self",
+                   environment: nil,
                    reason: :initial
                  )
                end)
