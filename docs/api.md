@@ -1006,13 +1006,15 @@ codes and are absent otherwise: `message` is a sentence for a human, `errors`
 holds field validation messages beside `validation_failed`. A refusal for a
 key's scope is `403` with `error: "insufficient_scope"` and
 `required_scope: "full"`, the scope that is allowed; its `reason` repeats the
-code for clients written when `error` was a sentence. A few refusals still
-put a sentence in `error`. On the key-authentication refusals (`401`, and
-`403` for an unverified email) `reason` carries the code: `api_key_invalid`,
-`api_key_expired`, `api_key_revoked` or `email_unverified`. An unmatched
-`/api` path is `404` with `reason: "not_found"`, a rejected inference
-credential carries a `reason` such as `invalid` or `timeout`, and
-`POST /api/auth/token`'s own refusals have no code. A 406 is the one
+code for clients written when `error` was a sentence. Some older refusals
+still put a sentence in `error`, with the code, when there is one, in
+`reason`. Among them: the key-authentication refusals (`401`, and `403` for
+an unverified email), whose `reason` is `api_key_invalid`,
+`api_key_expired`, `api_key_revoked` or `email_unverified`; an unmatched
+`/api` path, `404` with `reason: "not_found"`; a rejected inference
+credential, with a `reason` such as `invalid` or `timeout`; and the
+missing-field and not-found refusals of the `/api/auth` routes, which have
+no code. A 406 is the one
 exception: content negotiation fails before any operation runs and renders
 `{"errors": {"detail": "Not Acceptable"}}`.
 

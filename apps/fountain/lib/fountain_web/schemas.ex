@@ -2899,10 +2899,11 @@ defmodule FountainWeb.Schemas do
           description:
             "The machine-readable code: `validation_failed`, `not_found`, " <>
               "`fleet_full`, `expired`, `insufficient_scope`, " <>
-              "`invalid_token` and the rest. A few refusals put a sentence here " <>
-              "and the code, if any, in `reason`: the key-authentication ones " <>
-              "(401, and 403 `email_unverified`), an unmatched `/api` path (404), " <>
-              "a rejected inference credential, and POST /api/auth/token's own.",
+              "`invalid_token` and the rest. Some older refusals put a sentence " <>
+              "here and the code, if any, in `reason`; among them the " <>
+              "key-authentication ones (401, and 403 `email_unverified`), an " <>
+              "unmatched `/api` path (404), a rejected inference credential, and " <>
+              "the missing-field and not-found refusals of the /api/auth routes.",
           example: "validation_failed"
         },
         message: %Schema{type: :string, description: "A sentence for a human, when there is one."},
