@@ -219,20 +219,26 @@ defmodule Fountain.Conversations.MachineLoss do
   Hand the prompts queued for this server, which has just found its machine
   gone before attaching, to the machine's rebuild, as `hand_off/3` does once
   the server is down. Called in the server's own process, before it stops.
-  No turn was opened for them, so there is nothing to withdraw.
+  No turn was opened for them, so there is nothing to withdraw. Answers how
+  many it handed on.
+
+  Only what is already in the mailbox: the wake and the workspace launch cast
+  the prompt as soon as the server is registered, and the reattach's provider
+  round trip comes first, so it is there in practice. A cast that lands after
+  this is lost with the server, as every cast to a stopping server was.
   """
-  @spec requeue(String.t()) :: :ok
-  def requeue(conv_id) do
+  @spec requeue(String.t(), non_neg_integer()) :: non_neg_integer()
+  def requeue(conv_id, count \\ 0) do
     receive do
       {:"$gen_cast", {:initial_prompt, prompt, images}} ->
         requeue_one(conv_id, prompt, images, [])
-        requeue(conv_id)
+        requeue(conv_id, count + 1)
 
       {:"$gen_cast", {:initial_prompt, prompt, images, meta}} ->
         requeue_one(conv_id, prompt, images, meta)
-        requeue(conv_id)
+        requeue(conv_id, count + 1)
     after
-      0 -> :ok
+      0 -> count
     end
   end
 
@@ -295,8 +301,10 @@ defmodule Fountain.Conversations.MachineLoss do
       not PromptReceipt.pending?(conv_id, receipt) ->
         :ok
 
+      # Still unadmitted past the longest a rebuild can take: a server up
+      # without the prompt (a restart from its child spec carries none).
       System.monotonic_time(:millisecond) > deadline ->
-        :ok
+        Wake.report_unrun_prompt(conv_id, :machine_busy, meta)
 
       server = ConversationServer.whereis(conv_id) ->
         ref = Process.monitor(server)

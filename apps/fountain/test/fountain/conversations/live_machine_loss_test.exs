@@ -550,6 +550,8 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
 
       assert [%Turn{turn_number: 1, prompt: "hello"}] = turns(conv.id)
       assert Repo.reload!(ctx.old).status == "terminated"
+      # Not told to prompt again while its prompt is being run.
+      refute failed_stage(conv.id, "reattach")
     end
   end
 end

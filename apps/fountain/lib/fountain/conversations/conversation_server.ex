@@ -691,16 +691,19 @@ defmodule Fountain.Conversations.ConversationServer do
           "reattach failed for sprite #{sandbox.machine_name}: not found — retiring the machine"
         )
 
-        Output.publish_stage(state.conversation_id, "reattach", "failed", %{
-          reason: "not_found",
-          retryable: false
-        })
-
         # Retired through its owner with the provider step skipped, quietly
         # (`MachineLoss.retire/3`). The conversation is not failed: the prompt
-        # this server was started for, if any, goes to the machine's rebuild.
+        # this server was started for, if any, goes to the machine's rebuild,
+        # and only with none is the client told to prompt again.
         MachineLoss.retire(sandbox.id, conv.id, "system:conversation_server")
-        MachineLoss.requeue(conv.id)
+
+        if MachineLoss.requeue(conv.id) == 0,
+          do:
+            Output.publish_stage(conv.id, "reattach", "failed", %{
+              reason: "not_found",
+              retryable: false
+            })
+
         {:stop, :normal, state}
 
       {:error, reason} ->

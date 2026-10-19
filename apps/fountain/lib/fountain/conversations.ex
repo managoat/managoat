@@ -1792,18 +1792,23 @@ defmodule Fountain.Conversations do
       {:ok, {:withdrawn, withdrawn, conv}} ->
         broadcast_sidebar_update(conv.user_id)
 
-        Audit.record(%{
-          user_id: conv.user_id,
-          action: "conversation.turn.withdrawn",
-          resource_type: "turn",
-          resource_id: withdrawn.id,
-          actor: "system:conversation_server",
-          metadata: %{
-            "conversation_id" => withdrawn.conversation_id,
-            "turn_number" => withdrawn.turn_number,
-            "reason" => "machine_lost"
-          }
-        })
+        # This row also bounds automatic rebuilds (`MachineLoss`), so a write
+        # that fails is said loudly.
+        with {:error, reason} <-
+               Audit.record(%{
+                 user_id: conv.user_id,
+                 action: "conversation.turn.withdrawn",
+                 resource_type: "turn",
+                 resource_id: withdrawn.id,
+                 actor: "system:conversation_server",
+                 metadata: %{
+                   "conversation_id" => withdrawn.conversation_id,
+                   "turn_number" => withdrawn.turn_number,
+                   "reason" => "machine_lost"
+                 }
+               }) do
+          Logger.error("turn #{withdrawn.id}: withdrawal not audited: #{inspect(reason)}")
+        end
 
         {:ok, withdrawn}
 

@@ -752,6 +752,11 @@ defmodule Fountain.Conversations.Wake do
   # stop reading `wake` stages once their turn has started, so the turn's own
   # stage says it is over. By number: the row is gone, and a stage naming its
   # id would point at nothing.
+  #
+  # Not for `conversation_busy`: another prompt's turn is running, and it may
+  # have taken this number, so a stage by number would end that client's turn.
+  defp end_withdrawn_turn(_conv_id, :conversation_busy, _meta), do: :ok
+
   defp end_withdrawn_turn(conv_id, reason, meta) do
     case meta[:withdrawn_turn] do
       number when is_integer(number) ->
