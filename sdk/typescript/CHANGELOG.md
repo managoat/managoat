@@ -31,6 +31,35 @@ Release dates are the UTC day npm published the version.
 
 ---
 
+## [Unreleased]
+
+The next release is a major one. `managoat.events()` changes type, from
+`LogEvent` to `AccountEvent`, and its `workspace.status` and `conversations`
+notices, which arrived with no `kind`, now arrive with `kind` set to their
+event name: code that told them
+apart by a missing `kind` has to switch on it instead. See **Changed**.
+
+### Added
+
+- `sandbox_provider_disabled` and `insufficient_scope`, the code of every
+  refusal for a key's scope, on `ManagoatErrorCode`.
+- The `AccountEvent`, `AccountLogEvent` and `ConversationsChangedEvent` types.
+
+### Changed
+
+- `managoat.events()` yields `AccountEvent` rather than `LogEvent`: a log
+  event, now typed with its `conversation_id`, or a `workspace.status` or
+  `conversations` notice, which the SDK tags with `kind: "workspace.status"`
+  or `kind: "conversations"`. Those notices were yielded before, typed as log
+  events. A switch on `kind` narrows to each. A type change: code that reads
+  `event.stage` or `event.state` without checking `kind` first no longer
+  compiles.
+- A refusal for a key's scope is a `ManagoatError` with `code`
+  `insufficient_scope` against a server that sends that code in `error`.
+  Earlier servers put a sentence there, which became the `code`.
+
+---
+
 ## [12.5.0] - 2026-10-19
 
 ### Added

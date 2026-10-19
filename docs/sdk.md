@@ -288,7 +288,9 @@ the prompt when it fires.
 
 ```ts
 for await (const event of managoat.events({ streams: ["stage"] })) {
-  if (event.stage === "turn" && event.state === "done") refreshList(event.conversation_id);
+  if (event.kind === "stage" && event.stage === "turn" && event.state === "done") {
+    refreshList(event.conversation_id);
+  }
 }
 ```
 
@@ -401,9 +403,9 @@ workspace.
 A run in a workspace that names a different `environment` or `vault` is a
 `ValidationError` with code `workspace_fixes_environment`. A sandbox's own key
 cannot use workspaces: every call is a 403, so a run started from inside a
-sandbox always gets a machine of its own. Match that refusal on
-`error.status === 403` and the body's `reason`, `insufficient_scope`: its
-`error`, and so the error's `code`, is a sentence. A workspace name is
+sandbox always gets a machine of its own. That refusal is a `ManagoatError`
+with code `insufficient_scope`, and its body's `required_scope` is `full`.
+Any refusal for a key's scope has that code. A workspace name is
 matched exactly, never by prefix as agent and vault names are.
 
 !!! warning "Runs in one workspace can read and influence each other"
@@ -418,8 +420,17 @@ many you keep. Delete the ones you are done with. Read
 
 `events()` also carries a `workspace.status` frame, `{workspace_id, name,
 status, error}`, when one of your workspaces changes status, as it carries the
-`conversations` change notice, `{reason}`. Neither is a log event: tell them
-apart by their fields. Neither is replayed after a reconnect.
+`conversations` change notice, `{reason}`. Neither is a log event, and
+neither is replayed after a reconnect. The SDK sets each one's `kind` to its
+event name, so a switch on `kind` tells all four apart and narrows the type:
+
+```ts
+for await (const event of managoat.events()) {
+  if (event.kind === "workspace.status") showWorkspace(event.workspace_id, event.status);
+  else if (event.kind === "conversations") refreshList();
+  else if (event.kind === "stage") showStage(event.conversation_id, event.stage, event.state);
+}
+```
 
 ## Sandboxes
 

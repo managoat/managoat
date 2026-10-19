@@ -155,12 +155,16 @@ export function streamEvents(
  * conversation, or every conversation the caller owns
  * (`/api/events/stream`). They share a format, a cursor header and
  * a heartbeat, so they share this loop.
+ *
+ * `T` is what the endpoint sends: `LogEvent` for one conversation,
+ * `AccountEvent` for the account stream, whose notices it tags with their
+ * SSE event name in `kind` as it does `output` and `stage`.
  */
-export async function* streamPath(
+export async function* streamPath<T extends object = LogEvent>(
   http: HttpClient,
   path: string,
   opts: StreamOptions = {},
-): AsyncGenerator<LogEvent> {
+): AsyncGenerator<T> {
   let lastId = opts.after ?? 0;
   let attempt = 0;
   let lostAt: number | null = null;
@@ -203,7 +207,7 @@ export async function* streamPath(
         const id = Number(message.id);
         if (Number.isFinite(id) && id > 0 && id <= lastId) continue;
         if (Number.isFinite(id) && id > 0) lastId = id;
-        yield event;
+        yield event as T;
       }
       if (opts.wait === false) return;
     } catch (error) {
@@ -226,7 +230,14 @@ export async function* streamPath(
   }
 }
 
-function decodeEvent(message: SseMessage): LogEvent | null {
+/**
+ * The SSE event names that become `kind` on a frame that does not carry one:
+ * the two log-event kinds, and the account stream's two notices, which are
+ * not log events and are told apart from them only by this name.
+ */
+const TAGGED_EVENTS = new Set(["output", "stage", "workspace.status", "conversations"]);
+
+function decodeEvent(message: SseMessage): { id?: number; kind?: string } | null {
   if (!message.data) return null;
   let payload: unknown;
   try {
@@ -235,12 +246,10 @@ function decodeEvent(message: SseMessage): LogEvent | null {
     return null;
   }
   if (!payload || typeof payload !== "object") return null;
-  const event = payload as LogEvent;
+  const event = payload as { id?: number; kind?: string };
   const id = Number(message.id);
   if (Number.isFinite(id) && id > 0) event.id = id;
-  if (!event.kind && (message.event === "output" || message.event === "stage")) {
-    event.kind = message.event;
-  }
+  if (!event.kind && TAGGED_EVENTS.has(message.event)) event.kind = message.event;
   return event;
 }
 

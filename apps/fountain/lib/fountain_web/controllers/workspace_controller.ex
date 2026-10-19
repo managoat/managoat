@@ -85,7 +85,8 @@ defmodule FountainWeb.WorkspaceController do
         {"Environment or vault not found (environment_not_found, vault_not_found)",
          "application/json", Schemas.Error},
       unprocessable_entity:
-        {"Validation error, or a disabled provider", "application/json", Schemas.Error},
+        {"Validation error, or a provider this instance has not enabled " <>
+           "(sandbox_provider_disabled)", "application/json", Schemas.Error},
       service_unavailable:
         {"Every sandbox slot in use (fleet_full)", "application/json", Schemas.Error}
     ]
@@ -101,6 +102,22 @@ defmodule FountainWeb.WorkspaceController do
       conn
       |> put_status(:created)
       |> render(:show, workspace: workspace, sandbox: current(workspace))
+    else
+      # The fallback's message names the agent's sandbox_provider override,
+      # which is not what a workspace's caller sent.
+      {:error, {:sandbox_provider_disabled, provider}} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{
+          error: "sandbox_provider_disabled",
+          message:
+            "sandbox provider #{provider} is not configured on this instance — set its " <>
+              "credentials, or create the workspace with another sandbox_provider, or " <>
+              "without one for the instance default"
+        })
+
+      error ->
+        error
     end
   end
 

@@ -183,8 +183,10 @@ defmodule FountainWeb.SandboxKeyScopeTest do
         resp = call(ctx.raw, method, path)
         assert resp.status == 403, "#{method} #{path}: #{resp.status} #{resp.resp_body}"
         body = Jason.decode!(resp.resp_body)
+        assert body["error"] == "insufficient_scope"
         assert body["reason"] == "insufficient_scope"
         assert body["required_scope"] == "full"
+        assert body["message"] =~ "only its own conversation tree"
       end
     end
 

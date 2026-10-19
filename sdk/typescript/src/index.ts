@@ -38,6 +38,8 @@ export {
 } from "./errors.ts";
 export type * from "./schemas.ts";
 export type {
+  AccountEvent,
+  AccountLogEvent,
   Agent,
   AgentInput,
   Block,
@@ -78,6 +80,7 @@ export type {
   Workspace,
   WorkspaceInput,
   WorkspaceStatusEvent,
+  ConversationsChangedEvent,
 } from "./types.ts";
 
 import { Managoat } from "./client.ts";

@@ -95,6 +95,25 @@ defmodule FountainWeb.WorkspaceControllerTest do
       |> json_response(422)
     end
 
+    test "a provider this instance has not enabled is 422, about the workspace's provider",
+         ctx do
+      refute Fountain.SandboxProviders.enabled?(:e2b)
+
+      assert %{"error" => "sandbox_provider_disabled", "message" => message} =
+               api(ctx)
+               |> post_json("/api/workspaces", %{
+                 "name" => "w",
+                 "environment_id" => ctx.env.id,
+                 "sandbox_provider" => "e2b"
+               })
+               |> json_response(422)
+
+      assert message =~ "sandbox provider e2b"
+      assert message =~ "create the workspace with another sandbox_provider"
+      refute message =~ "agent"
+      assert Workspaces.list_workspaces(ctx.user.id) == []
+    end
+
     test "a full fleet is 503 fleet_full", ctx do
       fill_fleet()
 
@@ -223,8 +242,12 @@ defmodule FountainWeb.WorkspaceControllerTest do
           |> put_req_header("content-type", "application/json")
           |> dispatch(@endpoint, method, path, body && Jason.encode!(body))
 
-        assert %{"reason" => "insufficient_scope", "required_scope" => "full"} =
-                 json_response(conn, 403),
+        assert %{
+                 "error" => "insufficient_scope",
+                 "reason" => "insufficient_scope",
+                 "required_scope" => "full",
+                 "message" => <<_, _::binary>>
+               } = json_response(conn, 403),
                "#{method} #{path}"
       end
 
@@ -263,8 +286,12 @@ defmodule FountainWeb.WorkspaceControllerTest do
       {_record, sprite} = insert_sprite_api_key(ctx.user)
       body = %{"agent_id" => ctx.agent.id, "workspace_id" => ctx.workspace["id"]}
 
-      assert %{"reason" => "insufficient_scope", "required_scope" => "full"} =
-               api(ctx, sprite) |> post_json("/api/conversations", body) |> json_response(403)
+      assert %{
+               "error" => "insufficient_scope",
+               "reason" => "insufficient_scope",
+               "required_scope" => "full",
+               "message" => "This API key is not permitted to use workspaces"
+             } = api(ctx, sprite) |> post_json("/api/conversations", body) |> json_response(403)
 
       other_env = insert_env(user_id: ctx.user.id)
 

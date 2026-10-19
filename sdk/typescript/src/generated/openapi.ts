@@ -2640,7 +2640,7 @@ export interface components {
             /** @description Beside `error: "conversation_depth_exceeded"`: the depth the refused conversation would have had in its spawn chain. */
             depth?: number;
             /**
-             * @description The machine-readable code: `validation_failed`, `not_found`, `fleet_full`, `expired`, `invalid_token` and the rest. On the key-authentication and scope refusals it is a sentence and `reason` carries the code.
+             * @description The machine-readable code: `validation_failed`, `not_found`, `fleet_full`, `expired`, `insufficient_scope`, `invalid_token` and the rest. Some older refusals put a sentence here and the code, if any, in `reason`; among them the key-authentication ones (401, and 403 `email_unverified`), an unmatched `/api` path (404), a rejected inference credential, and the missing-field and not-found refusals of the /api/auth routes.
              * @example validation_failed
              */
             error: string;
@@ -2652,8 +2652,10 @@ export interface components {
             max_depth?: number;
             /** @description A sentence for a human, when there is one. */
             message?: string;
-            /** @description A second stable word. On the 401 and 403 refusals from key authentication and scope checks, `error` is prose and this is the code (`api_key_invalid`, `api_key_expired`, `insufficient_scope`). */
+            /** @description A second stable word. Where `error` is prose, this is the code: `api_key_invalid`, `api_key_expired`, `api_key_revoked` and `email_unverified` on the key-authentication refusals, `not_found` on an unmatched `/api` path, `invalid`, `timeout` and the like on a rejected inference credential. On a 403 `insufficient_scope` it repeats `insufficient_scope`, where clients written before the scope refusals carried their code in `error` look for it. */
             reason?: string;
+            /** @description Beside `error: "insufficient_scope"`: the key scope that is allowed the request, a `full` key such as one from `managoat auth login`. */
+            required_scope?: string;
         };
         /** HealthResponse */
         HealthResponse: {
@@ -10937,7 +10939,7 @@ export interface operations {
                     "application/json": components["schemas"]["NegotiationError"];
                 };
             };
-            /** @description Validation error, or a disabled provider */
+            /** @description Validation error, or a provider this instance has not enabled (sandbox_provider_disabled) */
             422: {
                 headers: {
                     [name: string]: unknown;

@@ -282,7 +282,7 @@ const reply = await managoat.run("Any disks over 80%?", {
 console.log(reply.text);
 
 for await (const event of managoat.events({ streams: ["stage"] })) {
-  if (event.stage === "turn" && event.state === "done") refreshList();
+  if (event.kind === "stage" && event.stage === "turn" && event.state === "done") refreshList();
 }
 ```
 

@@ -7,7 +7,9 @@ import {
   ResolutionError,
   ValidationError,
   WorkspaceFailedError,
+  type AccountEvent,
   type Workspace,
+  type WorkspaceStatusEvent,
 } from "../src/index.ts";
 
 const ENV = "bbbbbbbb-1111-1111-1111-111111111111";
@@ -194,4 +196,64 @@ test("a launch naming another environment is the server's 422, as a ValidationEr
   const error = await run.catch((e: unknown) => e);
   assert.ok(error instanceof ValidationError);
   assert.equal(error.code, "workspace_fixes_environment");
+});
+
+test("a sandbox key's refusal is code insufficient_scope, with the scope it needs", async () => {
+  // The body the server sends a sandbox's own key on every workspace route.
+  const body = {
+    error: "insufficient_scope",
+    message: "A sandbox key reaches only its own conversation tree and the inputs to spawn",
+    reason: "insufficient_scope",
+    required_scope: "full",
+  };
+  const fetch = async (): Promise<Response> =>
+    new Response(JSON.stringify(body), { status: 403, headers: { "content-type": "application/json" } });
+  const c = new Managoat({ baseUrl: "https://managoat.test", apiKey: "fk_test", fetch });
+
+  const error = await c.workspaces.list().catch((e: unknown) => e);
+  assert.ok(error instanceof ManagoatError);
+  assert.equal(error.status, 403);
+  assert.equal(error.code, "insufficient_scope");
+  assert.equal(error.retryable, false);
+  assert.match(error.message, /only its own conversation tree/);
+  assert.equal((error.body as typeof body).required_scope, "full");
+});
+
+test("events() yields workspace.status and conversations notices as their own kinds", async () => {
+  const stage = { conversation_id: "conv-1", kind: "stage", stage: "turn", state: "done", ts: "2026-10-19T00:00:00Z" };
+  const status = { workspace_id: WS, name: "monorepo-box", status: "failed", error: "setup script exited 1" };
+  const frames = [
+    `id: 5\nevent: stage\ndata: ${JSON.stringify(stage)}\n\n`,
+    `event: workspace.status\ndata: ${JSON.stringify(status)}\n\n`,
+    `event: conversations\ndata: ${JSON.stringify({ reason: "changed" })}\n\n`,
+  ];
+  let path = "";
+  const fetch = async (input: string | URL | Request): Promise<Response> => {
+    path = new URL(String(input)).pathname;
+    return new Response(frames.join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const c = new Managoat({ baseUrl: "https://managoat.test", apiKey: "fk_test", fetch });
+
+  const seen: AccountEvent[] = [];
+  for await (const event of c.events({ wait: false })) seen.push(event);
+  assert.equal(path, "/api/events/stream");
+  assert.deepEqual(
+    seen.map((e) => e.kind),
+    ["stage", "workspace.status", "conversations"],
+  );
+
+  // Narrowing on `kind` reaches each frame's own fields, which a LogEvent
+  // does not have.
+  const statuses: WorkspaceStatusEvent[] = [];
+  for (const event of seen) {
+    if (event.kind === "workspace.status") statuses.push(event);
+    else if (event.kind === "conversations") assert.equal(event.reason, "changed");
+    else {
+      assert.equal(event.id, 5);
+      assert.equal(event.conversation_id, "conv-1");
+    }
+  }
+  assert.deepEqual(statuses, [{ ...status, kind: "workspace.status" }]);
+  // A notice carries no event id, so it never moves the reconnect cursor.
+  assert.equal("id" in seen[1]!, false);
 });

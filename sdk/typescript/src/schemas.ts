@@ -62,6 +62,8 @@ export type Workspace = S["Workspace"];
 export type WorkspaceInput = S["WorkspaceCreateRequest"];
 /** A `workspace.status` frame on the account event stream. Live only: it is never replayed. */
 export type WorkspaceStatusEvent = S["StreamWorkspaceStatus"];
+/** The `conversations` notice on the account event stream: the conversation list changed, so list it again. */
+export type ConversationsChangedEvent = S["StreamSignal"];
 /** One prompt and everything the agent did in response. */
 export type Turn = S["Turn"];
 /** One row of a conversation's log feed. */

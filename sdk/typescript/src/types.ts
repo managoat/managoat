@@ -42,9 +42,32 @@ export type {
   Workspace,
   WorkspaceInput,
   WorkspaceStatusEvent,
+  ConversationsChangedEvent,
 } from "./schemas.ts";
 
-import type { Agent, Block, ConversationRecord, LogEvent } from "./schemas.ts";
+import type {
+  Agent,
+  Block,
+  ConversationRecord,
+  ConversationsChangedEvent,
+  LogEvent,
+  WorkspaceStatusEvent,
+} from "./schemas.ts";
+
+/** A log event on the account stream, which says whose conversation it is. */
+export type AccountLogEvent = LogEvent & { conversation_id: string };
+
+/**
+ * What `managoat.events()` yields. Switch on `kind`, the frame's SSE event
+ * name: `output` and `stage` are log events; `workspace.status` (one of the
+ * caller's workspaces changed status) and `conversations` (the conversation
+ * list changed) are notices, carry no `id`, and are not replayed after a
+ * reconnect.
+ */
+export type AccountEvent =
+  | AccountLogEvent
+  | (WorkspaceStatusEvent & { kind: "workspace.status" })
+  | (ConversationsChangedEvent & { kind: "conversations" });
 
 /** The agent runtimes Managoat can start. */
 export type Runtime = NonNullable<Agent["runtime"]>;

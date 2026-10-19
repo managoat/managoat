@@ -68,7 +68,11 @@ keeping their `Managoat.*` names. Both are tabled in
 | **Environment** | Baseline set of encrypted env vars + runtime config (packages, repos, scripts) attached to an agent. A conversation may name a different one at launch (`environment_id`, scoped by `agent.allowed_environment_ids`) |
 | **Vault** | Free-floating bag of env-var overrides. Vault values **win on key collision** when merged with an environment at sandbox spawn |
 | **Agent** | A named, re-runnable agent config: model, runtime, skills, MCP servers, optional environment |
-| **Conversation** | A single run of an agent inside a sandbox of its own ([ADR 0073](decisions/0073-one-sandbox-per-conversation.md)). Has turns, log events, and a status lifecycle |
+| **Conversation** | A single run of an agent, in a sandbox of its own ([ADR 0073](decisions/0073-one-sandbox-per-conversation.md)) unless launched into a workspace (`workspace_id`, [ADR 0097](decisions/0097-workspaces.md)). Has turns, log events, and a status lifecycle |
+
+A **workspace** is not a fifth primitive: it is a machine the caller keeps, set
+up from an environment and a vault, that conversations are launched into, each
+in its own working directory ([docs/primitives.md](docs/primitives.md#what-managoat-does-not-have)).
 
 ## Rules
 
