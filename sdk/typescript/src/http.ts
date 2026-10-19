@@ -19,7 +19,7 @@ export interface RequestOptions {
  * this string is already what Managoat's request logs are keyed on. The
  * version half is asserted against `package.json` by a test.
  */
-export const USER_AGENT = "managoat-sdk-js/13.0.0";
+export const USER_AGENT = "managoat-sdk-js/13.1.0";
 
 /**
  * The thin layer everything else is built on: one bearer token, JSON in and
