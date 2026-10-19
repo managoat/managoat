@@ -99,7 +99,7 @@ reach the network.
 | What the adapter sends | Default |
 |---|---|
 | The sandbox | `workspaceWrite` |
-| `writableRoots` | each repository's `mount_path`, and its `.git` |
+| `writableRoots` | each repository's `mount_path`, and its `.git`; the `.git` of a `cwd` the launch named |
 | `networkAccess` | `false` |
 | `excludeSlashTmp` | `false`, so `/tmp` is writable |
 | `excludeTmpdirEnvVar` | `false`, so `$TMPDIR` is writable |

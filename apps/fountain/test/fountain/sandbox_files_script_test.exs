@@ -22,7 +22,7 @@ defmodule Fountain.SandboxFilesScriptTest do
   # caller reads — and keeps a deliberate `fatal:` out of the suite's output.
   defp run(kind, args, env \\ [], logical_roots \\ nil) do
     {flags, roots} = Enum.split(args, %{list: 1, read: 2, status: 3, diff: 4}[kind])
-    pairs = Enum.zip_with(roots, logical_roots || roots, &[&1, "sandbox:" <> &2])
+    pairs = Enum.zip_with(roots, logical_roots || roots, &[&1, tag(&2)])
     args = flags ++ List.flatten(pairs)
 
     System.cmd(
@@ -36,6 +36,16 @@ defmodule Fountain.SandboxFilesScriptTest do
   # no hooks the developer happens to have installed.
   defp git_env do
     [{"GIT_CONFIG_GLOBAL", "/dev/null"}, {"GIT_CONFIG_SYSTEM", "/dev/null"}]
+  end
+
+  # A logical root spelled `mount:/…` is passed as a repository mount, the
+  # way `path_roots/1` tags one; any other gets the plain `sandbox:` tag.
+  defp tag("mount:" <> _ = logical), do: logical
+  defp tag(logical), do: "sandbox:" <> logical
+
+  defp physical!(dir) do
+    {out, 0} = System.cmd("sh", ["-c", "cd -- \"$1\" && pwd -P", "sh", dir])
+    String.trim_trailing(out, "\n")
   end
 
   defp git!(dir, args) do
@@ -146,6 +156,99 @@ defmodule Fountain.SandboxFilesScriptTest do
                run(:read, ["100", Path.join(nested, "inside.txt"), c.root, nested], [], [
                  "/home/sprite",
                  "/home/sprite/nested"
+               ])
+    end
+
+    # #2999: a repository mount outside the home (`/work/app`) is a root
+    # where it physically is its own name, and nowhere else.
+    test "a repository mount outside the home is a root where it really lies", c do
+      # Physical, so a host whose $TMPDIR has a symlink on its path still
+      # hands the script a mount that is its own name.
+      mount = Path.join(physical!(c.outside), "mount")
+      File.mkdir_p!(Path.join(mount, "src"))
+      File.mkdir_p!(Path.join(mount, ".git"))
+      File.write!(Path.join(mount, "src/app.txt"), "inside")
+      logical = ["/home/sprite", "mount:/work/app"]
+
+      assert {"6\naW5zaWRl\n", 0} =
+               run(:read, ["100", Path.join(mount, "src/app.txt"), c.root, mount], [], logical)
+
+      assert {"directory\t\t.git\0directory\t\tsrc\0", 0} =
+               run(:list, [mount, c.root, mount], [], logical)
+
+      # Not past it: a sibling of the mount is outside every root.
+      assert {"", 9} =
+               run(:read, ["100", Path.join(c.outside, "secret.txt"), c.root, mount], [], logical)
+
+      # A symlink inside the mount that leaves it does not carry the read.
+      File.ln_s!(Path.join(c.outside, "secret.txt"), Path.join(mount, "leak.txt"))
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(mount, "leak.txt"), c.root, mount], [], logical)
+    end
+
+    test "a repository mount replaced by a symlink, or under one, is no root", c do
+      # The mount swapped for a link to somewhere else (another process on
+      # the machine can make one): the read does not follow it there.
+      real = Path.join(c.outside, "elsewhere")
+      # A checkout, so only the link is what refuses it.
+      File.mkdir_p!(Path.join(real, ".git"))
+      File.write!(Path.join(real, "secret.txt"), "outside")
+      link = Path.join(c.outside, "mount")
+      File.ln_s!(real, link)
+      logical = ["/home/sprite", "mount:/work/app"]
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(link, "secret.txt"), c.root, link], [], logical)
+
+      assert {"", 9} = run(:list, [link, c.root, link], [], logical)
+
+      # An ancestor of the mount swapped for a link: the same.
+      parent = Path.join(c.outside, "work")
+      File.ln_s!(c.outside, parent)
+      via_parent = Path.join(parent, "elsewhere")
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(via_parent, "secret.txt"), c.root, via_parent], [], [
+                 "/home/sprite",
+                 "mount:/work/elsewhere"
+               ])
+    end
+
+    test "a repository mount that is no checkout is no root; a working directory there is", c do
+      # The environment is read at each request: a mount added after the
+      # machine was set up names a directory nothing cloned to (`/opt`).
+      dir = Path.join(physical!(c.outside), "opt")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "a.txt"), "inside")
+      file = Path.join(dir, "a.txt")
+
+      assert {"", 9} = run(:read, ["100", file, c.root, dir], [], ["/home/sprite", "mount:/opt"])
+
+      # A working directory inside a checkout, below the clone's top, is one.
+      clone = Path.join(physical!(c.outside), "work")
+      sub = Path.join(clone, "api")
+      File.mkdir_p!(Path.join(clone, ".git"))
+      File.mkdir_p!(sub)
+      File.write!(Path.join(sub, "a.txt"), "inside")
+
+      assert {_encoded, 0} =
+               run(:read, ["100", Path.join(sub, "a.txt"), c.root, sub], [], [
+                 "/home/sprite",
+                 "mount:/work/api"
+               ])
+    end
+
+    test "with a home that does not resolve, a repository mount admits nothing either", c do
+      mount = Path.join(physical!(c.outside), "mount")
+      File.mkdir_p!(Path.join(mount, ".git"))
+      File.write!(Path.join(mount, "a.txt"), "inside")
+      missing = Path.join(c.root, "no-such-home")
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(mount, "a.txt"), missing, mount], [], [
+                 "/home/sprite",
+                 "mount:/work/app"
                ])
     end
 

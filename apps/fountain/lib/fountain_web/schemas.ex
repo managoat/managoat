@@ -942,8 +942,13 @@ defmodule FountainWeb.Schemas do
           maxLength: 1024,
           description:
             "The working directory the agent runs in, inside the sandbox: an absolute path " <>
-              "under /home/sprite (or under /tmp for a gemini agent), outside " <>
-              "/home/sprite/.managoat. Created if missing, and fixed for the conversation's " <>
+              "under /home/sprite (or under /tmp for a gemini agent), or under the " <>
+              "mount_path of a repository of the environment the launch runs with (the " <>
+              "workspace's, with workspace_id), outside /home/sprite/.managoat. A " <>
+              "mount_path that is /, the home or one of its ancestors, inside " <>
+              "/home/sprite/.managoat, under another home in /home, or in a system tree " <>
+              "(/etc, /proc, /usr, /var and " <>
+              "the like) widens nothing. Created if missing, and fixed for the conversation's " <>
               "life. Omitted or null runs the runtime's default (/home/sprite for claude, " <>
               "codex and acp, /tmp/gemini-workspace for gemini). Anything else is refused " <>
               "with 422 validation_failed and errors.cwd. On a channel_id resume it must " <>
@@ -1706,7 +1711,17 @@ defmodule FountainWeb.Schemas do
       type: :object,
       properties: %{
         url: %Schema{type: :string, format: :uri, pattern: "^https://"},
-        mount_path: %Schema{type: :string, pattern: "^/"},
+        mount_path: %Schema{
+          type: :string,
+          pattern: "^/",
+          description:
+            "Absolute path in the sandbox the repository is cloned to. A conversation " <>
+              "launched with this environment may name it, or a directory under it, as its " <>
+              "cwd, and the sandbox and workspace file reads may read under it, unless it " <>
+              "is /, the home or an ancestor of it, inside /home/sprite/.managoat, under " <>
+              "another home in /home, or in a system tree (/etc, /proc, /usr, /var and the " <>
+              "like). The file reads count it only where the sandbox has a checkout there."
+        },
         # Both are read by `Provisioning.clone_https/4` and neither was
         # declared, so a private repository could not be expressed by a client
         # generated from this spec — and an unauthenticated clone of one fails

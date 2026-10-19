@@ -2305,6 +2305,88 @@ defmodule FountainWeb.ConversationControllerTest do
       assert data["cwd"] == "/tmp/project"
     end
 
+    # #2999: under a repository mount of the environment the launch resolves.
+    test "a cwd under the resolved environment's repository mount is accepted", %{
+      conn: conn,
+      raw_key: raw_key,
+      user: user
+    } do
+      env =
+        insert_env(
+          user_id: user.id,
+          repositories: [
+            %{"url" => "https://github.com/example/app", "mount_path" => "/work/app"}
+          ]
+        )
+
+      agent = insert_agent(user_id: user.id, runtime: "codex", environment_id: env.id)
+
+      data =
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => "/work/app/api/"})
+        |> json_response(201)
+        |> Map.fetch!("data")
+
+      assert data["cwd"] == "/work/app/api"
+
+      # Not beside it, and not through `..`.
+      for cwd <- ["/work/other", "/work/app/../other", "/work"] do
+        resp =
+          conn
+          |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => cwd})
+          |> json_response(422)
+
+        assert [message] = resp["errors"]["cwd"], cwd
+        assert message =~ "/work/app", cwd
+      end
+    end
+
+    test "the mount is the environment the launch names, not the agent's default", %{
+      conn: conn,
+      raw_key: raw_key,
+      user: user
+    } do
+      repo = fn mount -> [%{"url" => "https://github.com/example/app", "mount_path" => mount}] end
+      default = insert_env(user_id: user.id, repositories: repo.("/work/default"))
+      named = insert_env(user_id: user.id, repositories: repo.("/work/named"))
+
+      agent =
+        insert_agent(
+          user_id: user.id,
+          runtime: "claude",
+          environment_id: default.id,
+          allowed_environment_ids: [named.id]
+        )
+
+      body = %{"agent_id" => agent.id, "environment_id" => named.id}
+
+      assert %{"data" => %{"cwd" => "/work/named"}} =
+               conn
+               |> create_with(raw_key, Map.put(body, "cwd", "/work/named"))
+               |> json_response(201)
+
+      conn
+      |> create_with(raw_key, Map.put(body, "cwd", "/work/default"))
+      |> json_response(422)
+    end
+
+    test "an ineligible mount widens nothing", %{conn: conn, raw_key: raw_key, user: user} do
+      reject(&Fountain.Machines.Provision.reserve/1)
+
+      repos =
+        for mount <- ["/", "/etc", "/home/sprite/.managoat", "/home/sprite/../../usr"],
+            do: %{"url" => "https://github.com/example/app", "mount_path" => mount}
+
+      env = insert_env(user_id: user.id, repositories: repos)
+      agent = insert_agent(user_id: user.id, runtime: "claude", environment_id: env.id)
+
+      for cwd <- ["/etc", "/srv", "/home/sprite/.managoat/c/x", "/usr/bin"] do
+        conn
+        |> create_with(raw_key, %{"agent_id" => agent.id, "cwd" => cwd})
+        |> json_response(422)
+      end
+    end
+
     test "a channel resume must name the same cwd, or none", %{
       conn: conn,
       raw_key: raw_key,

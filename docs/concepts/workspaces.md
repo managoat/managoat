@@ -48,8 +48,9 @@ the workspace's provider wins.
 
 Each conversation has three things of its own on the shared machine:
 
-- **A working directory**, the `cwd` you launch it with: `/home/sprite` or a
-  directory under it, created if missing. Without one, the runtime's default
+- **A working directory**, the `cwd` you launch it with: `/home/sprite`, a
+  repository's `mount_path` in the workspace's environment, or a directory
+  under either, created if missing. Without one, the runtime's default
   applies, which is `/home/sprite` for claude and codex and
   `/tmp/gemini-workspace` for gemini. Two conversations may share a folder.
 - **A config home**, `~/.managoat/c/<conversation id>`. The runtime is
@@ -197,8 +198,9 @@ The four disk reads, `files`, `file`, `git-status` and `diff`, are served by
 workspace at `/api/workspaces/{id}/…`. They read the workspace's current
 machine with the same rules as the [sandbox reads](../api.md#files-git-status-and-git-diff).
 On a workspace's machine a relative path resolves from `/home/sprite`, and a
-path may lie under `/home/sprite` or the working directory of any live
-conversation in the workspace. The output is redacted with the workspace's
+path may lie under `/home/sprite`, the working directory of any live
+conversation in the workspace, or a repository mount of the workspace's
+environment. The output is redacted with the workspace's
 environment and vault and every live conversation's credentials. A read never
 wakes a parked machine: it answers `409 sandbox_not_ready` with the machine's
 status, as it does for one being set up or lost.

@@ -107,6 +107,34 @@ defmodule Fountain.Conversations.WorkspaceLaunchTest do
       assert a.config_home != b.config_home
       assert b.cwd == "/home/sprite/b"
     end
+
+    # #2999: the workspace's environment's mounts, never the agent's own.
+    test "a cwd may lie under the workspace's environment's repository mount", ctx do
+      started(self())
+      repo = fn mount -> [%{"url" => "https://github.com/example/app", "mount_path" => mount}] end
+
+      ctx.env
+      |> Ecto.Changeset.change(repositories: repo.("/work/app"))
+      |> Repo.update!()
+
+      own = insert_env(user_id: ctx.user.id, repositories: repo.("/work/agent"))
+
+      agent =
+        insert_agent(
+          user_id: ctx.user.id,
+          runtime: "codex",
+          environment_id: own.id,
+          allowed_environment_ids: [ctx.env.id]
+        )
+
+      ctx = %{ctx | agent: agent}
+
+      assert {:ok, conv} = Launch.start_conversation(attrs(ctx, %{"cwd" => "/work/app/web"}))
+      assert conv.cwd == "/work/app/web"
+
+      assert {:error, %Ecto.Changeset{errors: [cwd: _]}} =
+               Launch.start_conversation(attrs(ctx, %{"cwd" => "/work/agent"}))
+    end
   end
 
   describe "into a workspace that is not ready" do

@@ -290,7 +290,8 @@ state.
 wins on a collision. `--environment` provisions from that environment, and not
 from the agent's own. `--cwd` is the directory inside the sandbox the agent
 runs in: `/home/sprite` or a folder under it (for a gemini agent, also under
-`/tmp`), created if missing. `--workspace` runs the conversation on a
+`/tmp`), or a repository's `mount_path` in the environment the conversation
+runs with, or a folder under that, created if missing. `--workspace` runs the conversation on a
 [workspace](#workspaces)'s machine, which fixes the environment and vault.
 
 A turn that its machine cuts short exits non-zero: the lifetime ceiling

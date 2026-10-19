@@ -82,7 +82,13 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
          {:ok, perm_policy} <-
            Conversations.resolve_permission_policy(attrs["permission_policy"], agent),
          {:ok, model} <- Conversations.resolve_model(attrs["model"], agent),
-         {:ok, cwd} <- ConfigHome.validate_cwd(attrs["cwd"], agent.runtime),
+         {:ok, cwd} <-
+           ConfigHome.validate_launch_cwd(
+             attrs["cwd"],
+             agent.runtime,
+             workspace.environment_id,
+             user_id
+           ),
          {:ok, parent} <- Launch.resolve_parent(attrs["parent_conversation_id"], user_id, nil),
          {:ok, depth} <- Launch.resolve_depth(parent, user_id, nil),
          {:ok, inference_source} <-

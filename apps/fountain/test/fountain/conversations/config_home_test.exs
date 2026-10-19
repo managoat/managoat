@@ -87,7 +87,102 @@ defmodule Fountain.Conversations.ConfigHomeTest do
     end
   end
 
+  # #2999: an environment's repository mounts widen the rule, as far as
+  # `eligible_mounts/1` lets them.
+  describe "eligible_mounts/1" do
+    test "keeps a normalised mount outside the home, and one under it" do
+      assert ConfigHome.eligible_mounts(["/work/app", "/work/app/", "/srv/./x/../y"]) ==
+               ["/work/app", "/srv/y"]
+
+      assert ConfigHome.eligible_mounts(["/home/sprite/app", "/tmp/repo"]) ==
+               ["/home/sprite/app", "/tmp/repo"]
+    end
+
+    test "drops the root, the home and its ancestors, the config homes, and system trees" do
+      for mount <- [
+            "/",
+            "/home",
+            "/home/sprite",
+            "/home/sprite/",
+            "/home/sprite/.managoat",
+            "/home/sprite/.managoat/c/x",
+            "/home/sprite/app/../.managoat",
+            "/etc",
+            "/etc/app",
+            "/proc/self",
+            "/sys",
+            "/dev/shm",
+            "/usr/local/app",
+            "/var/www",
+            "/root/app",
+            "/run/x",
+            "/home/spriteish",
+            "/home/other/app",
+            "/.sprite/bin",
+            "/nix/store",
+            "/work/../etc",
+            "/home/sprite/../../etc",
+            "relative/app",
+            "/work/a\nb",
+            "/" <> String.duplicate("a", 1100)
+          ] do
+        assert ConfigHome.eligible_mounts([mount]) == [], inspect(mount)
+      end
+
+      assert ConfigHome.eligible_mounts(nil) == []
+      assert ConfigHome.eligible_mounts([nil, 42, "/work/app"]) == ["/work/app"]
+    end
+
+    test "a prefix of a system tree's name is not that tree" do
+      assert ConfigHome.eligible_mounts(["/etcetera", "/variant", "/opt/app", "/tmp/repo"]) ==
+               ["/etcetera", "/variant", "/opt/app", "/tmp/repo"]
+    end
+  end
+
+  describe "validate_cwd/3 with repository mounts" do
+    test "a cwd at or under an eligible mount is accepted, normalised" do
+      mounts = ["/work/app"]
+      assert {:ok, "/work/app"} = ConfigHome.validate_cwd("/work/app/", "claude", mounts)
+
+      assert {:ok, "/work/app/api"} =
+               ConfigHome.validate_cwd("/work/app/x/../api", "codex", mounts)
+
+      assert {:ok, "/home/sprite/x"} = ConfigHome.validate_cwd("/home/sprite/x", "codex", mounts)
+    end
+
+    test "a sibling, a parent, an escape by `..` and an ineligible mount are refused" do
+      mounts = ["/work/app", "/etc", "/", "/home/sprite/.managoat"]
+
+      for cwd <- [
+            "/work",
+            "/work/application",
+            "/work/app/../other",
+            "/etc",
+            "/etc/x",
+            "/usr",
+            "/home/sprite/.managoat/c/x"
+          ] do
+        assert {:error, cs} = ConfigHome.validate_cwd(cwd, "claude", mounts), cwd
+        assert [cwd: _] = cs.errors
+      end
+    end
+
+    test "the refusal names the mounts that would have been accepted" do
+      assert {:error, cs} = ConfigHome.validate_cwd("/srv", "claude", ["/work/app"])
+      assert message(cs) =~ "/home/sprite or /work/app"
+    end
+  end
+
   describe "check_resume/2" do
+    test "the directory a conversation runs in under a mount resumes, whatever the environment says now" do
+      conv = conv(%{cwd: "/work/app"})
+      assert :ok = ConfigHome.check_resume(conv, "/work/app/")
+      assert {:error, cs} = ConfigHome.check_resume(conv, "/work/other")
+      assert [cwd: _] = cs.errors
+      assert {:error, _} = ConfigHome.check_resume(conv, "relative")
+      assert {:error, _} = ConfigHome.check_resume(conv, 42)
+    end
+
     test "nothing named, or the directory the conversation runs in, resumes" do
       assert :ok = ConfigHome.check_resume(conv(%{}), nil)
       assert :ok = ConfigHome.check_resume(conv(%{}), "/home/sprite")
@@ -104,9 +199,18 @@ defmodule Fountain.Conversations.ConfigHomeTest do
   end
 
   describe "ensure/2" do
-    test "creates the launch's cwd and the config home in one exec" do
-      expect(Managoat.Sandbox, :exec, fn @handle, "bash", ["-c", script], _opts ->
-        assert script == "mkdir -p -- '#{@home}' '/home/sprite/it'\\''s'"
+    test "creates the launch's cwd and the config home in one exec, paths as arguments" do
+      expect(Managoat.Sandbox, :exec, fn @handle, "bash", ["-c", script | args], _opts ->
+        assert script == ConfigHome.directories_script()
+
+        assert args == [
+                 "fountain-dirs",
+                 @home,
+                 "/home/sprite/it's",
+                 "/home/sprite/.managoat",
+                 ""
+               ]
+
         {:ok, "", 0}
       end)
 
@@ -114,9 +218,107 @@ defmodule Fountain.Conversations.ConfigHomeTest do
                ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/home/sprite/it's"}))
     end
 
+    test "a cwd outside the home and /tmp asks for a checkout" do
+      test = self()
+
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", ["-c", _script | args], _opts ->
+        send(test, {:checkout, List.last(args)})
+        {:ok, "", 0}
+      end)
+
+      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+      assert_received {:checkout, "checkout"}
+      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/home/sprite/x"}))
+      assert_received {:checkout, ""}
+
+      # /tmp is gemini's own, and only gemini's: a claude or codex cwd there
+      # came through a mount.
+      ConfigHome.ensure(@handle, conv(%{runtime: "gemini", config_home: @home, cwd: "/tmp/x"}))
+      assert_received {:checkout, ""}
+
+      for runtime <- ~w(claude codex acp) do
+        ConfigHome.ensure(@handle, conv(%{runtime: runtime, config_home: @home, cwd: "/tmp/x"}))
+        assert_received {:checkout, "checkout"}
+      end
+    end
+
+    test "a cwd that physically lies in the config homes is exit 7; one in no checkout is 8" do
+      expect(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "", 7} end)
+
+      assert {:error, {:conversation_directories, :cwd_inside_config_homes}} =
+               ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+
+      expect(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "", 8} end)
+
+      assert {:error, {:conversation_directories, :cwd_not_in_checkout}} =
+               ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+    end
+
     test "costs nothing for the runtime's default cwd" do
       reject(&Managoat.Sandbox.exec/4)
       assert :ok = ConfigHome.ensure(@handle, conv(%{config_home: @home}))
+    end
+  end
+
+  # The script itself, by a real bash (#2999): a repository mount someone
+  # replaced with a symlink into the config homes does not put the agent in
+  # another conversation's config home.
+  describe "directories_script/0" do
+    setup do
+      dir = Fountain.TmpDir.mkdir!("config-home-dirs")
+      managoat = Path.join(dir, "home/.managoat")
+      %{dir: dir, managoat: managoat, home: Path.join(managoat, "c/#{@id}")}
+    end
+
+    defp dirs(c, cwd, checkout \\ "") do
+      {_out, code} =
+        System.cmd("bash", [
+          "-c",
+          ConfigHome.directories_script(),
+          "fountain-dirs",
+          c.home,
+          cwd,
+          c.managoat,
+          checkout
+        ])
+
+      code
+    end
+
+    test "with `checkout`, the cwd must lie in a checkout, and nothing is made otherwise", c do
+      bare = Path.join(c.dir, "opt")
+      File.mkdir_p!(bare)
+      assert dirs(c, bare, "checkout") == 8
+      assert dirs(c, Path.join(bare, "new"), "checkout") == 8
+      refute File.exists?(Path.join(bare, "new"))
+
+      clone = Path.join(c.dir, "work/app")
+      File.mkdir_p!(Path.join(clone, ".git"))
+      assert dirs(c, clone, "checkout") == 0
+      assert dirs(c, Path.join(clone, "api/v2"), "checkout") == 0
+      assert File.dir?(Path.join(clone, "api/v2"))
+    end
+
+    test "creates both directories", c do
+      cwd = Path.join(c.dir, "work/app/sub")
+      assert dirs(c, cwd) == 0
+      assert File.dir?(cwd)
+      assert File.dir?(c.home)
+    end
+
+    test "a cwd through a symlink into the config homes is exit 7, and creates nothing there",
+         c do
+      other = Path.join(c.managoat, "c/other")
+      File.mkdir_p!(other)
+      File.ln_s!(Path.join(c.managoat, "c"), Path.join(c.dir, "work"))
+
+      # The directory exists already.
+      assert dirs(c, Path.join(c.dir, "work/other")) == 7
+      # Or would be created under the link.
+      assert dirs(c, Path.join(c.dir, "work/other/new")) == 7
+      refute File.exists?(Path.join(other, "new"))
+      assert dirs(c, Path.join(c.dir, "work/fresh/deeper")) == 7
+      refute File.exists?(Path.join(c.managoat, "c/fresh"))
     end
   end
 

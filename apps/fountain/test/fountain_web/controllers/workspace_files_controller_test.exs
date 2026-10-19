@@ -85,6 +85,7 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
 
     {:ok,
      user: user,
+     env: env,
      raw_key: raw_key,
      sprite_key: sprite_key,
      workspace: workspace,
@@ -212,6 +213,102 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
     {:ok, _} = update_sandbox(ctx.sandbox, %{status: "terminated"})
 
     ctx |> get_api("/api/workspaces/#{ctx.workspace.id}/git-status") |> json_response(409)
+  end
+
+  # #2999: the repositories of the workspace's environment are roots too,
+  # as far as `ConfigHome.eligible_mounts/1` keeps them.
+  defp mount_repositories(env, mounts) do
+    env
+    |> Ecto.Changeset.change(
+      repositories:
+        Enum.map(mounts, &%{"url" => "https://github.com/example/app", "mount_path" => &1})
+    )
+    |> Fountain.Repo.update!()
+  end
+
+  test "the environment's eligible repository mounts are roots, and nothing beside them", ctx do
+    mount_repositories(ctx.env, ["/work/app/", "/etc", "/", "/home/sprite/.managoat", "/var/www"])
+    exec_returns("")
+
+    ctx
+    |> get_api("/api/workspaces/#{ctx.workspace.id}/files?path=/work/app/src")
+    |> json_response(200)
+
+    assert_received {:exec_args, ["/work/app/src" | rest]}
+    assert Enum.sort(rest) == Enum.sort(roots() ++ ["/work/app", "mount:/work/app"])
+
+    reject(&Managoat.Sandbox.exec/4)
+
+    for path <- ["/work", "/work/application", "/work/app/../etc", "/etc/passwd", "/var/www", "/"] do
+      assert %{"error" => "path_outside_sandbox"} =
+               ctx
+               |> get_api("/api/workspaces/#{ctx.workspace.id}/file?path=#{path}")
+               |> json_response(422),
+             path
+    end
+  end
+
+  test "a working directory outside its runtime's own roots is held to a mount's rule", ctx do
+    # A claude conversation in /tmp (only gemini's own) came through a mount:
+    # the script admits it only inside a checkout. Gemini's own stays plain.
+    insert_conversation(
+      user_id: ctx.user.id,
+      agent: insert_agent(user_id: ctx.user.id, runtime: "claude"),
+      sandbox: ctx.sandbox,
+      workspace_id: ctx.workspace.id,
+      cwd: "/tmp/repo",
+      status: "idle"
+    )
+
+    exec_returns("")
+    ctx |> get_api("/api/workspaces/#{ctx.workspace.id}/files") |> json_response(200)
+    assert_received {:exec_args, [@home | rest]}
+    assert "mount:/tmp/repo" in rest
+    assert "sandbox:/tmp/gemini-workspace" in rest
+    assert "sandbox:/home/sprite/a" in rest
+  end
+
+  test "another account's environment never lends its mounts", ctx do
+    # A sandbox row naming an environment that is not its owner's (it cannot
+    # happen through a launch; the read is scoped regardless).
+    other = insert_verified_user()
+    foreign_env = insert_env(user_id: other.id)
+    mount_repositories(foreign_env, ["/work/theirs"])
+
+    {1, _} =
+      Fountain.Repo.update_all(
+        from(s in Fountain.Conversations.Sandbox, where: s.id == ^ctx.sandbox.id),
+        set: [environment_id: foreign_env.id]
+      )
+
+    reject(&Managoat.Sandbox.exec/4)
+
+    assert %{"error" => "path_outside_sandbox"} =
+             ctx
+             |> get_api("/api/workspaces/#{ctx.workspace.id}/files?path=/work/theirs")
+             |> json_response(422)
+  end
+
+  test "an implicit sandbox reads under its environment's repository mount", ctx do
+    env = insert_env(user_id: ctx.user.id)
+    mount_repositories(env, ["/work/app"])
+
+    implicit_sandbox =
+      insert_sandbox(user_id: ctx.user.id, environment_id: env.id, status: "ready")
+
+    insert_conversation(
+      user_id: ctx.user.id,
+      agent: insert_agent(user_id: ctx.user.id, runtime: "codex"),
+      sandbox: implicit_sandbox,
+      cwd: "/work/app",
+      status: "idle"
+    )
+
+    exec_returns("")
+
+    ctx |> get_api("/api/sandboxes/#{implicit_sandbox.id}/files") |> json_response(200)
+    assert_received {:exec_args, ["/work/app" | rest]}
+    assert rest == ["/home/sprite", "sandbox:/home/sprite", "/work/app", "mount:/work/app"]
   end
 
   test "an implicit workspace's sandbox keeps its conversation's directory as the base", ctx do
