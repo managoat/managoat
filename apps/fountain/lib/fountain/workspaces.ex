@@ -442,17 +442,17 @@ defmodule Fountain.Workspaces do
   defp failed?(%Workspace{status: "failed"}), do: :ok
   defp failed?(%Workspace{status: status}), do: {:error, {:workspace_not_failed, status}}
 
-  # The instance default is taken as usable, as a launch and a create take it
-  # (`Conversations.resolve_sandbox_provider/1`, `resolve_provider/1`); any
-  # other provider must still be enabled.
+  # The workspace's provider, fixed at create, must still be enabled, the
+  # instance default included: a retry builds a machine there, as a rebuild
+  # does (#3020's `rebuild_provider/1`), and on a disabled provider that
+  # create could only fail.
   defp enabled_provider(%Workspace{provider: name}) do
     if name in Fountain.SandboxProviders.known_providers() do
       provider = String.to_existing_atom(name)
 
-      if provider == Fountain.SandboxProviders.default_provider() or
-           Fountain.SandboxProviders.enabled?(provider),
-         do: {:ok, provider},
-         else: {:error, {:sandbox_provider_disabled, provider, :workspace}}
+      if Fountain.SandboxProviders.enabled?(provider),
+        do: {:ok, provider},
+        else: {:error, {:sandbox_provider_disabled, provider, :workspace}}
     else
       {:error, {:sandbox_provider_disabled, name, :workspace}}
     end

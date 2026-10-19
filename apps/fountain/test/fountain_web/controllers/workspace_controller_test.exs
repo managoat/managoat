@@ -371,6 +371,9 @@ defmodule FountainWeb.WorkspaceControllerTest do
   end
 
   describe "POST /api/workspaces/:id/retry" do
+    # A retry checks its provider is enabled; the test config has no token.
+    setup {Fountain.DataCase, :configure_sprites}
+
     setup ctx do
       data = create!(ctx)
       fail_workspace!(data)
@@ -472,11 +475,24 @@ defmodule FountainWeb.WorkspaceControllerTest do
       assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.retried") == []
     end
 
-    test "the instance default provider is not refused for its credentials", ctx do
-      # As a launch and a create treat it (`resolve_sandbox_provider/1`): the
-      # test instance has no Sprites token, and the default still retries.
+    test "the instance default provider is refused too once its credentials are gone", ctx do
+      # A retry builds on the workspace's provider, as a rebuild does (#3020).
+      sprites = Application.get_env(:fountain, Managoat.Sandbox.Sprites, [])
+
+      Application.put_env(
+        :fountain,
+        Managoat.Sandbox.Sprites,
+        Keyword.delete(sprites, :token)
+      )
+
       refute Fountain.SandboxProviders.enabled?(Fountain.SandboxProviders.default_provider())
-      assert api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(202)
+
+      assert %{"error" => "sandbox_provider_disabled", "message" => message} =
+               api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(422)
+
+      assert message =~ "sandbox provider sprites"
+      assert Repo.get!(Workspace, ctx.data["id"]).status == "failed"
+      refute_received {:retried, _, _}
     end
 
     test "a full fleet is 503 fleet_full, and the workspace stays failed", ctx do

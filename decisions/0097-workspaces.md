@@ -1061,7 +1061,8 @@ A PR sequence, each releasable alone:
   audited as `workspace.retried` with the caller. It is refused with
   `409 workspace_not_failed` unless the workspace is `failed`, `422
   sandbox_provider_disabled` when its provider is no longer enabled (the
-  instance default is taken as enabled, as a launch takes it), `503
+  instance default included, as for a rebuild since #3020), before
+  anything moves and with the workspace's advice, `503
   fleet_full`, and `404` for an implicit workspace, whose setup is its
   conversation's. The retry is the rebuild a prompt into the failed
   workspace starts (step 4), run by the workspace's own setup task with no

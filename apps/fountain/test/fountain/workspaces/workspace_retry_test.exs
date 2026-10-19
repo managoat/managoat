@@ -25,6 +25,9 @@ defmodule Fountain.Workspaces.WorkspaceRetryTest do
 
   setup :set_mimic_global
 
+  # A retry checks its provider is enabled; the test config has no token.
+  setup {Fountain.DataCase, :configure_sprites}
+
   setup do
     user = insert_verified_user()
     env = insert_env(user_id: user.id, setup_script: "make setup")

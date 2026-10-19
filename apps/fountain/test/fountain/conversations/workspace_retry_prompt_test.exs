@@ -17,6 +17,9 @@ defmodule Fountain.Conversations.WorkspaceRetryPromptTest do
   alias Fountain.Workspaces.Provisioner
   alias Fountain.Workspaces.Workspace
 
+  # A retry checks its provider is enabled; the test config has no token.
+  setup {Fountain.DataCase, :configure_sprites}
+
   setup do
     user = insert_verified_user()
     agent = insert_agent(user_id: user.id)
