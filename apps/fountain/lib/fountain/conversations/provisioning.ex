@@ -4,13 +4,15 @@ defmodule Fountain.Conversations.Provisioning do
   runtime CLI is spawned. Each step publishes its own stage events so the
   UI/SSE clients can show progress.
 
-  Order in `FreshProvision.run_provisioning_pipeline/6`, after the sandbox
+  Order in `FreshProvision.run_provisioning_pipeline/7`, after the sandbox
   config (runtime config, instructions, env file, broker CA and sudoers) is
   on the disk:
     1. `apply_broker_floor/3` (sandbox API call —
        fast). First, so that nothing the tenant chose runs on the open
        network: apt and npm reach their mirrors through the proxy, which the
-       CA and the sudoers `env_keep` already installed make possible.
+       CA and the sudoers `env_keep` already installed make possible. On
+       Sprites it is written earlier still, before the sandbox config
+       (`FreshProvision.run_pipeline/3`, #2964).
     2. `install_packages/4` (apt/npm, through the proxy)
     3. `clone_repositories/4` (git clone — slow)
     4. user's `setup_script` (whatever they supplied)
@@ -321,12 +323,14 @@ defmodule Fountain.Conversations.Provisioning do
 
   `if_changed: true` leaves a floor the provider already reports in force
   alone instead of writing it again (`Sandbox.ensure_network_policy/2`). An
-  attach to a running machine passes it: the machine had the floor written
+  attach passes it: the machine had the floor written
   when it was set up, and a Sprites write resets the guest's open flows, a
-  sibling conversation's model stream among them (fountain#2964). The span's
-  stop metadata says which happened (`floor: :written | :unchanged`).
+  sibling conversation's model stream among them (fountain#2964). With it
+  the answer says which happened, `{:ok, :written | :unchanged}`, as does
+  the span's stop metadata (`floor:`); without it the answer is `:ok`.
   """
-  @spec apply_broker_floor(Handle.t(), String.t() | nil, keyword()) :: :ok | {:error, term()}
+  @spec apply_broker_floor(Handle.t(), String.t() | nil, keyword()) ::
+          :ok | {:ok, :written | :unchanged} | {:error, term()}
   def apply_broker_floor(handle, conv_id, opts \\ []) do
     :ok = SetupOutput.step(:broker)
     host = Fountain.Broker.proxy_host()
@@ -351,7 +355,7 @@ defmodule Fountain.Conversations.Provisioning do
             ok when ok in [:ok, {:ok, :written}, {:ok, :unchanged}] ->
               floor = if ok == {:ok, :unchanged}, do: :unchanged, else: :written
               publish_stage(conv_id, "network", "done", %{type: "broker"})
-              {:ok, %{outcome: :ok, floor: floor}}
+              {if(if_changed?, do: {:ok, floor}, else: :ok), %{outcome: :ok, floor: floor}}
 
             {:error, reason} ->
               publish_stage(conv_id, "network", "failed", %{reason: inspect(reason)})
@@ -361,7 +365,7 @@ defmodule Fountain.Conversations.Provisioning do
       )
     else
       publish_stage(conv_id, "network", "done", %{type: "broker", enforced: false})
-      :ok
+      if if_changed?, do: {:ok, :unchanged}, else: :ok
     end
   end
 

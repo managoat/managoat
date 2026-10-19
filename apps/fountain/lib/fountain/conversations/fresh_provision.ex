@@ -30,7 +30,7 @@ defmodule Fountain.Conversations.FreshProvision do
   alias Fountain.Conversations
   alias Fountain.Conversations.ActorStatus
   alias Fountain.Conversations.{CallbackKey, ConfigHome, ConversationServer, Egress}
-  alias Fountain.Conversations.{Lifecycle, Output}
+  alias Fountain.Conversations.{FloorSettle, Lifecycle, Output}
   alias Fountain.Conversations.{Provisioning, TurnMachine}
   alias Fountain.Machines.Machine
 
@@ -322,7 +322,7 @@ defmodule Fountain.Conversations.FreshProvision do
     # awaited at the end rather than first. A GitHub skill is the exception:
     # its install reaches npm and GitHub through the proxy, so it waits for
     # the CA and the floor and starts beside the packages
-    # (`run_provisioning_pipeline/6`). Raced against them it lost, and spent
+    # (`run_provisioning_pipeline/7`). Raced against them it lost, and spent
     # 72 s failing to resolve the registry (2026-10-15).
     skills_task =
       if Fountain.SandboxSkills.remote?(ctx.skills),
@@ -412,6 +412,35 @@ defmodule Fountain.Conversations.FreshProvision do
   end
 
   defp run_pipeline(ctx, handle, epoch) do
+    conv_id = ctx.state.conversation_id
+
+    # On Sprites the floor is written first, beside the host-side steps below,
+    # and awaited before `sandbox_config`: a write resets the guest's open
+    # flows when it takes effect, so it goes before any guest connection
+    # opens and as far ahead of the first model request as it can (#2964).
+    # Nothing before `sandbox_config` opens a guest connection. Its effect can
+    # lag the answer, so the relay's readiness handshake may still meet it; a
+    # cut handshake times out in 10 s and the relay retries it.
+    # Elsewhere the floor stays the first step of `run_provisioning_pipeline/7`.
+    early_floor =
+      if FloorSettle.early?(handle),
+        do: async_step(fn -> early_floor(handle, conv_id) end)
+
+    try do
+      run_pipeline(ctx, handle, epoch, early_floor)
+    after
+      early_floor && Task.shutdown(early_floor, :brutal_kill)
+    end
+  end
+
+  defp early_floor(handle, conv_id) do
+    with :ok <- Egress.apply_policy(handle, conv_id), do: {:ok, FloorSettle.mark(handle)}
+  end
+
+  defp await_early_floor(nil), do: {:ok, nil}
+  defp await_early_floor(task), do: await_step(task)
+
+  defp run_pipeline(ctx, handle, epoch, early_floor) do
     %{state: state, conv: conv, sandbox: sandbox, agent: agent, env: env} = ctx
     %{secrets: secrets, runtime: runtime} = ctx
     conv_id = state.conversation_id
@@ -438,6 +467,7 @@ defmodule Fountain.Conversations.FreshProvision do
     prepared = step(conv_id, "broker_session", fn -> Egress.prepare_state(state) end)
 
     with {:ok, state} <- prepared,
+         {:ok, floor_mark} <- await_early_floor(early_floor),
          {:ok, ca_files} <-
            step(conv_id, "broker_ca_files", fn -> Egress.ca_files(state.broker, handle) end),
          sprite_env =
@@ -450,7 +480,7 @@ defmodule Fountain.Conversations.FreshProvision do
              write_sandbox_config(handle, state, agent, runtime, sprite_env, conv)
            end),
          :ok <-
-           run_provisioning_pipeline(handle, env, sprite_env, secrets, conv_id, fn ->
+           run_provisioning_pipeline(handle, env, sprite_env, secrets, conv_id, early_floor, fn ->
              %{
                adapter: adapter_after_floor(ctx, handle, runtime, sprite_env),
                skills:
@@ -475,6 +505,15 @@ defmodule Fountain.Conversations.FreshProvision do
                state.inference_source
              )
            end) do
+      # The conversation takes its first prompt as soon as this answers, so
+      # what is left of the floor's settle window is waited out here.
+      _ =
+        FloorSettle.hold(floor_mark, %{
+          conv_id: conv_id,
+          provider: handle.provider,
+          path: "fresh"
+        })
+
       {:ok,
        %{
          conv: conv,
@@ -613,8 +652,25 @@ defmodule Fountain.Conversations.FreshProvision do
   # What the runtime writes for itself (`Provisioning.prepare_runtime_sandbox/7`)
   # stays after the setup script, so Fountain's files still win over one the
   # setup script wrote.
-  defp run_provisioning_pipeline(handle, env, sprite_env, secrets, conv_id, after_floor) do
-    with :ok <- Egress.apply_policy(handle, conv_id) do
+  # Written already when it went first (`pipeline/3`, Sprites): only the setup
+  # log's `broker` step is left to report, which lives in this process.
+  defp floor_before_packages(handle, conv_id, nil = _early_floor),
+    do: Egress.apply_policy(handle, conv_id)
+
+  defp floor_before_packages(_handle, _conv_id, _early_floor) do
+    :ok = Fountain.Workspaces.SetupOutput.step(:broker)
+  end
+
+  defp run_provisioning_pipeline(
+         handle,
+         env,
+         sprite_env,
+         secrets,
+         conv_id,
+         early_floor,
+         after_floor
+       ) do
+    with :ok <- floor_before_packages(handle, conv_id, early_floor) do
       %{adapter: adapter, skills: skills} = after_floor.()
 
       try do

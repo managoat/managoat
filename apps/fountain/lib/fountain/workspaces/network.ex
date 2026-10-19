@@ -204,9 +204,13 @@ defmodule Fountain.Workspaces.Network do
     end
   end
 
-  # The CA and the relay first, then the floor, as a conversation's provision
-  # orders them (`FreshProvision`): neither dials anywhere the floor would
-  # refuse, and every step after the floor needs both.
+  # The CA and the relay first, then the floor: neither dials anywhere the
+  # floor would refuse, and every step after the floor needs both. A
+  # conversation's provision on Sprites now writes the floor first instead
+  # and holds its first prompt while the write settles (`FreshProvision`,
+  # `FloorSettle`, #2964). A setup has no prompt to protect, so this keeps the
+  # old order; a conversation that attaches right after finds the floor in
+  # force, does not write it again, and holds for it (`FloorSettle.mark_attach/3`).
   defp trust_and_floor(handle, net) do
     with :ok <- Provisioning.install_broker_ca(handle, nil),
          :ok <- TransportRelay.ensure(handle, net.workspace_id) do
