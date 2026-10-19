@@ -941,6 +941,7 @@ The rebuild is audited as `workspace.rebuilt`, with the caller.
 | `409 turns_running` | A conversation in the workspace has a running turn, or a prompt Managoat accepted that has not started its turn yet (its machine is still waking, say). `conversation_ids` names them. Wait for them to end, or send `{"interrupt": true}`, which ends each as `interrupted` (reason `machine_destroyed`), keeping its transcript. |
 | `409 rebuild_in_progress` | The workspace is `provisioning`: its create, a retry, a rebuild after a loss or another rebuild is still building its machine. Wait for `ready` or `failed`. |
 | `404 not_found` | Another account's workspace, or an implicit one, as for `DELETE`: an implicit workspace is a conversation's own sandbox. |
+| `422 sandbox_provider_disabled` | The workspace's sandbox provider has been disabled since it was created (its credentials were removed). Nothing was changed: the machine, its disk and the conversations are as they were. Set the provider's credentials, or create a workspace on another provider. |
 | `503 fleet_full` | Every sandbox slot on the provider is in use. Nothing was changed. |
 | `503 sandbox_unavailable` | Another operation (a park, a wake) holds the machine right now. Nothing was changed; send it again shortly. |
 

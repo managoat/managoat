@@ -231,7 +231,10 @@ agent starts a fresh session on its next prompt. The workspace goes
 refuses the rebuild with `409 turns_running`, and so does a prompt accepted
 but not yet started, unless you pass
 `interrupt: true`, which interrupts those turns and keeps their transcripts.
-A second rebuild while one is building is `409 rebuild_in_progress`. An
+A second rebuild while one is building is `409 rebuild_in_progress`. If the
+workspace's sandbox provider has been disabled since you created it, the
+rebuild is `422 sandbox_provider_disabled` and nothing is touched: set the
+provider's credentials, or create a workspace on another provider. An
 implicit workspace cannot be rebuilt: it is a conversation's own sandbox.
 
 ### Delete ends everything

@@ -556,6 +556,10 @@ defmodule Fountain.Workspaces do
   `workspace` comes from the caller's scoped `get_workspace/2`; an implicit
   one is `:not_found`, as for `delete_workspace/2`. In order:
 
+    0. Refused before anything moves when the workspace's provider has been
+       disabled since it was made: `{:sandbox_provider_disabled, provider,
+       :workspace}`, which the API renders with the workspace's advice. This
+       covers a stranded build too.
     1. Refused while the workspace is `provisioning` (its create, a retry, a
        rebuild after a loss, or an earlier rebuild is still building), or
        while a provision on create runs for it: `:rebuild_in_progress`.
@@ -585,6 +589,7 @@ defmodule Fountain.Workspaces do
              | :sandbox_unavailable
              | :fleet_full
              | :provider_transaction_open
+             | {:sandbox_provider_disabled, Managoat.Sandbox.provider(), :workspace}
              | term()}
   def rebuild_workspace(workspace, opts \\ [])
 
@@ -593,10 +598,16 @@ defmodule Fountain.Workspaces do
     if Repo.in_transaction?() do
       {:error, :provider_transaction_open}
     else
-      case build_state(workspace) do
-        :building -> {:error, :rebuild_in_progress}
-        {:stranded, %Sandbox{} = pending} -> resume_build(workspace, pending, opts)
-        :settled -> do_rebuild(workspace, opts)
+      # The provider is checked before anything moves: a rebuild on one
+      # disabled since the workspace was made would destroy the working
+      # machine and then fail to build the next, and a stranded row's build
+      # would fail the same way.
+      with {:ok, provider} <- rebuild_provider(workspace) do
+        case build_state(workspace) do
+          :building -> {:error, :rebuild_in_progress}
+          {:stranded, %Sandbox{} = pending} -> resume_build(workspace, pending, opts)
+          :settled -> do_rebuild(workspace, provider, opts)
+        end
       end
     end
   end
@@ -657,7 +668,7 @@ defmodule Fountain.Workspaces do
     end
   end
 
-  defp do_rebuild(%Workspace{} = workspace, opts) do
+  defp do_rebuild(%Workspace{} = workspace, provider, opts) do
     attribution = [
       actor: Keyword.get(opts, :actor, "self"),
       request_ip: Keyword.get(opts, :request_ip)
@@ -667,7 +678,6 @@ defmodule Fountain.Workspaces do
 
     # ownership: the workspace the caller's scoped fetch returned.
     with %Sandbox{} = old <- current_sandbox(workspace),
-         {:ok, provider} <- provider_atom(workspace),
          {:ok, name} <- Fountain.Conversations.mint_machine_name(provider, workspace.user_id, nil),
          {:ok, %Sandbox{} = next} <-
            Fountain.Machines.Machine.replace(
@@ -719,10 +729,19 @@ defmodule Fountain.Workspaces do
     end
   end
 
-  defp provider_atom(%Workspace{provider: provider}) do
-    if provider in Fountain.SandboxProviders.known_providers(),
-      do: {:ok, String.to_existing_atom(provider)},
-      else: {:error, :sandbox_unavailable}
+  # The workspace's provider, fixed at create (ADR 0097), refused with the
+  # workspace's advice when it has since been disabled, as a wake into the
+  # workspace is (#3004).
+  defp rebuild_provider(%Workspace{provider: provider}) do
+    if provider in Fountain.SandboxProviders.known_providers() do
+      provider = String.to_existing_atom(provider)
+
+      if Fountain.SandboxProviders.enabled?(provider),
+        do: {:ok, provider},
+        else: {:error, {:sandbox_provider_disabled, provider, :workspace}}
+    else
+      {:error, :sandbox_unavailable}
+    end
   end
 
   # The owner's refusals in the API's words. A machine somebody else holds is

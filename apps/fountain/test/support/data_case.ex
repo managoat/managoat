@@ -57,6 +57,25 @@ defmodule Fountain.DataCase do
   end
 
   @doc """
+  Configure the Sprites provider for one test, as `setup
+  {Fountain.DataCase, :configure_sprites}`. The test configuration carries no
+  Sprites token, so `Fountain.SandboxProviders.enabled?(:sprites)` is false;
+  a path that checks the provider is enabled, such as a workspace rebuild,
+  needs one. Only for `async: false` modules: it writes application env.
+  """
+  def configure_sprites(_context) do
+    previous = Application.get_env(:fountain, Managoat.Sandbox.Sprites, [])
+
+    Application.put_env(
+      :fountain,
+      Managoat.Sandbox.Sprites,
+      Keyword.put(previous, :token, "test-token")
+    )
+
+    on_exit(fn -> Application.put_env(:fountain, Managoat.Sandbox.Sprites, previous) end)
+  end
+
+  @doc """
   Wait for the fire-and-forget tasks this test started to finish.
 
   Best-effort work off a request — the `last_used_at` stamp, the password-reset

@@ -269,6 +269,9 @@ defmodule FountainWeb.WorkspaceControllerTest do
   end
 
   describe "POST /api/workspaces/:id/rebuild" do
+    # The workspace's provider (the instance default, sprites) is configured.
+    setup {Fountain.DataCase, :configure_sprites}
+
     # A workspace whose setup finished, with a conversation on its machine.
     setup ctx do
       data = create!(ctx)
@@ -336,6 +339,24 @@ defmodule FountainWeb.WorkspaceControllerTest do
                rebuild!(ctx, %{"interrupt" => true}, 202)
 
       assert Repo.reload!(turn).status == "interrupted"
+    end
+
+    test "a provider disabled since the workspace was made is 422, and nothing moves", ctx do
+      # `e2b` has no credentials in the test configuration.
+      refute Fountain.SandboxProviders.enabled?(:e2b)
+
+      {1, _} =
+        Repo.update_all(from(w in Workspace, where: w.id == ^ctx.workspace["id"]),
+          set: [provider: "e2b"]
+        )
+
+      assert %{"error" => "sandbox_provider_disabled", "message" => message} =
+               rebuild!(ctx, %{"interrupt" => true}, 422)
+
+      assert message == Fountain.SandboxProviders.disabled_message(:e2b, :workspace)
+      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Repo.reload!(ctx.conv).sandbox_id == ctx.sandbox.id
+      assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt") == []
     end
 
     test "another account's workspace, and an implicit one, are 404", ctx do
