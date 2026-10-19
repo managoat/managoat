@@ -37,7 +37,7 @@ services:
     # combination the versioning guide tells you never to run. Upgrade by
     # setting MANAGOAT_IMAGE_TAG in .env (see .env.compose.example). An .env
     # from before ADR 0082 that sets FOUNTAIN_IMAGE_TAG still works.
-    image: ghcr.io/managoat/managoat:${MANAGOAT_IMAGE_TAG:-${FOUNTAIN_IMAGE_TAG:-v0.39.1}}
+    image: ghcr.io/managoat/managoat:${MANAGOAT_IMAGE_TAG:-${FOUNTAIN_IMAGE_TAG:-v0.39.2}}
     # To run your own build instead of the published image, comment the line
     # above and uncomment this:
     #   build: .
@@ -139,9 +139,9 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
 
       # The first account to verify becomes the admin (ADR 0011), so
-      # register before exposing the instance. Images after v0.39.1 do this
-      # unconditionally and ignore FIRST_USER_ADMIN; up to v0.39.1 it is the
-      # switch. Drop it once the pin is past v0.39.1.
+      # register before exposing the instance. Images after v0.39.2 do this
+      # unconditionally and ignore FIRST_USER_ADMIN; up to v0.39.2 it is the
+      # switch. Drop it once the pin is past v0.39.2.
       FIRST_USER_ADMIN: ${FIRST_USER_ADMIN:-true}
 
       # ── The credential broker ───────────────────────────────────────────

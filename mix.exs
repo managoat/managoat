@@ -6,7 +6,7 @@ defmodule Fountain.Umbrella.MixProject do
       apps_path: "apps",
       # Kept in lockstep with the newest v* git tag — release-bump.yml
       # computes the next tag from this value.
-      version: "0.39.1",
+      version: "0.39.2",
       hex: [
         ignore_advisories: [
           # cowlib 2.19.0 is already the newest Hex release, OSV lists no fixed
