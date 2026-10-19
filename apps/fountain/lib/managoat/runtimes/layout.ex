@@ -48,6 +48,15 @@ defmodule Managoat.Runtimes.Layout do
   belongs to that one pre-existing directory, not to `/home/sprite`, and the
   gemini config home sits beside the others with `HOME` left as the image's.
 
+  ## The runtime template
+
+  `runtime_template_root/0` (`/home/sprite/.managoat/template`) is where an
+  environment's setup script writes runtime configuration, one directory per
+  runtime mirroring that runtime's config directory; a new config home starts
+  as a copy of it (#2998, `Managoat.Runtimes.Template`). `merged_files/1`
+  names the JSON files Managoat writes keys into, which are merged with a
+  template's copy rather than replacing it.
+
   ## Conversations from before config homes
 
   `legacy_home/1` is the shared directory a runtime used before ADR 0097

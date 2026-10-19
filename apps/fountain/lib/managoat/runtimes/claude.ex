@@ -198,11 +198,13 @@ defmodule Managoat.Runtimes.Claude do
     user = user_config_path(home)
     servers = mcp_servers(agent)
 
+    # The servers first, and whatever `settings.json` holds: a settings file
+    # that does not parse must not keep a rotated token out of `.claude.json`.
     with {:ok, %{^settings => current_settings, ^user => current_user}} <-
            JsonConfig.read(handle, [settings, user]),
-         :ok <- JsonConfig.put(handle, settings, current_settings, @settings),
-         :ok <- JsonConfig.put(handle, user, current_user, %{"mcpServers" => servers}) do
-      write_legacy_project_config(handle, home, servers)
+         :ok <- JsonConfig.put(handle, user, current_user, %{"mcpServers" => servers}),
+         :ok <- write_legacy_project_config(handle, home, servers) do
+      JsonConfig.put(handle, settings, current_settings, @settings)
     end
   end
 

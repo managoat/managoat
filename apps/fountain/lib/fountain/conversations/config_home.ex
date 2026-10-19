@@ -357,7 +357,7 @@ defmodule Fountain.Conversations.ConfigHome do
 
     if Layout.conversation_home?(home) and is_binary(Layout.runtime_template(runtime)) do
       Managoat.Runtimes.Template.seed(handle, runtime, home, mode,
-        skills: Fountain.SandboxSkills.inline_names(agent && agent.skills)
+        skills: Fountain.SandboxSkills.owned_names(agent && agent.skills)
       )
     else
       :ok

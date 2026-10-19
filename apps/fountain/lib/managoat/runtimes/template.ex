@@ -30,16 +30,25 @@ defmodule Managoat.Runtimes.Template do
       leaves no home, and the next attach seeds again.
     * `:into`, for a conversation whose own provision built the machine.
       Managoat writes the home's config while the setup script is still
-      running, so the template is copied in after the setup, into a home
-      Managoat has already filled.
+      running, so the template is copied in after the setup: the stage gets
+      the template, then the home Managoat filled is copied over it, so
+      Managoat's files win by going last, and the stage is swapped in.
+
+  Both are a few processes however large the template, and the home ends
+  mode 700 whatever the template directory's mode. A commit retried after a
+  lost reply finds its stage gone and reports the work done.
 
   ## Collisions: Managoat's files win
 
   The result is the same in both modes. Managoat's own files win: the
   instructions file when the agent has a `system` prompt, the codex
   `auth.json`, the skills it installs (a template skill of the same name is
-  replaced, whole directory and all), the session. Everything else in the
-  template is copied as it is.
+  replaced, whole directory and all; in `:new` the names come from
+  `Fountain.SandboxSkills.owned_names/1`, named GitHub skills included,
+  because a reconciliation that found a template's copy under such a name
+  would take it for the skill and never fetch it), the session. A path that
+  is a directory on one side and a file on the other is Managoat's.
+  Everything else in the template is copied as it is.
 
   The JSON files Managoat writes keys into (`Layout.merged_files/1`: claude's
   `settings.json` and `.claude.json`, gemini's `settings.json`) are merged
@@ -50,9 +59,14 @@ defmodule Managoat.Runtimes.Template do
   agent's, which is what lets an agent that drops a server drop it on its
   next wake, and what keeps every server's credentials on the agent's path
   (resolved `${VAR}` references, the broker's placeholders, the callback
-  token rotated on reattach). Every later write keeps the merge
+  token rotated on reattach). A template's `mcpServers` is dropped at the
+  seed itself, so its servers never run even where Managoat's own write
+  after it fails. The merged files land mode 600 (the servers carry resolved
+  credentials). Every later write keeps the merge
   (`Managoat.Runtimes.JsonConfig`). A template file of these that is not a
-  JSON object fails the seed, naming the file, rather than being dropped.
+  JSON object fails the seed, naming the file, rather than being dropped, and
+  so does a file or directory in the template the sandbox user cannot read
+  (the path is named, never its contents).
 
   ## What is copied
 
@@ -84,7 +98,16 @@ defmodule Managoat.Runtimes.Template do
   # directory relative to the home ("" or ".gemini"), the stage (commit and
   # abort only), the merged files and the skill names Managoat will write,
   # each newline-separated. Every line it prints starts with
-  # `managoat-template`.
+  # `managoat-template`, and every run that exits 0 prints one status:
+  # `none`, `present`, `unreadable <path>`, `staged <stage>` or `done`.
+  #
+  # The copy is built in a stage beside the homes. `:new` renames the stage
+  # into place. `:into` copies the home Managoat wrote over the stage, so
+  # Managoat's files win by going last, then swaps the two directories. The
+  # merged JSON files are written by the caller into `<stage>.m`, and moved in
+  # last, mode 600. Both are a handful of processes whatever the template's
+  # size. A commit that finds its stage gone has already run (a retry after a
+  # lost reply), and says so.
   @script ~S"""
   set -u
   phase=$1 mode=$2 src=$3 home=$4 rel=$5 stage=$6 merged=$7 skills=$8
@@ -101,56 +124,68 @@ defmodule Managoat.Runtimes.Template do
 
   commit() {
     s=$(under "$stage")
+    m="$stage.m"
+    while IFS= read -r n; do
+      case "$n" in ''|.|..|*/*) continue ;; esac
+      rm -rf -- "$s/skills/$n"
+    done <<< "$skills"
+    d=$(under "$home")
+    if [ "$mode" = into ] && [ -d "$d" ] && [ ! -L "$d" ]; then
+      while IFS= read -r -d '' f; do
+        f=${f#./}
+        if [ -d "$d/$f" ] && [ ! -L "$d/$f" ]; then
+          case "$f" in
+            skills/*/*) ;;
+            skills/*) rm -rf -- "$s/$f" ;;
+            *) if [ -L "$s/$f" ] || { [ -e "$s/$f" ] && [ ! -d "$s/$f" ]; }; then rm -rf -- "$s/$f"; fi ;;
+          esac
+        else
+          rm -rf -- "$s/$f"
+        fi
+      done < <(cd -- "$d" && find . -mindepth 1 -print0)
+      cp -RP --preserve=mode,timestamps -- "$d/." "$s/" || return 1
+    fi
+    if [ -d "$m" ]; then
+      for f in "$m"/* "$m"/.[!.]*; do
+        if [ ! -f "$f" ]; then continue; fi
+        mv -f -- "$f" "$s/${f##*/}" && chmod 600 -- "$s/${f##*/}" || return 1
+      done
+      rm -rf -- "$m"
+    fi
+    chmod 700 -- "$stage" "$s" || return 1
+    mkdir -p -- "$(dirname -- "$home")" || return 1
     if [ "$mode" = new ]; then
-      while IFS= read -r n; do
-        case "$n" in ''|.|..|*/*) continue ;; esac
-        rm -rf -- "$s/skills/$n"
-      done <<< "$skills"
-      mkdir -p -- "$(dirname -- "$home")" || return 1
       if [ -e "$home" ] || [ -L "$home" ] || ! mv -T -- "$stage" "$home" 2>/dev/null; then
         rm -rf -- "$stage"
         echo "managoat-template present"
         return 0
       fi
-      echo "managoat-template done"
-      return 0
-    fi
-    d=$(under "$home")
-    mkdir -p -- "$d" || return 1
-    rd=$(realpath -e -- "$d") || return 1
-    while IFS= read -r f; do
-      if [ -n "$f" ] && [ -f "$s/$f" ]; then mv -f -- "$s/$f" "$d/$f" || return 1; fi
-    done <<< "$merged"
-    if [ -d "$s/skills" ]; then
-      for e in "$s/skills"/* "$s/skills"/.[!.]* "$s/skills"/..?*; do
-        if [ ! -e "$e" ]; then continue; fi
-        n=${e##*/}
-        if [ -e "$d/skills/$n" ] || [ -L "$d/skills/$n" ]; then rm -rf -- "$e"; fi
-      done
-    fi
-    while IFS= read -r -d '' f; do
-      f=${f#./}
-      t="$d/$f"
-      if [ -e "$t" ] || [ -L "$t" ]; then continue; fi
-      case "$(realpath -m -- "$t")" in "$rd"/*) ;; *) continue ;; esac
-      if [ -d "$s/$f" ]; then
-        mkdir -p -- "$t" || return 1
-      else
-        mkdir -p -- "$(dirname -- "$t")" && cp -p -- "$s/$f" "$t" || return 1
+    else
+      mkdir -p -- "$(dirname -- "$d")" || return 1
+      aside="$stage.old"
+      if [ -e "$d" ] || [ -L "$d" ]; then mv -T -- "$d" "$aside" || return 1; fi
+      if ! mv -T -- "$s" "$d"; then
+        if [ -e "$aside" ]; then mv -T -- "$aside" "$d"; fi
+        return 1
       fi
-    done < <(cd -- "$s" && find . -mindepth 1 -print0)
-    rm -rf -- "$stage"
+      rm -rf -- "$aside" "$stage"
+    fi
     echo "managoat-template done"
   }
 
   case "$phase" in
     commit)
-      own_stage || exit 2
-      commit || { rm -rf -- "$stage"; exit 1; }
+      if ! own_stage; then
+        if [ -e "$stage" ] || [ -L "$stage" ]; then exit 2; fi
+        if [ "$mode" = new ]; then echo "managoat-template present"; else echo "managoat-template done"; fi
+        exit 0
+      fi
+      commit || { rm -rf -- "$stage" "$stage.m"; exit 1; }
       exit 0
       ;;
     abort)
-      own_stage && rm -rf -- "$stage"
+      own_stage && rm -rf -- "$stage" "$stage.m"
+      echo "managoat-template none"
       exit 0
       ;;
   esac
@@ -162,6 +197,12 @@ defmodule Managoat.Runtimes.Template do
   root=$(dirname -- "$src")
   if [ -L "$root" ] || [ -L "$src" ] || [ ! -d "$src" ] || [ -z "$(ls -A -- "$src" 2>/dev/null)" ]; then
     echo "managoat-template none"
+    exit 0
+  fi
+  bad=$(cd -- "$src" && find . -mindepth 1 \( -type f -o -type d \) \
+    \( ! -readable -o \( -type d ! -executable \) \) -print -quit 2>/dev/null)
+  if [ -n "$bad" ]; then
+    printf 'managoat-template unreadable %s\n' "${bad#./}"
     exit 0
   fi
 
@@ -179,7 +220,13 @@ defmodule Managoat.Runtimes.Template do
 
   found=0
   while IFS= read -r f; do
-    if [ -n "$f" ] && [ -f "$s/$f" ]; then
+    if [ -z "$f" ]; then continue; fi
+    if [ -e "$s/$f" ] && [ ! -f "$s/$f" ]; then
+      rm -rf -- "$stage"
+      printf 'managoat-template unreadable %s\n' "$f"
+      exit 0
+    fi
+    if [ -f "$s/$f" ]; then
       found=1
       printf 'managoat-template file %s ' "$f"
       base64 -w0 -- "$s/$f" || { rm -rf -- "$stage"; exit 1; }
@@ -264,36 +311,27 @@ defmodule Managoat.Runtimes.Template do
 
         with {:ok, out} <- run(handle, "stage", args, "") do
           case parse(out) do
-            {:staged, stage, files} -> merge_and_commit(handle, args, stage, files, mode)
-            :settled -> :ok
+            {:staged, stage, files} -> merge_and_commit(handle, args, stage, files)
+            other -> settled(other)
           end
         end
     end
   end
 
-  defp merge_and_commit(handle, args, stage, files, mode) do
-    staged_dir = if args.rel == "", do: stage, else: Path.join(stage, args.rel)
-
+  defp merge_and_commit(handle, args, stage, files) do
     result =
-      Enum.reduce_while(files, :ok, fn {file, %{template: template} = found}, :ok ->
-        case merged(file, template, Map.get(found, :current), mode) do
-          :keep ->
-            {:cont, :ok}
-
-          {:write, map} ->
-            case write_staged(handle, Path.join(staged_dir, file), map) do
-              :ok -> {:cont, :ok}
-              {:error, _} = error -> {:halt, error}
-            end
-
-          {:error, _} = error ->
-            {:halt, error}
+      Enum.reduce_while(files, :ok, fn {file, found}, :ok ->
+        with {:ok, map} <- merged(file, found.template, Map.get(found, :current)),
+             :ok <- write_staged(handle, Path.join(stage <> ".m", file), map) do
+          {:cont, :ok}
+        else
+          {:error, _} = error -> {:halt, error}
         end
       end)
 
     case result do
       :ok ->
-        with {:ok, _out} <- run(handle, "commit", args, stage), do: :ok
+        with {:ok, out} <- run(handle, "commit", args, stage), do: settled(parse(out))
 
       {:error, _} = error ->
         _ = run(handle, "abort", args, stage)
@@ -301,13 +339,19 @@ defmodule Managoat.Runtimes.Template do
     end
   end
 
-  # The template's file is the base and what Managoat already wrote is put
-  # over it. In `:new` mode nothing is there yet, so a valid file is kept
-  # byte for byte.
-  defp merged(file, template, current, mode) do
+  defp settled(:done), do: :ok
+  defp settled(:none), do: :ok
+  defp settled(:present), do: :ok
+  defp settled({:unreadable, path}), do: {:error, {:runtime_template, {:unreadable, path}}}
+  defp settled(:unrecognised), do: {:error, {:runtime_template, :no_answer}}
+
+  # The template's file is the base, without `mcpServers` (the agent's alone,
+  # even before Managoat's own write puts them), and what Managoat already
+  # wrote goes over it.
+  defp merged(file, template, current) do
     with {:ok, base} <- decode(file, template, :not_a_json_object),
          {:ok, over} <- decode(file, current, :unreadable) do
-      if mode == :new or is_nil(current), do: :keep, else: {:write, Map.merge(base, over)}
+      {:ok, base |> Map.delete("mcpServers") |> Map.merge(over)}
     end
   end
 
@@ -356,16 +400,22 @@ defmodule Managoat.Runtimes.Template do
     end
   end
 
-  # `staged` with the merged files' contents, or settled (nothing to copy, a
-  # home already there, or a copy finished in the one exec). Output that is
-  # not the script's own (an adapter that runs no shell) is settled too.
+  # The script's status line, and with `staged` the merged files' contents.
+  # Output with no status (stdout lost on the way back) is not taken for
+  # success: the seed fails and a later attach tries again.
   defp parse(out) do
     out
     |> String.split("\n", trim: true)
-    |> Enum.reduce(%{stage: nil, files: %{}}, fn line, acc ->
+    |> Enum.reduce(%{status: :unrecognised, files: %{}}, fn line, acc ->
       case String.split(line, " ", parts: 4) do
         ["managoat-template", "staged", stage] ->
-          %{acc | stage: stage}
+          %{acc | status: {:staged, stage}}
+
+        ["managoat-template", status] when status in ["none", "present", "done"] ->
+          %{acc | status: String.to_existing_atom(status)}
+
+        ["managoat-template", "unreadable" | path] ->
+          %{acc | status: {:unreadable, Enum.join(path, " ")}}
 
         ["managoat-template", kind, file, encoded] when kind in ["file", "current"] ->
           key = if kind == "file", do: :template, else: :current
@@ -383,11 +433,11 @@ defmodule Managoat.Runtimes.Template do
       end
     end)
     |> case do
-      %{stage: stage, files: files} when is_binary(stage) ->
+      %{status: {:staged, stage}, files: files} ->
         {:staged, stage, Enum.filter(files, fn {_f, found} -> Map.has_key?(found, :template) end)}
 
-      _ ->
-        :settled
+      %{status: status} ->
+        status
     end
   end
 

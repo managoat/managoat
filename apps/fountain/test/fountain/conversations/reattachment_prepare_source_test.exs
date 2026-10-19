@@ -205,7 +205,16 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
     test "a conversation's own home is seeded, with the skills Managoat writes named", ctx do
       home = Managoat.Runtimes.Layout.config_home(ctx.conv.id)
       conv = %{ctx.conv | config_home: home, runtime: "codex"}
-      agent = %{skills: [%{"name" => "mine", "content" => "x"}, %{"source" => "o/r"}]}
+      # A named GitHub skill is owned too: a template copy under its name
+      # would otherwise be taken for it, and never fetched.
+      agent = %{
+        skills: [
+          %{"name" => "mine", "content" => "x"},
+          %{"source" => "o/r"},
+          %{"source" => "o/s", "name" => "named"}
+        ]
+      }
+
       test_pid = self()
 
       stub(Managoat.Runtimes.Template, :seed, fn _h, runtime, ^home, mode, opts ->
@@ -214,7 +223,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
       end)
 
       assert :ok = ConfigHome.seed(ctx.handle, conv, agent, :into)
-      assert_received {:seeded, "codex", :into, ["managoat", "mine"]}
+      assert_received {:seeded, "codex", :into, ["managoat", "mine", "named"]}
     end
   end
 end

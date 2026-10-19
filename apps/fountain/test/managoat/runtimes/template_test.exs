@@ -190,6 +190,11 @@ defmodule Managoat.Runtimes.TemplateTest do
       )
 
       assert :ok = seed(ctx, "claude", :new)
+
+      # A template's servers never run, not even before Managoat's own write.
+      assert json(Path.join(ctx.home, ".claude.json")) == %{"theme" => "dark"}
+      assert Bitwise.band(File.stat!(Path.join(ctx.home, ".claude.json")).mode, 0o777) == 0o600
+
       servers = %{"agent" => %{"command" => "a"}}
       assert :ok = Claude.write_config(ctx.handle, %{mcp_servers: servers}, ctx.home)
 
@@ -275,6 +280,39 @@ defmodule Managoat.Runtimes.TemplateTest do
              }
     end
 
+    test "a path that is a directory on one side and a file on the other is Managoat's", ctx do
+      put(Path.join(ctx.home, "hooks/managoat.sh"), "managoat's")
+      put(Path.join(ctx.home, "notes"), "managoat's file")
+      put(Path.join(ctx.template, "claude/hooks"), "a file where Managoat has a directory")
+      put(Path.join(ctx.template, "claude/notes/x"), "a directory where Managoat has a file")
+
+      assert :ok = seed(ctx, "claude", :into)
+      assert File.read!(Path.join(ctx.home, "hooks/managoat.sh")) == "managoat's"
+      assert File.read!(Path.join(ctx.home, "notes")) == "managoat's file"
+    end
+
+    test "a large template is one pass, not a process per file", ctx do
+      t = Path.join(ctx.template, "codex")
+
+      for d <- 1..20, f <- 1..100, do: put(Path.join([t, "plugins", "d#{d}", "f#{f}"]), "x")
+
+      put(Path.join(ctx.home, "auth.json"), "{}")
+
+      {us, :ok} = :timer.tc(fn -> seed(ctx, "codex", :into) end)
+      assert File.exists?(Path.join(ctx.home, "plugins/d20/f100"))
+      assert us < 10_000_000, "#{div(us, 1000)} ms for 2000 files"
+    end
+
+    test "the merged files land mode 600", ctx do
+      put(Path.join(ctx.home, ".claude.json"), ~s({"mcpServers": {}}))
+      File.chmod!(put(Path.join(ctx.template, "claude/.claude.json"), ~s({"theme": "x"})), 0o644)
+
+      assert :ok = seed(ctx, "claude", :into)
+      path = Path.join(ctx.home, ".claude.json")
+      assert json(path) == %{"theme" => "x", "mcpServers" => %{}}
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+
     test "nothing is written through a symlink in the home", ctx do
       outside = Path.join(ctx.root, "outside")
       File.mkdir_p!(outside)
@@ -299,9 +337,59 @@ defmodule Managoat.Runtimes.TemplateTest do
     end
   end
 
-  test "an adapter that runs no shell answers nothing, which is nothing to copy", ctx do
+  test "an answer with no status is not taken for success", ctx do
+    # stdout lost on the way back: the seed fails, and a later attach, finding
+    # no home, tries again.
     stub(Sandbox, :exec, fn _h, "bash", _args, _opts -> {:ok, "", 0} end)
+    assert {:error, {:runtime_template, :no_answer}} = seed(ctx, "claude", :new)
+  end
+
+  test "a commit run twice (a retry after a lost reply) reports the work done", ctx do
+    put(Path.join(ctx.template, "claude/settings.json"), "{}")
+    test = self()
+
+    stub(Sandbox, :exec, fn _handle, "bash", args, _opts ->
+      {out, code} = System.cmd("bash", args)
+      if Enum.at(args, 3) == "commit", do: send(test, {:commit, args})
+      {:ok, out, code}
+    end)
+
     assert :ok = seed(ctx, "claude", :new)
+    assert_received {:commit, args}
+
+    for mode <- ["new", "into"] do
+      again = List.replace_at(args, 4, mode)
+      assert {out, 0} = System.cmd("bash", again)
+      assert out =~ ~r/managoat-template (present|done)/
+    end
+  end
+
+  test "an entry the sandbox user cannot read fails the seed, naming it", ctx do
+    {uid, 0} = System.cmd("id", ["-u"])
+
+    if String.trim(uid) == "0" do
+      # root reads everything; the check needs an ordinary user, as on a sprite.
+      :ok
+    else
+      t = Path.join(ctx.template, "claude")
+      put(Path.join(t, "CLAUDE.md"), "x")
+      File.chmod!(put(Path.join(t, "private/key"), "k"), 0o000)
+
+      assert {:error, {:runtime_template, {:unreadable, "private/key"}}} =
+               seed(ctx, "claude", :new)
+
+      refute File.exists?(ctx.home)
+    end
+  end
+
+  test "the home is the conversation's own, mode 700, whatever the template's mode", ctx do
+    t = Path.join(ctx.template, "codex")
+    put(Path.join(t, "config.toml"), "x = 1\n")
+    File.chmod!(t, 0o555)
+
+    assert :ok = seed(ctx, "codex", :new)
+    assert Bitwise.band(File.stat!(ctx.home).mode, 0o777) == 0o700
+    File.write!(Path.join(ctx.home, "auth.json"), "{}")
   end
 
   test "a failed exec is the seed's error", ctx do

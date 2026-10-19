@@ -1028,12 +1028,14 @@ A PR sequence, each releasable alone:
   file, where claude's `settings.json` used to be overwritten whole;
   `mcpServers` is replaced whole rather than merged by name, so the servers
   that run are the agent's, an agent that drops one drops it on its next
-  wake, and every server's credentials take the agent's path; only regular
+  wake, and every server's credentials take the agent's path, and a
+  template's `mcpServers` is dropped at the seed itself; only regular
   files and directories are copied, with their modes, a symlink being
   neither followed nor copied and a template that is itself a symlink not
-  used; a merged file that is not a JSON object fails the provision or the
-  attach, naming the file, rather than being dropped; a template skill named
-  like one Managoat writes gives way, whole; and the template is not a secret
+  used; a merged file that is not a JSON object, or an entry the sandbox user
+  cannot read, fails the provision or the attach, naming the file, rather
+  than being dropped; a template skill named like one Managoat writes, a
+  named GitHub skill included, gives way, whole; and the template is not a secret
   store, on the disk where the file routes read it, redacted, like the
   config homes. No new ADR: this completes step 1's config home for the setup
   step 5 moved ahead of every conversation.

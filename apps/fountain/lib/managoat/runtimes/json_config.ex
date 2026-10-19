@@ -37,24 +37,25 @@ defmodule Managoat.Runtimes.JsonConfig do
 
   @doc """
   Read `paths` from the sandbox in one exec. Answers each path's JSON object,
-  or nil for a path that is not there. A file that is not a JSON object is
-  read once more, after a moment, then is
-  `{:error, {:runtime_config, path, :unreadable}}`.
+  nil for a path that is not there, or `:unreadable` for a file that is not a
+  JSON object (a CLI halfway through its own write, or a bad hand edit), each
+  on its own, so one bad file does not stop the write of another. A read
+  that finds one is made once more, after a moment.
   """
   @spec read(Sandbox.Handle.t(), [String.t()]) ::
-          {:ok, %{String.t() => map() | nil}} | {:error, term()}
+          {:ok, %{String.t() => map() | nil | :unreadable}} | {:error, term()}
   def read(handle, [_ | _] = paths), do: read(handle, paths, 1)
 
   defp read(handle, paths, attempt) do
     case exec_retrying(handle, ["-c", @read_script, "managoat-json-read" | paths], hd(paths)) do
       {:ok, out} ->
-        case decode_all(paths, out) do
-          {:error, {:runtime_config, _, :unreadable}} when attempt == 1 ->
-            Process.sleep(200)
-            read(handle, paths, 2)
+        result = decode_all(paths, out)
 
-          decoded ->
-            decoded
+        if attempt == 1 and unreadable?(result) do
+          Process.sleep(200)
+          read(handle, paths, 2)
+        else
+          result
         end
 
       {:error, _} = error ->
@@ -62,18 +63,23 @@ defmodule Managoat.Runtimes.JsonConfig do
     end
   end
 
+  defp unreadable?({:ok, results}), do: :unreadable in Map.values(results)
+  defp unreadable?({:error, _}), do: true
+
+  # One line per path, or the output is not the script's.
   defp decode_all(paths, out) do
     lines = String.split(to_string(out), "\n", trim: true)
 
     if length(lines) == length(paths) do
-      paths
-      |> Enum.zip(lines)
-      |> Enum.reduce_while({:ok, %{}}, fn {path, line}, {:ok, acc} ->
-        case decode_line(line) do
-          {:ok, value} -> {:cont, {:ok, Map.put(acc, path, value)}}
-          :error -> {:halt, {:error, {:runtime_config, path, :unreadable}}}
-        end
-      end)
+      {:ok,
+       paths
+       |> Enum.zip(lines)
+       |> Map.new(fn {path, line} ->
+         case decode_line(line) do
+           {:ok, value} -> {path, value}
+           :error -> {path, :unreadable}
+         end
+       end)}
     else
       {:error, {:runtime_config, hd(paths), :unreadable}}
     end
@@ -108,9 +114,14 @@ defmodule Managoat.Runtimes.JsonConfig do
   result to `path` by temporary file and rename, mode `mode`. Nothing is
   written when the file is there and already carries every one of `keys`.
   """
-  @spec put(Sandbox.Handle.t(), String.t(), map() | nil, map(), non_neg_integer()) ::
+  @spec put(Sandbox.Handle.t(), String.t(), map() | nil | :unreadable, map(), non_neg_integer()) ::
           :ok | {:error, term()}
-  def put(handle, path, current, keys, mode \\ 0o600) when is_map(keys) do
+  def put(handle, path, current, keys, mode \\ 0o600)
+
+  def put(_handle, path, :unreadable, _keys, _mode),
+    do: {:error, {:runtime_config, path, :unreadable}}
+
+  def put(handle, path, current, keys, mode) when is_map(keys) do
     if is_map(current) and Map.merge(current, keys) == current do
       :ok
     else

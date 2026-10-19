@@ -82,7 +82,7 @@ setup does not start the agent. This controls setup, not inference time or spend
 
 A setup script cannot configure the runtime by writing into the image's
 `~/.claude`, `~/.codex` or `~/.gemini`: each conversation reads a config home
-of its own, made after the setup has run. Write runtime configuration into
+of its own, and a workspace's setup runs before any exists. Write runtime configuration into
 the **runtime template** instead. The script runs with
 `MANAGOAT_RUNTIME_TEMPLATE` set to `/home/sprite/.managoat/template`, whose
 `claude/`, `codex/` and `gemini/` directories hold what `~/.claude`,

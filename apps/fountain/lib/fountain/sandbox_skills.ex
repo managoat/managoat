@@ -533,16 +533,17 @@ defmodule Fountain.SandboxSkills do
   end
 
   @doc """
-  The directory names a mount of `skills` is sure to write under the skills
-  root: the bundled skills and the agent's inline ones. A GitHub skill's
-  directories are known only once it is fetched, and its install replaces
-  each one whole anyway. Only plain names (no `/`, not `.` or `..`) are
-  answered.
+  The directory names a mount of `skills` is sure to own under the skills
+  root: the bundled skills, the agent's inline ones, and every GitHub skill
+  that names its skill. A runtime template's skill of one of these names must
+  give way before the mount, not only be overwritten by it: a reconciliation
+  that finds a named GitHub skill's directory already there does not fetch it.
+  An unnamed GitHub install's directories are known only once it is fetched.
+  Only plain names (no `/`, not `.` or `..`) are answered.
   """
-  @spec inline_names([map()] | nil) :: [String.t()]
-  def inline_names(skills) do
-    agent =
-      for s <- normalize(skills), is_binary(s["content"]), is_binary(s["name"]), do: s["name"]
+  @spec owned_names([map()] | nil) :: [String.t()]
+  def owned_names(skills) do
+    agent = for s <- normalize(skills), is_binary(s["name"]), do: s["name"]
 
     Enum.uniq(for name <- @bundled_skills ++ agent, name =~ @plain_name, do: name)
   end

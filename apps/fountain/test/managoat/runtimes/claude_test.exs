@@ -74,8 +74,8 @@ defmodule Managoat.Runtimes.ClaudeTest do
     for agent <- [%{mcp_servers: %{}}, %{mcp_servers: nil}, nil, %{}] do
       assert Claude.write_config(handle, agent, @home) == :ok
       assert_receive {:read, [@settings, @user_config]}
-      assert assert_wrote(@settings) == %{"showThinkingSummaries" => true}
       assert assert_wrote(@user_config) == %{"mcpServers" => %{}}
+      assert assert_wrote(@settings) == %{"showThinkingSummaries" => true}
       refute_received {:wrote, "/home/sprite/.mcp.json", _, _}
     end
   end
@@ -94,11 +94,12 @@ defmodule Managoat.Runtimes.ClaudeTest do
 
     # Both files are read in one exec, before anything is written.
     assert_receive {:read, [@settings, @user_config]}
-    # User-scope servers need no approval, so nothing is pre-approved.
-    assert assert_wrote(@settings) == %{"showThinkingSummaries" => true}
 
     # Renamed into place, so the CLI never reads half a file.
     assert %{"mcpServers" => %{"fs" => %{"command" => "npx"}}} = assert_wrote(@user_config)
+
+    # User-scope servers need no approval, so nothing is pre-approved.
+    assert assert_wrote(@settings) == %{"showThinkingSummaries" => true}
 
     # Nothing goes to the project scope any more.
     refute_received {:wrote, "/home/sprite/.mcp.json", _, _}
@@ -153,6 +154,20 @@ defmodule Managoat.Runtimes.ClaudeTest do
              Claude.write_config(handle, %{mcp_servers: %{"a" => %{"command" => "x"}}}, @home)
 
     refute_received {:wrote, _tmp, _body, _opts}
+  end
+
+  test "a settings.json that does not parse keeps nothing else from being written", %{
+    handle: handle
+  } do
+    # A hand edit gone wrong: the servers (and a rotated token in them) still land.
+    stub_sandbox(%{@settings => "{oops", @user_config => ~s({"mcpServers": {}})})
+    servers = %{"a" => %{"command" => "x"}}
+
+    assert {:error, {:runtime_config, @settings, :unreadable}} =
+             Claude.write_config(handle, %{mcp_servers: servers}, @home)
+
+    assert assert_wrote(@user_config) == %{"mcpServers" => servers}
+    refute_received {:wrote, @settings <> _, _, _}
   end
 
   test "files that already carry these values are left alone, so a wake does not race a live CLI",
@@ -266,7 +281,7 @@ defmodule Managoat.Runtimes.ClaudeTest do
       {:error, {:unavailable, %Req.TransportError{reason: :timeout}}}
     end)
 
-    assert {:error, {:runtime_config, @settings, {:unavailable, _}}} =
+    assert {:error, {:runtime_config, @user_config, {:unavailable, _}}} =
              Claude.write_config(handle, %{mcp_servers: %{"fs" => %{"command" => "npx"}}}, @home)
   end
 

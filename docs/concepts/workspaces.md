@@ -193,12 +193,21 @@ environment has a setup script.
   hook script stays executable. A symlink is skipped, not followed, and so
   is anything that is not a file. A template, or a runtime's directory in it,
   that is itself a symlink is not used.
-- **A merged file that is not a JSON object fails.** For example, a
-  `settings.json` with a syntax error stops the conversation's provision or
-  attach with `runtime_template` and `not_a_json_object` naming the file.
-  Fix the setup script. A conversation without a workspace runs it again on
-  its next prompt. A ready workspace does not run its setup again, so create
-  the workspace again.
+- **A template that cannot be copied fails the conversation.** A merged file
+  that is not a JSON object, such as a `settings.json` with a syntax error,
+  fails it with `runtime_template` and `not_a_json_object` naming the file. A
+  file or directory the sandbox user cannot read, such as one written with
+  `sudo`, fails it with `runtime_template` and `unreadable` naming the path.
+  A conversation without a workspace then stays failed: fix the setup script
+  and start a new one. A ready workspace does not run its setup again, so
+  every conversation launched into it fails the same way until you fix the
+  file on its disk or create the workspace again.
+- **The template configures the runtime, and Managoat does not police it.**
+  A Claude `settings.json` can pre-approve tools (`permissions`), set
+  `env`, or run hooks, and a codex `config.toml` can change its sandbox and
+  approval settings. A tool a runtime allows by itself never reaches the
+  conversation's permission policy. That is what a shared `~/.claude` could
+  do before config homes, and it is the setup script's to decide.
 - **It is not a place for secrets.** The template is on the machine's disk
   like everything else. Every conversation's home gets a copy, and the
   [disk reads](#reading-its-disk) can read it, redacted like any other file.
