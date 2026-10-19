@@ -717,6 +717,31 @@ Options:
       --wait               wait until the workspace is ready, and fail if its setup fails
 ```
 
+## `managoat workspace retry`
+
+Set a failed workspace up again
+
+Set a failed workspace up again, with no prompt: a new machine is built
+from the environment and vault as they are now, so fix the environment first.
+Only a failed workspace can be retried.
+
+Without --wait the command returns as soon as the setup has started, with
+status provisioning. With --wait it follows the setup and exits non-zero if it
+fails again. A prompt into a conversation in the workspace starts the same
+setup; a retry and a prompt arriving together set it up once.
+
+```
+managoat workspace retry <id-or-name> [flags]
+```
+
+Options:
+
+```
+      --json               print the workspace as JSON
+      --timeout duration   how long --wait waits (default 30m0s)
+      --wait               wait until the workspace is ready, and fail if its setup fails again
+```
+
 ## `managoat workspace show`
 
 Show a workspace and its machine

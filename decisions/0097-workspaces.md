@@ -225,7 +225,9 @@ directories are copied; a symlink is neither followed nor copied.
   instructions, skills, MCP configuration, adapter) to the running machine.
   A prompt into a `failed` workspace retries the provision; the prompt
   waits for it and fails with it if it fails again. Two prompts into one
-  failed workspace retry it once; the second waits.
+  failed workspace retry it once; the second waits. The caller can also
+  retry it with no prompt (`POST /api/workspaces/:id/retry`, #3013), which
+  is the same rebuild, so a retry and a prompt set it up once too.
 - **A rebuild after a sandbox loss is lazy**: nothing provisions until the
   next prompt in any of the workspace's conversations, which sets the
   workspace back to `provisioning` (see Sandbox lost). Two prompts into a
@@ -1053,3 +1055,51 @@ A PR sequence, each releasable alone:
   and no transition, and a fence's stamp on one is refused. From this
   release on, a rollback below it needs the migration's `down` first, which
   restores the columns from the workspaces.
+- 2026-10-19 — A failed explicit workspace can be retried with no prompt
+  (#3013): `POST /api/workspaces/:id/retry`, full scope, `202` with
+  `status: "provisioning"` and the `workspace.status` events of a create,
+  audited as `workspace.retried` with the caller. It is refused with
+  `409 workspace_not_failed` unless the workspace is `failed`, `422
+  sandbox_provider_disabled` when its provider is no longer enabled (the
+  instance default is taken as enabled, as a launch takes it), `503
+  fleet_full`, and `404` for an implicit workspace, whose setup is its
+  conversation's. The retry is the rebuild a prompt into the failed
+  workspace starts (step 4), run by the workspace's own setup task with no
+  conversation: the new machine succeeds the failed row under the
+  workspace's lease, with the environment and vault read then (its
+  `built_from_revision` is that environment's revision, #2987), and the
+  workspace's live conversations follow it. The `failed` → `provisioning`
+  write is conditional, so of two retries one starts and the other is
+  `409`. Calls made here:
+  - A sandbox records the row it was rebuilt from (`sandboxes.predecessor_id`,
+    an additive migration), because timestamps are to the second and cannot
+    order a row and its successor made in the same second. A rebuild that
+    claims the lease from a row the workspace has already been rebuilt from
+    follows that rebuild rather than building another, for prompts as well
+    as retries. A workspace's current sandbox is never a row another was
+    rebuilt from.
+  - A prompt woken while a setup it did not start is under way (a retry's,
+    or a co-tenant's prompt's) waits for it, and if it fails the prompt
+    fails with it (`wake` `failed`, `workspace_setup_failed`) rather than
+    the wake building the machine again from the same environment, and a
+    launch's `pending` mark is undone. So a retry and a prompt set the
+    workspace up once and the prompt fails with the setup if it fails again;
+    the next prompt or retry after that starts a new one, which is why the
+    failure is marked retryable. A prompt whose server had started on the
+    failed row before the setup's machine was made is told the same thing
+    in the server's words (`provision` `failed`, `rebuild_unfinished`,
+    retryable). If a newer setup has moved the conversation by the time the
+    prompt would fail, the prompt follows that one instead.
+  - A retry that never reaches a new machine (a full fleet at the
+    reservation, a lease another setup held past the retry's wait, the task
+    stopping) puts the workspace back to `failed` with that reason in fixed
+    words, and the boot sweep does the same for a retry the server stopped
+    before it started. A retry whose task cannot be started is `503
+    sandbox_unavailable`, unaudited, and leaves the workspace `failed`.
+  - The conversations a retry moves are told the setup is being run again,
+    not that the machine was lost.
+  - The retry's deadline is the provision deadline, counted from the start
+    of the retry's task, so a retry that first waited for another setup's
+    lease has that much less time to build.
+  - The retry is not the rebuild of a working machine (#2986), which it
+    never touches.

@@ -370,8 +370,120 @@ defmodule FountainWeb.WorkspaceControllerTest do
     end
   end
 
+  describe "POST /api/workspaces/:id/retry" do
+    setup ctx do
+      data = create!(ctx)
+      fail_workspace!(data)
+      test = self()
+
+      stub(Provisioner, :retry, fn workspace, sandbox_id ->
+        send(test, {:retried, workspace.id, sandbox_id})
+        {:ok, self()}
+      end)
+
+      {:ok, data: data}
+    end
+
+    test "answers 202 provisioning, starts the setup from the failed machine and audits it",
+         ctx do
+      :ok = Workspaces.subscribe(ctx.user.id)
+
+      body =
+        api(ctx)
+        |> post("/api/workspaces/#{ctx.data["id"]}/retry")
+        |> json_response(202)
+        |> Map.fetch!("data")
+
+      assert body["id"] == ctx.data["id"]
+      assert body["status"] == "provisioning"
+      assert body["error"] == nil
+
+      failed_id = ctx.data["sandbox_id"]
+      workspace_id = ctx.data["id"]
+      assert_received {:retried, ^workspace_id, ^failed_id}
+      assert_received {:workspace_status, %{workspace_id: ^workspace_id, status: "provisioning"}}
+
+      assert [event] = Audit.list_for_user(ctx.user.id, action_prefix: "workspace.retried")
+      assert event.actor == "api"
+      assert event.resource_id == workspace_id
+      assert event.metadata["failed_sandbox_id"] == failed_id
+    end
+
+    test "a workspace that is not failed is 409 workspace_not_failed", ctx do
+      assert api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(202)
+
+      # Provisioning now: a second retry is refused, and starts nothing.
+      assert %{"error" => "workspace_not_failed", "message" => message} =
+               api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(409)
+
+      assert message =~ "already being set up"
+
+      {1, _} =
+        Repo.update_all(from(w in Workspace, where: w.id == ^ctx.data["id"]),
+          set: [status: "ready"]
+        )
+
+      assert %{"error" => "workspace_not_failed", "message" => message} =
+               api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(409)
+
+      assert message =~ "is ready"
+      assert [_one] = Audit.list_for_user(ctx.user.id, action_prefix: "workspace.retried")
+    end
+
+    test "another account's workspace, an implicit one and a missing one are 404", ctx do
+      other = insert_active_user()
+      foreign = insert_workspace(user_id: other.id, implicit: false, name: "x", status: "failed")
+      implicit = insert_workspace(user_id: ctx.user.id, status: "failed")
+
+      for id <- [foreign.id, implicit.id, Ecto.UUID.generate(), "not-a-uuid"] do
+        assert %{"error" => "not_found"} =
+                 api(ctx) |> post("/api/workspaces/#{id}/retry") |> json_response(404)
+      end
+
+      assert Repo.reload!(foreign).status == "failed"
+      refute_received {:retried, _, _}
+      assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.retried") == []
+    end
+
+    test "a provider no longer enabled is 422, and the workspace stays failed", ctx do
+      {1, _} =
+        Repo.update_all(from(w in Workspace, where: w.id == ^ctx.data["id"]),
+          set: [provider: "e2b"]
+        )
+
+      refute Fountain.SandboxProviders.enabled?(:e2b)
+
+      assert %{"error" => "sandbox_provider_disabled", "message" => message} =
+               api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(422)
+
+      assert message =~ "provider e2b"
+      assert Repo.get!(Workspace, ctx.data["id"]).status == "failed"
+      refute_received {:retried, _, _}
+    end
+
+    test "a full fleet is 503 fleet_full, and the workspace stays failed", ctx do
+      fill_fleet()
+
+      assert %{"error" => "fleet_full"} =
+               api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(503)
+
+      assert Repo.get!(Workspace, ctx.data["id"]).status == "failed"
+      refute_received {:retried, _, _}
+    end
+  end
+
+  defp fail_workspace!(data) do
+    sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+    {:ok, _} = update_sandbox(sandbox, %{status: "failed"})
+
+    {1, _} =
+      Repo.update_all(from(w in Workspace, where: w.id == ^data["id"]),
+        set: [status: "failed", error: "the environment's setup script exited 1"]
+      )
+  end
+
   describe "a sandbox's own key" do
-    test "may not create, list, show or delete workspaces", ctx do
+    test "may not create, list, show, delete, rebuild or retry workspaces", ctx do
       data = create!(ctx)
       {_record, sprite} = insert_sprite_api_key(ctx.user)
 
@@ -380,7 +492,8 @@ defmodule FountainWeb.WorkspaceControllerTest do
             {:get, "/api/workspaces", nil},
             {:get, "/api/workspaces/#{data["id"]}", nil},
             {:delete, "/api/workspaces/#{data["id"]}", nil},
-            {:post, "/api/workspaces/#{data["id"]}/rebuild", %{"interrupt" => true}}
+            {:post, "/api/workspaces/#{data["id"]}/rebuild", %{"interrupt" => true}},
+            {:post, "/api/workspaces/#{data["id"]}/retry", nil}
           ] do
         conn =
           api(ctx, sprite)

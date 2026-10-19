@@ -389,6 +389,8 @@ defmodule FountainWeb.Router do
     resources "/workspaces", WorkspaceController, only: [:index, :show, :create, :delete]
     # Rebuild its machine from its environment as it is now (#2986).
     post "/workspaces/:id/rebuild", WorkspaceController, :rebuild
+    # A failed workspace's setup run again with no prompt (#3013).
+    post "/workspaces/:id/retry", WorkspaceController, :retry
   end
 
   # No `:accepts_json`, for the same reason as the conversation stream below.

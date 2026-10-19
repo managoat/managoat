@@ -159,7 +159,12 @@ defmodule Fountain.Machines.MachineBoundsTest do
     # its machine with the watchdog's own wait and for the watchdog's reason
     # (ADR 0097 step 5, `Workspaces.Provisioner`): the same accessor, so the
     # value pinned above is the one it runs with.
-    "busy_wait_ms: ProvisionWatchdog.retire_wait_ms()"
+    "busy_wait_ms: ProvisionWatchdog.retire_wait_ms()",
+    # A retry of a failed workspace's setup (#3013) waits for a prompt's
+    # rebuild of the same workspace as long as that prompt's co-tenants would
+    # (`Workspaces.Provisioner.rerun/3`), then follows it: the rebuild's own
+    # accessor, pinned under the provision deadline below.
+    "busy_wait_ms: Rebuild.follow_wait_ms()"
   ]
 
   test "a rebuild's wait for the workspace sits inside the provision deadline" do

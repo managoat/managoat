@@ -118,6 +118,9 @@ func (w *workspaceAPI) serve(t *testing.T) func(http.ResponseWriter, *http.Reque
 			}
 			rw.WriteHeader(http.StatusAccepted)
 			_, _ = io.WriteString(rw, `{"data":{"id":"`+wsUUID+`","name":"shared","status":"provisioning"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/workspaces/"+wsUUID+"/retry":
+			rw.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(rw, `{"data":{"id":"`+wsUUID+`","name":"shared","status":"provisioning"}}`)
 		case r.Method == http.MethodDelete:
 			rw.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/conversations":
@@ -294,6 +297,75 @@ func TestWorkspaceDeleteByName(t *testing.T) {
 	assertRequest(t, lastWrite(t, w.requests()), http.MethodDelete, "/api/workspaces/"+wsUUID, nil)
 }
 
+func addWorkspaceRetryFlags(c *cobra.Command) {
+	c.Flags().Bool("wait", false, "")
+	c.Flags().Duration("timeout", time.Second, "")
+	c.Flags().Bool("json", false, "")
+}
+
+// Retry posts to the workspace's retry route, by name, with no body; --wait
+// follows the setup it started, and a setup that fails again says how to
+// retry.
+func TestWorkspaceRetry(t *testing.T) {
+	t.Run("by name", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		silenceStdout(t)
+		if err := workspaceRetry(testCmd(t, addWorkspaceRetryFlags), "shared"); err != nil {
+			t.Fatalf("workspaceRetry: %v", err)
+		}
+		assertRequest(t, lastWrite(t, w.requests()), http.MethodPost, "/api/workspaces/"+wsUUID+"/retry", nil)
+		if w.reads != 0 {
+			t.Errorf("read the workspace %d times without --wait", w.reads)
+		}
+	})
+
+	t.Run("wait, ready", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.statuses = []string{"provisioning", "ready"}
+		silenceStdout(t)
+		if err := workspaceRetry(testCmd(t, addWorkspaceRetryFlags, "--wait"), wsUUID); err != nil {
+			t.Fatalf("workspaceRetry --wait: %v", err)
+		}
+		if w.reads != 2 {
+			t.Errorf("read the workspace %d times, want 2", w.reads)
+		}
+	})
+
+	t.Run("wait, failed again", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.statuses = []string{"provisioning", "failed"}
+		silenceStdout(t)
+		err := workspaceRetry(testCmd(t, addWorkspaceRetryFlags, "--wait"), wsUUID)
+		if !errors.Is(err, errWorkspaceFailed) {
+			t.Fatalf("err = %v, want errWorkspaceFailed", err)
+		}
+		if !strings.Contains(err.Error(), "managoat workspace retry "+wsUUID) {
+			t.Errorf("the failure does not say how to retry: %v", err)
+		}
+	})
+
+	t.Run("not failed", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.refuse(http.MethodPost, "/api/workspaces/"+wsUUID+"/retry", http.StatusConflict,
+			`{"error":"workspace_not_failed","message":"the workspace is ready: only a failed workspace's setup can be retried"}`)
+		silenceStdout(t)
+		err := workspaceRetry(testCmd(t, addWorkspaceRetryFlags), wsUUID)
+		if err == nil || !strings.Contains(err.Error(), "managoat workspace wait") {
+			t.Fatalf("err = %v, want the workspace_not_failed hint", err)
+		}
+	})
+
+	t.Run("implicit or another account's", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.refuse(http.MethodPost, "/api/workspaces/"+wsUUID+"/retry", http.StatusNotFound, `{"error":"not_found"}`)
+		silenceStdout(t)
+		err := workspaceRetry(testCmd(t, addWorkspaceRetryFlags), wsUUID)
+		if err == nil || !strings.Contains(err.Error(), "no workspace "+wsUUID) {
+			t.Fatalf("err = %v, want no workspace", err)
+		}
+	})
+}
+
 // `run --workspace` sends workspace_id beside --cwd, and only when named.
 func TestRunBodyCarriesTheWorkspace(t *testing.T) {
 	newWorkspaceAPI(t)
@@ -411,6 +483,7 @@ func TestExplainAPIError(t *testing.T) {
 		{"sandbox key", 403, map[string]any{"error": "insufficient_scope", "message": "This API key is not permitted to use workspaces", "reason": "insufficient_scope", "required_scope": "full"}, "full-scope key"},
 		{"sandbox key, older server", 403, map[string]any{"error": "this API key is not permitted to use workspaces", "reason": "insufficient_scope", "required_scope": "full"}, "full-scope key"},
 		{"in use", 409, map[string]any{"error": "source_in_use_by_workspace", "message": "a workspace was created from this"}, "managoat workspace delete"},
+		{"retry not failed", 409, map[string]any{"error": "workspace_not_failed", "message": "the workspace is ready"}, "Only a failed workspace"},
 		{"allowlist", 422, map[string]any{"error": "environment_not_allowed", "message": "environment is not in the agent's allowed_environment_ids"}, "allowlist applies to a workspace"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

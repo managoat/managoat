@@ -333,6 +333,13 @@ defmodule Fountain.Workspaces do
       order_by: [
         asc: s.workspace_id,
         desc: fragment("? NOT IN ('terminated', 'failed')", s.status),
+        # A row another was rebuilt from is not the newest, even in the same
+        # second (#3013): timestamps are to the second.
+        asc:
+          fragment(
+            "EXISTS (SELECT 1 FROM sandboxes p WHERE p.predecessor_id = ?)",
+            s.id
+          ),
         desc: s.inserted_at,
         desc: s.id
       ]
@@ -345,6 +352,228 @@ defmodule Fountain.Workspaces do
   @spec current_sandbox(Workspace.t()) :: Sandbox.t() | nil
   def current_sandbox(%Workspace{id: id} = workspace),
     do: Map.get(current_sandboxes([workspace]), id)
+
+  @doc """
+  Set a failed explicit workspace up again, with no prompt (#3013;
+  `POST /api/workspaces/:id/retry`).
+
+  `workspace` comes from the caller's scoped `get_workspace/2`. Refused, with
+  nothing written, unless it is `failed` (`{:workspace_not_failed, status}`),
+  when its provider is no longer enabled (`{:sandbox_provider_disabled,
+  provider}`), and when its provider's fleet is full (`:fleet_full`). An
+  implicit workspace, whose setup is its conversation's, is `:not_found`.
+
+  Otherwise the workspace goes `failed` → `provisioning` in one conditional
+  write, so of two retries one wins and the other is `:workspace_not_failed`,
+  with its `error` cleared; `workspace.retried` is audited with the caller,
+  the status is broadcast, and `Fountain.Workspaces.Provisioner.retry/2`
+  rebuilds the machine from the failed row in the background, reading the
+  environment and vault as they are then. That is the rebuild a prompt into
+  the failed workspace starts (ADR 0097, step 4), under the same lease: a
+  retry and a prompt set the workspace up once, and the prompt follows that
+  setup, failing with it if it fails. The provision settles the workspace
+  `ready` or `failed` as on create (`settle_provision/2`); a retry that never
+  reached a new machine is put back to `failed` (`abandon_retry/3`).
+  """
+  @spec retry_workspace(Workspace.t(), keyword()) ::
+          {:ok, Workspace.t()}
+          | {:error,
+             :not_found
+             | :fleet_full
+             | :sandbox_unavailable
+             | :provider_transaction_open
+             | {:workspace_not_failed, String.t()}
+             | {:sandbox_provider_disabled, atom()}}
+  def retry_workspace(workspace, opts \\ [])
+
+  def retry_workspace(%Workspace{implicit: false, user_id: user_id} = workspace, opts)
+      when is_binary(user_id) do
+    # Its own commit, then an audit event and a task that reads it.
+    if Repo.in_transaction?(),
+      do: {:error, :provider_transaction_open},
+      else: do_retry_workspace(workspace, opts)
+  end
+
+  def retry_workspace(%Workspace{}, _opts), do: {:error, :not_found}
+
+  defp do_retry_workspace(%Workspace{} = workspace, opts) do
+    with :ok <- failed?(workspace),
+         {:ok, provider} <- enabled_provider(workspace),
+         %Sandbox{} = failed <- current_sandbox(workspace) || {:error, :not_found},
+         :ok <-
+           Fountain.Quotas.check_fleet_ceiling(provider: workspace.provider, exclude: failed.id),
+         {:ok, workspace} <- begin_retry(workspace) do
+      # `provisioning` goes out before the task can settle the workspace, so
+      # the events arrive in order.
+      publish_status(workspace)
+
+      case Fountain.Workspaces.Provisioner.retry(workspace, failed.id) do
+        {:ok, _pid} ->
+          audit_retried(workspace, failed, provider, opts)
+          {:ok, workspace}
+
+        # Nothing was started, so nothing is audited and the caller is not
+        # told it was: the workspace is `failed` again, and a retry may follow.
+        {:error, reason} ->
+          Logger.error("workspace #{workspace.id}: retry did not start: #{inspect(reason)}")
+          abandon_retry(workspace.id, failed.id, :setup_not_rebuilt)
+          {:error, :sandbox_unavailable}
+      end
+    end
+  end
+
+  defp audit_retried(workspace, failed, provider, opts) do
+    Fountain.Audit.record(%{
+      user_id: workspace.user_id,
+      action: "workspace.retried",
+      resource_type: "workspace",
+      resource_id: workspace.id,
+      actor: Keyword.get(opts, :actor, "self"),
+      request_ip: Keyword.get(opts, :request_ip),
+      metadata: %{
+        "failed_sandbox_id" => failed.id,
+        "environment_id" => workspace.environment_id,
+        "vault_id" => workspace.vault_id,
+        "provider" => Atom.to_string(provider)
+      }
+    })
+  end
+
+  defp failed?(%Workspace{status: "failed"}), do: :ok
+  defp failed?(%Workspace{status: status}), do: {:error, {:workspace_not_failed, status}}
+
+  # The instance default is taken as usable, as a launch and a create take it
+  # (`Conversations.resolve_sandbox_provider/1`, `resolve_provider/1`); any
+  # other provider must still be enabled.
+  defp enabled_provider(%Workspace{provider: name}) do
+    if name in Fountain.SandboxProviders.known_providers() do
+      provider = String.to_existing_atom(name)
+
+      if provider == Fountain.SandboxProviders.default_provider() or
+           Fountain.SandboxProviders.enabled?(provider),
+         do: {:ok, provider},
+         else: {:error, {:sandbox_provider_disabled, provider}}
+    else
+      {:error, {:sandbox_provider_disabled, name}}
+    end
+  end
+
+  defp begin_retry(%Workspace{id: id, user_id: user_id}) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Repo.update_all(
+           from(w in Workspace,
+             where:
+               w.id == ^id and w.user_id == ^user_id and not w.implicit and
+                 w.status == "failed",
+             select: w
+           ),
+           set: [status: "provisioning", error: nil, updated_at: now]
+         ) do
+      {1, [workspace]} ->
+        {:ok, workspace}
+
+      {0, _} ->
+        case get_workspace(id, user_id) do
+          %Workspace{status: status} -> {:error, {:workspace_not_failed, status}}
+          nil -> {:error, :not_found}
+        end
+    end
+  end
+
+  @doc """
+  Put an explicit workspace back to `failed` when the retry from
+  `failed_sandbox_id` set it `provisioning` and reached no new machine, with
+  `reason` in words. Only while nothing has been built since: no live sandbox
+  in the workspace and none newer than `failed_sandbox_id` (whoever made one
+  settles the workspace, and a retry after that one is not this one's to
+  undo). A settled workspace and an ownerless one are left alone too, so this
+  is safe to call once after any retry, whatever it answered. Broadcasts the
+  change. Best effort, like `settle_provision/2`.
+  """
+  @spec abandon_retry(Ecto.UUID.t(), Ecto.UUID.t(), term()) :: :ok
+  def abandon_retry(workspace_id, failed_sandbox_id, reason)
+      when is_binary(workspace_id) and is_binary(failed_sandbox_id) do
+    from(w in stranded_retries(),
+      where:
+        w.id == ^workspace_id and
+          not exists(
+            from(s in Sandbox,
+              join: f in Sandbox,
+              on: f.id == ^failed_sandbox_id,
+              where:
+                s.workspace_id == parent_as(:workspace).id and s.id != f.id and
+                  (s.predecessor_id == f.id or s.inserted_at > f.inserted_at),
+              select: 1
+            )
+          )
+    )
+    |> fail_stranded(reason)
+  end
+
+  defp fail_stranded(query, reason) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Repo.update_all(from(w in query, select: w),
+           set: [status: "failed", error: retry_words(reason), updated_at: now]
+         ) do
+      {n, workspaces} when n > 0 ->
+        Enum.each(workspaces, fn workspace ->
+          Logger.warning("workspace #{workspace.id}: retry not set up: #{inspect(reason)}")
+          publish_status(workspace)
+        end)
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning("workspaces: could not settle a retry: " <> Exception.message(error))
+      :ok
+  end
+
+  # What a retry that reached no machine says. Words only, never a term's
+  # inspection: nothing here was redacted.
+  defp retry_words(:fleet_full),
+    do: "the setup could not start again: every sandbox slot on its provider is in use"
+
+  defp retry_words(:provision_deadline_exceeded), do: failure_words(:provision_deadline_exceeded)
+
+  defp retry_words(:server_restarted),
+    do: "the setup did not start again before the server restarted; retry it"
+
+  defp retry_words(_reason), do: "the setup could not start again; retry it"
+
+  @doc """
+  At boot, put back to `failed` every explicit workspace a retry left
+  `provisioning` with no machine being built: the server stopped between the
+  retry's answer and its rebuild (`abandon_retry/3`'s condition, over every
+  account). A create and a rebuild write their workspace's `provisioning` in
+  the same commit as its new sandbox, so nothing else matches. Run by
+  `Fountain.Machines.BootSweep`.
+  """
+  @spec _unsafe_settle_stranded_retries() :: :ok
+  def _unsafe_settle_stranded_retries, do: fail_stranded(stranded_retries(), :server_restarted)
+
+  # Explicit, owned, `provisioning`, and with no live sandbox: a retry nothing
+  # is building.
+  defp stranded_retries do
+    from(w in Workspace,
+      as: :workspace,
+      where:
+        not is_nil(w.user_id) and not w.implicit and w.status == "provisioning" and
+          not exists(
+            from(s in Sandbox,
+              where:
+                s.workspace_id == parent_as(:workspace).id and
+                  s.status not in ^@terminal_statuses,
+              select: 1
+            )
+          )
+    )
+  end
 
   @doc """
   Delete an explicit workspace (ADR 0097, Lifecycle): not refused while
@@ -637,7 +866,13 @@ defmodule Fountain.Workspaces do
           %Sandbox{status: s} = sandbox when s in ["pending", "starting"] ->
             if Fountain.Machines.Machine.busy?(sandbox), do: :building, else: {:stranded, sandbox}
 
-          _settled_or_none ->
+          # `provisioning` over an ended machine is a retry (#3013) whose
+          # task has not made its new machine yet: it is building. One the
+          # server stopped is put back to `failed` at boot.
+          %Sandbox{} ->
+            :building
+
+          nil ->
             :settled
         end
     end

@@ -349,6 +349,20 @@ export class Workspaces {
   }
 
   /**
+   * Set a failed workspace up again, with no prompt: a new machine is built
+   * from its environment and vault as they are now, so fix the environment
+   * first. It comes back `provisioning`; `waitForReady` follows it. A prompt
+   * into the workspace starts the same setup, and the two set it up once.
+   * Refused with a `ManagoatError` (409, `workspace_not_failed`) unless the
+   * workspace is `failed`, and with a `NotReadyError` (`fleet_full`) when
+   * every sandbox slot on its provider is in use. An implicit workspace is a
+   * `NotFoundError`.
+   */
+  async retry(nameOrId: string): Promise<Workspace> {
+    return this.http.data<Workspace>("POST", `${this.path}/${await this.id(nameOrId)}/retry`);
+  }
+
+  /**
    * Read the workspace until its setup settles. Resolves with it when it is
    * `ready`; throws `WorkspaceFailedError` when it is `failed`, and a
    * `ManagoatError` with code `timeout` when `timeoutMs` passes first.

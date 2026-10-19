@@ -57,6 +57,11 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
   It resolves `provisioning`; follow it with `waitForReady`. The
   `turns_running` and `rebuild_in_progress` codes on `ManagoatErrorCode`.
   Needs a Managoat server later than v0.37.2.
+- `managoat.workspaces.retry(nameOrId)`: sets a failed workspace up again
+  with no prompt, from its environment and vault as they are now, and comes
+  back `provisioning` for `waitForReady` to follow. A workspace that is not
+  `failed` is a `ManagoatError` with code `workspace_not_failed` (409), now
+  on `ManagoatErrorCode`. Needs a Managoat server later than v0.37.2.
 
 ### Changed
 

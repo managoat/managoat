@@ -99,6 +99,11 @@ defmodule Fountain.Conversations.Sandbox do
     # recorded, or from no environment.
     field :built_from_revision, Ecto.UUID
     field :built_from_digests, :map
+    # The sandbox this one replaced in its workspace (`Machines.Lease.succeed/3`),
+    # so a rebuild can see that a row has been rebuilt from already (#3013).
+    # Written with the successor, never by a changeset. Nil on a workspace's
+    # first machine and on rows made before it was recorded.
+    field :predecessor_id, Ecto.UUID
     # The identity the disk was materialized from, with the environment:
     # env vars, packages, repos and setup scripts are written at provision.
     # Nilified when the agent or vault is deleted, like a conversation's own

@@ -222,6 +222,7 @@ managoat workspace list [--implicit] [--json]
 managoat workspace show <id-or-name> [--json]
 managoat workspace wait <id-or-name> [--timeout 30m]
 managoat workspace rebuild <id-or-name> [--interrupt] [--wait] [--json]
+managoat workspace retry <id-or-name> [--wait] [--json]
 managoat workspace delete <id-or-name>
 
 managoat run <agent> --workspace <id-or-name> --cwd /home/sprite/app -p "..."
@@ -230,9 +231,11 @@ managoat run <agent> --workspace <id-or-name> --cwd /home/sprite/app -p "..."
 `create` answers as soon as the workspace exists, with status
 `provisioning`, and Managoat sets its machine up in the background.
 `--wait`, or `workspace wait` later, follows the setup until it is `ready`,
-and exits non-zero with the failing step if it is `failed`. The environment,
-vault and provider are fixed for the workspace's life; an edit to the
-environment reaches its next setup, a retry or a rebuild.
+and exits non-zero with the failing step if it is `failed`. `retry` sets a
+`failed` workspace up again once you have fixed the environment; with
+`--wait` it follows that setup the same way. The environment, vault and
+provider are fixed for the workspace's life; an edit to the environment
+reaches its next setup, a retry or a rebuild.
 
 `--workspace` on `run` and `acp` puts the conversation on the workspace's
 machine instead of a sandbox of its own. The workspace supplies the
