@@ -364,6 +364,62 @@ defmodule Fountain.Conversations.ConfigHome do
     end
   end
 
+  @doc """
+  The conversation ids whose config homes are on the machine behind
+  `handle`: the directories directly under
+  `Managoat.Runtimes.Layout.config_homes/0` whose names are conversation ids
+  (a UUID). Anything else there is not a conversation's and is not listed.
+  """
+  @spec listed_homes(Managoat.Sandbox.Handle.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def listed_homes(handle) do
+    dir = Layout.config_homes()
+
+    # Plain bash, no GNU `find -printf`: whatever image the provider runs.
+    script =
+      "[ -d #{quote_shell(dir)} ] || exit 0; " <>
+        "for d in #{quote_shell(dir)}/*/; do d=${d%/}; [ -d \"$d\" ] && printf '%s\\n' \"${d##*/}\"; done; true"
+
+    case Managoat.Sandbox.exec(handle, "bash", ["-c", script], timeout: 10_000) do
+      {:ok, out, 0} ->
+        {:ok, out |> String.split("\n", trim: true) |> Enum.filter(&conversation_id?/1)}
+
+      other ->
+        {:error, outcome(other)}
+    end
+  end
+
+  # The form a conversation's id has, and so its home's name: a lowercase
+  # canonical UUID. `Ecto.UUID.cast/1` would also take any 16-byte name.
+  @conversation_id ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+  defp conversation_id?(name), do: Regex.match?(@conversation_id, name)
+
+  @doc """
+  Remove the config homes of the conversations `ids` from the machine behind
+  `handle`, in one exec, best effort, as `remove/2` does for one. Only a
+  conversation's own home (`Layout.conversation_home?/1`) is named.
+  """
+  @spec remove_homes(Managoat.Sandbox.Handle.t(), [String.t()]) :: :ok
+  def remove_homes(_handle, []), do: :ok
+
+  def remove_homes(handle, ids) do
+    homes =
+      ids
+      |> Enum.map(&Layout.config_home/1)
+      |> Enum.filter(&Layout.conversation_home?/1)
+
+    script = "rm -rf -- " <> Enum.map_join(homes, " ", &quote_shell/1)
+
+    case Managoat.Sandbox.exec(handle, "bash", ["-c", script], timeout: 15_000) do
+      {:ok, _out, 0} ->
+        Logger.info("removed #{length(homes)} ended conversation(s)' config homes")
+
+      other ->
+        Logger.info("ended config homes not removed: #{inspect(outcome(other))}")
+    end
+
+    :ok
+  end
+
   defp outcome({:ok, _out, code}), do: {:exit, code}
   defp outcome({:error, reason}), do: reason
 

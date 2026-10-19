@@ -43,6 +43,13 @@ defmodule Fountain.Conversations.Wake do
   # working on, whatever its lease or transition says.
   @terminal_statuses ~w(terminated failed)
 
+  # How long a wake into an explicit workspace waits for another
+  # conversation's operation on the shared machine (a resume, a park, a
+  # reattach's confirm) before it answers 503: the resume budget, which is
+  # what such a wait usually is.
+  @co_tenant_wait_ms 60_000
+  @co_tenant_poll_ms 500
+
   # Probe the existing sandbox: if it's `ready` or `suspended` and sprites.dev
   # confirms the sprite still exists, we can reattach without provisioning a
   # new one. Otherwise, fall through to creating a fresh sandbox.
@@ -237,7 +244,8 @@ defmodule Fountain.Conversations.Wake do
   """
   def wake_suspended_sandbox(%Conversation{} = conv, sandbox_id, observed \\ :unknown)
       when is_binary(sandbox_id) do
-    Machine.ensure_up(sandbox_id,
+    sandbox_id
+    |> Machine.ensure_up(
       # ADR 0013: the work is done by this module on an unattended path — the
       # prompt that triggered it is the conversation's, not an operator's, and
       # the conversation is recorded in the event's metadata instead.
@@ -245,6 +253,7 @@ defmodule Fountain.Conversations.Wake do
       requesting_conversation_id: conv.id,
       observed: observed
     )
+    |> Termination.tidy_after_resume(sandbox_id)
   end
 
   # The child spec deliberately carries no prompt.
@@ -281,10 +290,7 @@ defmodule Fountain.Conversations.Wake do
     # verbatim, so the `{:already_started, winner_pid}` both call sites of this
     # function compensate for still arrives unchanged.
     with {:ok, pid} <-
-           Conversations.register_server(
-             sandbox_id,
-             Launch.child_spec(conv.id, sandbox_id, runtime_module)
-           ) do
+           register(conv, sandbox_id, Launch.child_spec(conv.id, sandbox_id, runtime_module)) do
       PromptDelivery.hand_over(pid, initial_prompt, images)
 
       # ownership: conv is the caller's own tenant-scoped row (see the
@@ -292,6 +298,77 @@ defmodule Fountain.Conversations.Wake do
       {:ok, Conversations._unsafe_get_conversation!(conv.id)}
     end
   end
+
+  # The registration door, waiting out a short operation on an explicit
+  # workspace's shared machine (#3001). Two wakes of one workspace: the first
+  # resumes the machine and its server's reattach takes the lease for
+  # `confirm_up/2`; the second, whose own wait in `wait_reuse/2` has seen the
+  # machine up, met that lease here and answered 503. It now waits, with a
+  # budget of its own the length of `wait_reuse/2`'s, while the machine is
+  # still one to attach to: an explicit workspace's `ready` or `suspended`
+  # row with no destroy asked for. Anything else the holder may have done to
+  # it (retired it as lost, destroyed it, a rebuild in progress on a terminal
+  # row, an abandoned resume only a resume can clear) ends the wait with the
+  # 503 it always got. A retry after the wait also has the door refuse a
+  # terminal row under its lock (`refuse_terminal:`), since the holder may
+  # retire the machine and let go between two polls, so a server is never
+  # registered onto a machine that went while this wake waited (review of
+  # #3001). The first attempt is the door as every caller has it: the
+  # rebuild's wake registers onto a terminal row on purpose. A refusal that
+  # comes from this conversation's own server (a concurrent wake of it got
+  # there first) is that server's to take the prompt, on any kind of
+  # workspace, as the start race's `already_started` is. An implicit
+  # machine's busy refusal is answered at once, as before.
+  defp register(conv, sandbox_id, spec),
+    do:
+      register(
+        conv,
+        sandbox_id,
+        spec,
+        [],
+        System.monotonic_time(:millisecond) + @co_tenant_wait_ms
+      )
+
+  defp register(conv, sandbox_id, spec, opts, deadline) do
+    case Conversations.register_server(sandbox_id, spec, opts) do
+      {:error, :sandbox_unavailable} = busy ->
+        cond do
+          pid = ConversationServer.whereis(conv.id) ->
+            {:error, {:already_started, pid}}
+
+          attachable_shared?(sandbox_id) and System.monotonic_time(:millisecond) < deadline ->
+            Process.sleep(@co_tenant_poll_ms)
+            register(conv, sandbox_id, spec, [refuse_terminal: true], deadline)
+
+          true ->
+            busy
+        end
+
+      other ->
+        other
+    end
+  end
+
+  # ownership: the waking conversation's own machine, passed down by the wake.
+  defp attachable_shared?(sandbox_id) do
+    case Conversations._unsafe_get_sandbox(sandbox_id) do
+      %Sandbox{status: status, transition: transition} = sandbox
+      when status in ["ready", "suspended"] and transition != "destroying" ->
+        not abandoned_resume?(sandbox) and
+          Fountain.Workspaces.machine_kind(sandbox) == :explicit
+
+      _ ->
+        false
+    end
+  end
+
+  # A `resuming` stamp nobody holds: the door refuses it until a resume
+  # clears it (`Conversations.register_server/3`), so waiting at the door
+  # cannot end it.
+  defp abandoned_resume?(%Sandbox{transition: "resuming"} = sandbox),
+    do: not Machine.busy?(sandbox)
+
+  defp abandoned_resume?(_sandbox), do: false
 
   @doc """
   Resume a conversation whose ConversationServer is gone (e.g. after a
@@ -517,12 +594,6 @@ defmodule Fountain.Conversations.Wake do
     end
   end
 
-  # How long a wake into an explicit workspace waits for another
-  # conversation's operation on the shared machine (a resume, a park) before
-  # it answers 503: the resume budget, which is what such a wait usually is.
-  @co_tenant_wait_ms 60_000
-  @co_tenant_poll_ms 500
-
   # `maybe_reuse_sandbox/1`, waiting out a live lease on an explicit
   # workspace's machine (ADR 0097): there, the lease is usually a co-tenant's
   # wake resuming the machine this prompt wants, so the second of two wakes
@@ -745,6 +816,28 @@ defmodule Fountain.Conversations.Wake do
 
     end_withdrawn_turn(conv_id, reason, meta)
     Fountain.Conversations.PromptReceipt.resolve(conv_id, meta[:prompt_receipt_id])
+  end
+
+  @doc """
+  `report_unrun_prompt/3` for each prompt queued for the calling server,
+  which is stopping without running them, with what travels with each (its
+  receipt, its `client_request_id`), taken from the mailbox
+  (`PromptDelivery.take_queued/0`). With none queued, one report without
+  them, as before, unless `bare: false`, for a stop that used to report
+  nothing when no prompt was waiting. Called in the stopping server's own
+  process.
+  """
+  @spec report_queued_unrun(binary(), term(), keyword()) :: :ok
+  def report_queued_unrun(conv_id, reason, opts \\ []) do
+    case PromptDelivery.take_queued() do
+      [] ->
+        if Keyword.get(opts, :bare, true), do: report_unrun_prompt(conv_id, reason)
+
+      metas ->
+        Enum.each(metas, &report_unrun_prompt(conv_id, reason, &1))
+    end
+
+    :ok
   end
 
   # A prompt withdrawn from a turn whose machine was lost (#3005,

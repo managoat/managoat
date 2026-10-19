@@ -668,16 +668,18 @@ defmodule Fountain.Conversations.ConversationServer do
 
             {:noreply, new_state}
 
-          {:error, _reason} ->
+          {:error, reason} ->
             # Wake owns this connection's credentials, not the existing disk or
             # another connection's session. Never destroy the machine here.
             Egress.release_prepared({:ok, state})
+            Reattachment.untaken(state.conversation_id, reason)
             {:stop, :normal, state}
         end
       else
         {:error, reason} ->
           failed = Reattachment.failed_stage(state, reason)
           Output.publish_stage(state.conversation_id, "reattach", "failed", failed)
+          Reattachment.untaken(state.conversation_id, reason)
 
           Egress.release_prepared({:ok, state})
           {:stop, :normal, state}
@@ -728,6 +730,7 @@ defmodule Fountain.Conversations.ConversationServer do
         meta = %{retryable: true}
         failed = Reattachment.failed_stage(state, reason, meta)
         Output.publish_stage(state.conversation_id, "reattach", "failed", failed)
+        Reattachment.untaken(state.conversation_id, :sandbox_unavailable)
 
         {:stop, :normal, state}
     end

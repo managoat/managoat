@@ -1116,26 +1116,40 @@ defmodule Fountain.Conversations do
   stepped over — a vanished sandbox is the child's problem to discover, not a
   reason to refuse to start it here. A *busy* machine is the one case that does
   refuse, and it refuses with the word its readers use.
+
+  `refuse_terminal: true` in `opts` also refuses a terminal row, under the
+  same lock, as `:sandbox_unavailable`: for a wake that waited for a busy
+  machine to attach to it, and must not register onto one that went while
+  it waited (#3001). Every other caller lets a server discover a retired row
+  for itself, as above.
   """
   # The child spec is whatever `DynamicSupervisor.start_child/2` takes: every
   # caller here passes `Launch.child_spec/3`'s `{ConversationServer, args}`
   # tuple rather than a map.
   @spec register_server(
           String.t() | nil,
-          Supervisor.child_spec() | {module(), term()} | module()
+          Supervisor.child_spec() | {module(), term()} | module(),
+          keyword()
         ) :: {:ok, pid()} | {:error, term()}
-  def register_server(sandbox_id, child_spec) do
+  def register_server(sandbox_id, child_spec, opts \\ []) do
     cond do
-      Repo.in_transaction?() -> {:error, :transaction_open}
-      is_nil(sandbox_id) -> start_server(child_spec)
-      true -> sandbox_id |> claim_registration(child_spec) |> report_registration(sandbox_id)
+      Repo.in_transaction?() ->
+        {:error, :transaction_open}
+
+      is_nil(sandbox_id) ->
+        start_server(child_spec)
+
+      true ->
+        sandbox_id
+        |> claim_registration(child_spec, Keyword.get(opts, :refuse_terminal, false))
+        |> report_registration(sandbox_id)
     end
   end
 
   defp start_server(child_spec),
     do: DynamicSupervisor.start_child(Fountain.ConversationSupervisor, child_spec)
 
-  defp claim_registration(sandbox_id, child_spec) do
+  defp claim_registration(sandbox_id, child_spec, refuse_terminal?) do
     with_sandbox_lock(sandbox_id, fn ->
       # The verdict is made on the locked read, never on the struct a caller
       # brought: a pre-lock reading is stale by construction, which is what
@@ -1147,6 +1161,9 @@ defmodule Fountain.Conversations do
           {:ok, {:no_row, start_server(child_spec)}}
 
         Machine.busy?(current) ->
+          {:error, :sandbox_unavailable}
+
+        refuse_terminal? and current.status in @terminal_statuses ->
           {:error, :sandbox_unavailable}
 
         # The one stamp this door does not clear, and so the one it refuses

@@ -146,7 +146,9 @@ prompts that arrive together start it once.
 
 Ending a conversation in a workspace, by terminating or deleting it, stops its
 adapter and removes its config home. Its transcript is kept. The machine stays,
-with everything else on its disk, for the next conversation.
+with everything else on its disk, for the next conversation. When the machine
+is parked at that moment, its config home is removed when the next prompt
+wakes the machine, so a parked machine is not woken only to delete a directory.
 
 ### Idle parks, and the next prompt wakes
 

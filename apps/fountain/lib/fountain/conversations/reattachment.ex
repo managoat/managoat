@@ -40,10 +40,9 @@ defmodule Fountain.Conversations.Reattachment do
   def awake(sandbox, _conv_id), do: {:ok, sandbox}
 
   defp resume_before_reattach(sandbox_id, conv_id) do
-    case Machine.ensure_up(sandbox_id,
-           actor: "system:wake",
-           requesting_conversation_id: conv_id
-         ) do
+    case sandbox_id
+         |> Machine.ensure_up(actor: "system:wake", requesting_conversation_id: conv_id)
+         |> Fountain.Conversations.Termination.tidy_after_resume(sandbox_id) do
       # ownership: the server's own machine, established at its init.
       {:ok, _outcome} ->
         {:ok, Conversations._unsafe_get_sandbox(sandbox_id)}
@@ -54,11 +53,33 @@ defmodule Fountain.Conversations.Reattachment do
           retryable: true
         })
 
-        # The prompt this server was started for will not run.
-        Fountain.Conversations.Wake.report_unrun_prompt(conv_id, reason)
+        # The prompt this server was started for will not run; reported
+        # with its receipt (#3001). Called in the server's own process.
+        Fountain.Conversations.Wake.report_queued_unrun(conv_id, reason)
         error
     end
   end
+
+  @doc """
+  What a reattaching server that could not attach says before it stops
+  (`Machine.confirm_up/2` refused the machine, the disk could not be
+  prepared, or the provider could not be reached): the prompts it was
+  started for are reported as not run, with their receipts, rather than
+  dropped with the server (#3001). Only prompts it holds. Called in the
+  server's own process.
+
+  The report's word: a machine retired under it is lost (the next prompt
+  rebuilds it), one another holder has is busy, and a refusal keeps its own
+  word (`:sandbox_unavailable` for a co-tenant's park, which the next
+  prompt's wake resumes).
+  """
+  @spec untaken(String.t(), term()) :: :ok
+  def untaken(conv_id, reason),
+    do: Fountain.Conversations.Wake.report_queued_unrun(conv_id, untaken(reason), bare: false)
+
+  defp untaken(:already_terminal), do: :machine_lost
+  defp untaken(:claimed_elsewhere), do: :machine_busy
+  defp untaken(reason), do: reason
 
   @doc false
   def prepare_source(handle, state, conv, agent, sprite_env) do
