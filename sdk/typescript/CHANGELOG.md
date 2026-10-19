@@ -42,7 +42,22 @@ Release dates are the UTC day npm published the version.
   `/api/workspaces` (Managoat v0.37.0 or later).
 - `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
 - The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
-  workspace refusal codes on `ManagoatErrorCode`.
+  workspace refusal codes on `ManagoatErrorCode`, `insufficient_scope` and
+  `sandbox_provider_disabled` among them.
+- The `AccountEvent`, `AccountLogEvent` and `ConversationsChangedEvent` types.
+
+### Changed
+
+- `managoat.events()` yields `AccountEvent` rather than `LogEvent`: a log
+  event, now typed with its `conversation_id`, or a `workspace.status` or
+  `conversations` notice, which the SDK tags with `kind: "workspace.status"`
+  or `kind: "conversations"`. Those notices were yielded before, typed as log
+  events. A switch on `kind` narrows to each. A type change: code that reads
+  `event.stage` or `event.state` without checking `kind` first no longer
+  compiles.
+- A refusal for a key's scope is a `ManagoatError` with `code`
+  `insufficient_scope` against a server that sends that code in `error`.
+  Earlier servers put a sentence there, which became the `code`.
 
 ---
 

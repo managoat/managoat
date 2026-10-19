@@ -2898,18 +2898,27 @@ defmodule FountainWeb.Schemas do
           type: :string,
           description:
             "The machine-readable code: `validation_failed`, `not_found`, " <>
-              "`fleet_full`, `expired`, " <>
-              "`invalid_token` and the rest. On the key-authentication and scope " <>
-              "refusals it is a sentence and `reason` carries the code.",
+              "`fleet_full`, `expired`, `insufficient_scope`, " <>
+              "`invalid_token` and the rest. On the key-authentication refusals " <>
+              "(401, and 403 `email_unverified`) it is a sentence and `reason` " <>
+              "carries the code.",
           example: "validation_failed"
         },
         message: %Schema{type: :string, description: "A sentence for a human, when there is one."},
         reason: %Schema{
           type: :string,
           description:
-            "A second stable word. On the 401 and 403 refusals from key " <>
-              "authentication and scope checks, `error` is prose and this is the " <>
-              "code (`api_key_invalid`, `api_key_expired`, `insufficient_scope`)."
+            "A second stable word. On the key-authentication refusals, `error` is " <>
+              "prose and this is the code (`api_key_invalid`, `api_key_expired`, " <>
+              "`email_unverified`). On a 403 `insufficient_scope` it repeats " <>
+              "`insufficient_scope`, where clients written before the scope refusals " <>
+              "carried their code in `error` look for it."
+        },
+        required_scope: %Schema{
+          type: :string,
+          description:
+            "Beside `error: \"insufficient_scope\"`: the key scope that is allowed " <>
+              "the request, a `full` key such as one from `managoat auth login`."
         },
         depth: %Schema{
           type: :integer,

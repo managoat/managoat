@@ -31,7 +31,10 @@ defmodule FountainWeb.ApiKeyScopeTest do
         |> post_json("/api/auth/api-keys", %{"name" => "escalated"})
 
       body = json_response(conn, 403)
+      assert body["error"] == "insufficient_scope"
       assert body["reason"] == "insufficient_scope"
+      assert body["required_scope"] == "full"
+      assert is_binary(body["message"])
     end
 
     test "no key is created when the attempt is refused", %{

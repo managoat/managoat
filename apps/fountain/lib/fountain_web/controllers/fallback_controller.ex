@@ -2,6 +2,8 @@ defmodule FountainWeb.FallbackController do
   @moduledoc false
   use FountainWeb, :controller
 
+  alias FountainWeb.ScopeRefusal
+
   def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
     conn
     |> put_status(:unprocessable_entity)
@@ -397,13 +399,7 @@ defmodule FountainWeb.FallbackController do
   # A sandbox's own key naming a workspace (ADR 0097): the same body the
   # full-scope plug answers with.
   def call(conn, {:error, :insufficient_scope}) do
-    conn
-    |> put_status(:forbidden)
-    |> json(%{
-      error: "this API key is not permitted to use workspaces",
-      reason: "insufficient_scope",
-      required_scope: "full"
-    })
+    ScopeRefusal.render(conn, "This API key is not permitted to use workspaces")
   end
 
   # Deleting an environment or vault an explicit workspace names (ADR 0097,

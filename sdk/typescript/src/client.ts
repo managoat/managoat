@@ -9,8 +9,8 @@ import { normalizeStreams, streamPath, type StreamRequest } from "./sse.ts";
 import type {
   AuthMe,
   Catalog,
+  AccountEvent,
   ConversationRecord,
-  LogEvent,
   SandboxDiff,
   SandboxFile,
   SandboxListing,
@@ -376,10 +376,17 @@ export class Managoat {
   /**
    * Every conversation the caller owns, on one connection — for a dashboard,
    * a conversation list with live status, or a process watching work it
-   * spawned itself. Each event carries its `conversation_id`.
+   * spawned itself. Switch on `kind`: a log event (`output`, `stage`)
+   * carries its `conversation_id`; `workspace.status` says one of the
+   * caller's workspaces changed status; `conversations` says the list
+   * changed. The two notices are live only, never replayed, and `streams`
+   * does not filter them.
    */
-  events(options: StreamRequest = {}): AsyncIterable<LogEvent> {
-    return streamPath(this.api, "/api/events/stream", { blocks: true, ...normalizeStreams(options) });
+  events(options: StreamRequest = {}): AsyncIterable<AccountEvent> {
+    return streamPath<AccountEvent>(this.api, "/api/events/stream", {
+      blocks: true,
+      ...normalizeStreams(options),
+    });
   }
 
   /** Forget the memoized agent/vault/environment listings. */

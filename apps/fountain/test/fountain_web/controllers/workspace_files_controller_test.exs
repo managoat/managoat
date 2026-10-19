@@ -195,7 +195,7 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
     end
 
     for route <- ["files", "file?path=x", "diff", "git-status"] do
-      assert %{"reason" => "insufficient_scope", "required_scope" => "full"} =
+      assert %{"error" => "insufficient_scope", "required_scope" => "full"} =
                ctx
                |> get_api("/api/workspaces/#{ctx.workspace.id}/#{route}", ctx.sprite_key)
                |> json_response(403)

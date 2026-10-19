@@ -40,6 +40,7 @@ defmodule FountainWeb.Plugs.SandboxKeyScope do
 
   alias Fountain.Conversations
   alias FountainWeb.SandboxKey
+  alias FountainWeb.ScopeRefusal
 
   def init(opts), do: opts
 
@@ -117,12 +118,9 @@ defmodule FountainWeb.Plugs.SandboxKeyScope do
 
   defp refuse(conn) do
     conn
-    |> put_status(:forbidden)
-    |> json(%{
-      error: "A sandbox key reaches only its own conversation tree and the inputs to spawn",
-      reason: "insufficient_scope",
-      required_scope: "full"
-    })
+    |> ScopeRefusal.render(
+      "A sandbox key reaches only its own conversation tree and the inputs to spawn"
+    )
     |> halt()
   end
 

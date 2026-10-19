@@ -342,7 +342,8 @@ func TestExplainAPIError(t *testing.T) {
 		hint   string
 	}{
 		{"fixes environment", 422, map[string]any{"error": "workspace_fixes_environment", "message": "the workspace fixes the environment"}, "drop --environment and --vault"},
-		{"sandbox key", 403, map[string]any{"error": "this API key is not permitted to use workspaces", "reason": "insufficient_scope", "required_scope": "full"}, "full-scope key"},
+		{"sandbox key", 403, map[string]any{"error": "insufficient_scope", "message": "This API key is not permitted to use workspaces", "reason": "insufficient_scope", "required_scope": "full"}, "full-scope key"},
+		{"sandbox key, older server", 403, map[string]any{"error": "this API key is not permitted to use workspaces", "reason": "insufficient_scope", "required_scope": "full"}, "full-scope key"},
 		{"in use", 409, map[string]any{"error": "source_in_use_by_workspace", "message": "a workspace was created from this"}, "managoat workspace delete"},
 		{"allowlist", 422, map[string]any{"error": "environment_not_allowed", "message": "environment is not in the agent's allowed_environment_ids"}, "allowlist applies to a workspace"},
 	} {

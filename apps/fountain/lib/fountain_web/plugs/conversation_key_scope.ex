@@ -23,10 +23,10 @@ defmodule FountainWeb.Plugs.ConversationKeyScope do
   can be reached without passing it. Any other key passes untouched.
   """
 
-  import Plug.Conn
-  import Phoenix.Controller, only: [json: 2]
+  import Plug.Conn, only: [halt: 1]
 
   alias Fountain.Accounts.ApiKey
+  alias FountainWeb.ScopeRefusal
 
   def init(opts), do: opts
 
@@ -59,11 +59,7 @@ defmodule FountainWeb.Plugs.ConversationKeyScope do
 
   defp refuse(conn) do
     conn
-    |> put_status(:forbidden)
-    |> json(%{
-      error: "A conversation key reads only its own conversation",
-      reason: "insufficient_scope"
-    })
+    |> ScopeRefusal.render("A conversation key reads only its own conversation")
     |> halt()
   end
 end

@@ -54,7 +54,7 @@ A conversation outside the tree answers `404 {"error": "not_found"}`, as
 another account's conversation does. Every other request, such as listing
 conversations, `/api/search`, the account event stream
 `/api/events/stream`, a conversation's `tree`, sandboxes and the audit log,
-gets `403` with `reason: "insufficient_scope"` and `required_scope: "full"`.
+gets `403` with `error: "insufficient_scope"` and `required_scope: "full"`.
 So does a route that a later release adds, unless that release adds it to this
 list.
 
@@ -85,7 +85,7 @@ sandbox of its own. In a workspace, though, every conversation can read the
 others' `MANAGOAT_TOKEN`, so what one key there reaches is in effect the
 union of their trees.
 
-A refused request gets `403` with `reason: "insufficient_scope"` and
+A refused request gets `403` with `error: "insufficient_scope"` and
 `required_scope: "full"`. Without this rule, a prompt-injected agent could
 rewrite an agent's instructions or an environment's setup script, and the
 next launch would run what it wrote. It could also replace your inference
@@ -685,7 +685,7 @@ conversation object reports `workspace_id`.
 | `422 environment_not_allowed`, `422 vault_not_allowed` | The agent's `allowed_environment_ids` or `allowed_vault_ids` leaves out the workspace's. |
 | `422 invalid_sandbox_api_access` | `sandbox_api_access` is `none`, which needs a sandbox of the conversation's own. |
 | `422 machine_name_with_workspace` | The launch names a `machine_name`; the workspace names its machine. |
-| `403`, `reason: insufficient_scope`, `required_scope: full` | The caller is a sandbox's own key. A conversation started from inside a sandbox always gets a sandbox of its own. |
+| `403 insufficient_scope`, `required_scope: full` | The caller is a sandbox's own key. A conversation started from inside a sandbox always gets a sandbox of its own. |
 
 `sandbox_id` on a launch is still `422 sandbox_attach_unsupported`.
 `workspace_id` is how two conversations share a machine. No fleet slot is
@@ -1003,9 +1003,13 @@ pagination, and returned metadata.
 Every JSON error status declares one schema, `Error`. Its `error` field is
 the machine-readable code to branch on. The other fields accompany particular
 codes and are absent otherwise: `message` is a sentence for a human, `errors`
-holds field validation messages beside `validation_failed`. On the
-key-authentication and scope refusals `error` is a sentence and `reason`
-carries the code. A 406 is the one
+holds field validation messages beside `validation_failed`. A refusal for a
+key's scope is `403` with `error: "insufficient_scope"` and
+`required_scope: "full"`, the scope that is allowed; its `reason` repeats the
+code for clients written when `error` was a sentence. On the
+key-authentication refusals (`401`, and `403` for an unverified email)
+`error` is a sentence and `reason` carries the code: `api_key_invalid`,
+`api_key_expired` or `email_unverified`. A 406 is the one
 exception: content negotiation fails before any operation runs and renders
 `{"errors": {"detail": "Not Acceptable"}}`.
 

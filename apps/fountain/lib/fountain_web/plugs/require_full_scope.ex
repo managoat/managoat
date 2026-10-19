@@ -15,18 +15,19 @@ defmodule FountainWeb.Plugs.RequireFullScope do
   instance of this rule and now delegates here so there is one implementation
   of "is this credential allowed to act on the account itself".
 
-  Pass `:error` to describe the refused capability; the response always carries
-  `reason: "insufficient_scope"` and `required_scope: "full"` so callers can
-  branch on shape rather than prose.
+  Pass `:error` to describe the refused capability; it is the response's
+  `message`. The response is `FountainWeb.ScopeRefusal`'s: `error:
+  "insufficient_scope"` and `required_scope: "full"`, so callers branch on the
+  code rather than prose.
 
   Session-authenticated browser routes never reach this plug; it guards the
   bearer-token API pipeline only.
   """
 
-  import Plug.Conn
-  import Phoenix.Controller, only: [json: 2]
+  import Plug.Conn, only: [halt: 1]
 
   alias Fountain.Accounts.ApiKey
+  alias FountainWeb.ScopeRefusal
 
   @default_error "This API key is not permitted to perform account-level writes"
 
@@ -55,12 +56,7 @@ defmodule FountainWeb.Plugs.RequireFullScope do
 
   defp refuse(conn, message) do
     conn
-    |> put_status(:forbidden)
-    |> json(%{
-      error: message,
-      reason: "insufficient_scope",
-      required_scope: "full"
-    })
+    |> ScopeRefusal.render(message)
     |> halt()
   end
 end

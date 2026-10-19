@@ -145,7 +145,7 @@ requests and no others:
 - `GET /api/conversations/<id>`, and its `/turns`, `/events` and `/stream`,
   and the images of its turns, for its own conversation.
 
-Every other request gets `403` with `reason: "insufficient_scope"`. This
+Every other request gets `403` with `error: "insufficient_scope"`. This
 includes other conversations, `/api/search`, `/api/events/stream`, agents,
 starting a conversation, and any write to its own conversation. Your server
 can read the conversation's transcript, so name only a server that you would

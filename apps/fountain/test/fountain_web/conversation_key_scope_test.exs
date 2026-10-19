@@ -81,7 +81,13 @@ defmodule FountainWeb.ConversationKeyScopeTest do
           |> dispatch(@endpoint, method, path, "{}")
 
         assert resp.status == 403, "#{method} #{path}: #{resp.status} #{resp.resp_body}"
-        assert Jason.decode!(resp.resp_body)["reason"] == "insufficient_scope"
+
+        assert %{
+                 "error" => "insufficient_scope",
+                 "reason" => "insufficient_scope",
+                 "required_scope" => "full",
+                 "message" => "A conversation key reads only its own conversation"
+               } = Jason.decode!(resp.resp_body)
       end
 
       _ = conn
