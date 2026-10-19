@@ -12,7 +12,8 @@ defmodule Fountain.Workspaces.Network do
     * **The floor and the CA are the machine's.** `allow: [broker]` and the
       broker root in the OS trust store are properties of the machine, not of
       whoever applied them, and are idempotent: every conversation that later
-      attaches applies them again (`Egress.reattach_policy/2`,
+      attaches ensures them again (`Egress.reattach_policy/2`, which writes
+      the floor only when the provider does not already report it, and
       `Egress.install_ca/4`), on a wake and after a rebuild alike, so they
       hold on whatever machine the workspace currently has.
     * **The transport relay belongs to the workspace.** It holds no token, and

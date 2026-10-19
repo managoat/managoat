@@ -458,6 +458,117 @@ defmodule Managoat.Sandbox.SpritesTest do
     end
   end
 
+  # A write resets the guest's open flows (fountain#2964), so an attach reads
+  # the policy back and writes only when it differs.
+  describe "network_policy_in_force?/2" do
+    # The read reconfigures the client's Req request, so it needs a real one.
+    defp read_client do
+      stub(Managoat.Sandbox.Sprites.Client, :get!, fn _opts ->
+        Sprites.new("test-token", base_url: "http://127.0.0.1:1")
+      end)
+    end
+
+    defp reports(rules) do
+      stub_client()
+      read_client()
+
+      stub(Sprites, :get_network_policy, fn %Sprites.Sprite{name: @name} ->
+        {:ok, %Sprites.Policy{rules: rules}}
+      end)
+    end
+
+    test "true only for exactly the compiled rules" do
+      reports([%Sprites.Policy.Rule{domain: "broker.test", action: "allow"}])
+      assert Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["other.test"]})
+
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{
+               allow: ["broker.test", "other.test"]
+             })
+    end
+
+    test "no rules is Sprites' allow-all, never an empty allowlist's deny-all" do
+      reports([])
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: []})
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+
+      reports([%Sprites.Policy.Rule{domain: "*", action: "deny"}])
+      assert Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: []})
+    end
+
+    test "an extra rule, a different action or an include is not a match" do
+      reports([
+        %Sprites.Policy.Rule{domain: "broker.test", action: "allow"},
+        %Sprites.Policy.Rule{domain: "*", action: "allow", include: "defaults"}
+      ])
+
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+
+      reports([%Sprites.Policy.Rule{domain: "broker.test", action: "deny"}])
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+
+      reports([%Sprites.Policy.Rule{domain: "broker.test", action: "allow", include: "defaults"}])
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+    end
+
+    test "a failed read is not a match" do
+      stub_client()
+      read_client()
+      stub(Sprites, :get_network_policy, fn _sprite -> {:error, {:api_error, 503, %{}}} end)
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+    end
+
+    test "a read that raises is not a match" do
+      stub_client()
+      read_client()
+      stub(Sprites, :get_network_policy, fn _sprite -> raise FunctionClauseError end)
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+    end
+
+    test "the read is short and not retried, unlike the write's 90 s client" do
+      test_pid = self()
+
+      stub(Managoat.Sandbox.Sprites.Client, :get!, fn opts ->
+        send(test_pid, {:client_opts, opts})
+        Sprites.new("test-token", base_url: "http://127.0.0.1:1")
+      end)
+
+      stub(Sprites, :get_network_policy, fn %Sprites.Sprite{client: client} ->
+        send(test_pid, {:retry, client.req.options[:retry]})
+        {:ok, %Sprites.Policy{rules: []}}
+      end)
+
+      refute Adapter.network_policy_in_force?(handle(), %NetworkPolicy{allow: ["broker.test"]})
+      assert_received {:client_opts, [timeout: 10_000]}
+      assert_received {:retry, false}
+    end
+
+    test "ensure_network_policy leaves a policy already in force alone" do
+      reports([%Sprites.Policy.Rule{domain: "broker.test", action: "allow"}])
+      reject(Sprites, :update_network_policy, 2)
+
+      assert {:ok, :unchanged} =
+               Managoat.Sandbox.ensure_network_policy(handle(), %NetworkPolicy{
+                 allow: ["broker.test"]
+               })
+    end
+
+    test "ensure_network_policy writes a policy that differs" do
+      reports([])
+
+      expect(Sprites, :update_network_policy, fn %Sprites.Sprite{name: @name},
+                                                 %Sprites.Policy{rules: rules} ->
+        assert [%Sprites.Policy.Rule{domain: "broker.test", action: "allow"}] = rules
+        :ok
+      end)
+
+      assert {:ok, :written} =
+               Managoat.Sandbox.ensure_network_policy(handle(), %NetworkPolicy{
+                 allow: ["broker.test"]
+               })
+    end
+  end
+
   describe "the network policy request's timeout (fountain#2559)" do
     # Sprites answers only once a booting sprite is up, which outlasts the
     # client's 30 s default; a timed-out request leaves its late answer on

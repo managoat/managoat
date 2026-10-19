@@ -209,6 +209,16 @@ defmodule Managoat.Sandbox do
   @callback apply_network_policy(Handle.t(), NetworkPolicy.t()) :: :ok | {:error, error()}
 
   @doc """
+  Whether `policy` is already the sandbox's egress policy, as the provider
+  reports it. Optional: `ensure_network_policy/2` writes the policy on an
+  adapter without it. Anything short of a definite match, a failed read
+  included, answers `false`, so the caller writes.
+  """
+  @callback network_policy_in_force?(Handle.t(), NetworkPolicy.t()) :: boolean()
+
+  @optional_callbacks network_policy_in_force?: 2
+
+  @doc """
   The sandbox's HTTP endpoint, or `{:error, :unsupported}` where the platform
   has no such concept.
 
@@ -359,6 +369,34 @@ defmodule Managoat.Sandbox do
   @spec apply_network_policy(Handle.t(), NetworkPolicy.t()) :: :ok | {:error, error()}
   def apply_network_policy(%Handle{} = handle, %NetworkPolicy{} = policy) do
     adapter(handle).apply_network_policy(handle, policy)
+  end
+
+  @doc """
+  Make `policy` the sandbox's egress policy, writing it only when the
+  provider does not already report exactly that policy.
+
+  A write is not free on every provider: a Sprites policy write resets the
+  guest's open TCP flows when it takes effect, and two writes about a second
+  apart left test sprites cutting 1–2.5 % of their flows for the 50 s they
+  were watched (fountain#2964). Where an adapter can read the policy back
+  (`c:network_policy_in_force?/2`), an unchanged one is left alone and this
+  answers `{:ok, :unchanged}`; otherwise it writes, as
+  `apply_network_policy/2`, and answers `{:ok, :written}`.
+
+  A skip trusts the provider's report of its stored policy to be the policy
+  it enforces. Callers pass only a machine they know to be running.
+  """
+  @spec ensure_network_policy(Handle.t(), NetworkPolicy.t()) ::
+          {:ok, :unchanged | :written} | {:error, error()}
+  def ensure_network_policy(%Handle{} = handle, %NetworkPolicy{} = policy) do
+    adapter = adapter(handle)
+
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :network_policy_in_force?, 2) and
+         adapter.network_policy_in_force?(handle, policy) do
+      {:ok, :unchanged}
+    else
+      with :ok <- __MODULE__.apply_network_policy(handle, policy), do: {:ok, :written}
+    end
   end
 
   @doc """

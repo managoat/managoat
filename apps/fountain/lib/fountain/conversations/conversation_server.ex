@@ -627,14 +627,17 @@ defmodule Fountain.Conversations.ConversationServer do
 
     # A broker failure lands in the transient arm below: it says nothing
     # about the sandbox, and the next wake mints again.
-    with {:ok, _info} <-
+    with {:ok, info} <-
            Managoat.Sandbox.Retry.with_backoff(
              fn -> Reattachment.lookup(handle) end,
              label: "sprite lookup on wake"
            ),
          {:ok, state} <- Egress.prepare_state(state),
          {:ok, ca_files} <- Egress.ca_files(state.broker, handle),
-         :ok <- Egress.reattach_policy(handle, state.conversation_id) do
+         :ok <-
+           Egress.reattach_policy(handle, state.conversation_id,
+             running?: match?(%{status: :running}, info)
+           ) do
       Output.publish_stage(state.conversation_id, "reattach", "started", %{
         machine_name: sandbox.machine_name,
         # The old key, kept beside machine_name until #2776.

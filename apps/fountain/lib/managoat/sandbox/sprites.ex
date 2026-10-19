@@ -295,14 +295,47 @@ defmodule Managoat.Sandbox.Sprites do
   @impl true
   def apply_network_policy(%Handle{} = handle, %NetworkPolicy{allow: allow}) do
     policy = %Sprites.Policy{rules: compile_rules(allow)}
-    timeout = Managoat.Sandbox.Config.get(__MODULE__, :policy_timeout_ms, 90_000)
-    sprite = Sprites.sprite(Client.get!(timeout: timeout), handle.name)
 
-    case Sprites.update_network_policy(sprite, policy) do
+    case Sprites.update_network_policy(policy_sprite(handle), policy) do
       :ok -> :ok
       {:error, reason} -> {:error, Errors.normalize(reason)}
     end
   end
+
+  # A policy write resets the guest's open flows when it takes effect: the
+  # host drops their NAT state and answers the remote with resets the guest
+  # never sees, and a rewrite about a second after the first left every test
+  # sprite cutting 1–2.5 % of its flows for as long as it was watched
+  # (fountain#2964). So an attach reads the policy back first. Only an exact
+  # match of the compiled rules counts, in order; a failed, slow or raising
+  # read is not one, and the caller writes. The SDK keeps only a rule's
+  # domain, action and include, so those are what is compared.
+  #
+  # The read gets a short timeout and no retries: a miss costs only the write
+  # it would have saved, where the write's own 90 s client with Req's GET
+  # retries could hold a wake for minutes.
+  @policy_read_timeout_ms 10_000
+
+  @impl true
+  def network_policy_in_force?(%Handle{name: name}, %NetworkPolicy{allow: allow}) do
+    client = Client.get!(timeout: @policy_read_timeout_ms)
+    client = %{client | req: Req.merge(client.req, retry: false)}
+
+    case Sprites.get_network_policy(Sprites.sprite(client, name)) do
+      {:ok, %Sprites.Policy{rules: rules}} ->
+        Enum.map(rules, &rule_key/1) == Enum.map(compile_rules(allow), &rule_key/1)
+
+      _other ->
+        false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp rule_key(%Sprites.Policy.Rule{domain: domain, action: action, include: include}),
+    do: {domain, action, include}
+
+  defp rule_key(_other), do: :unknown
 
   @doc """
   Compile an intent-level allowlist into Sprites policy rules.
@@ -323,6 +356,13 @@ defmodule Managoat.Sandbox.Sprites do
   end
 
   # ── internals ──────────────────────────────────────────────────────────────
+
+  # The policy write waits as long as a boot can take, on a client of its
+  # own (see `apply_network_policy/2`).
+  defp policy_sprite(%Handle{name: name}) do
+    timeout = Managoat.Sandbox.Config.get(__MODULE__, :policy_timeout_ms, 90_000)
+    Sprites.sprite(Client.get!(timeout: timeout), name)
+  end
 
   # Operations must work on any handle whose provider/name are set: a handle
   # that crossed a serialization boundary (or came straight from
