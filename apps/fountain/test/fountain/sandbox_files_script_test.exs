@@ -224,7 +224,19 @@ defmodule Fountain.SandboxFilesScriptTest do
       file = Path.join(dir, "a.txt")
 
       assert {"", 9} = run(:read, ["100", file, c.root, dir], [], ["/home/sprite", "mount:/opt"])
-      assert {_encoded, 0} = run(:read, ["100", file, c.root, dir], [], ["/home/sprite", "/opt"])
+
+      # A working directory inside a checkout, below the clone's top, is one.
+      clone = Path.join(physical!(c.outside), "work")
+      sub = Path.join(clone, "api")
+      File.mkdir_p!(Path.join(clone, ".git"))
+      File.mkdir_p!(sub)
+      File.write!(Path.join(sub, "a.txt"), "inside")
+
+      assert {_encoded, 0} =
+               run(:read, ["100", Path.join(sub, "a.txt"), c.root, sub], [], [
+                 "/home/sprite",
+                 "mount:/work/api"
+               ])
     end
 
     test "with a home that does not resolve, a repository mount admits nothing either", c do

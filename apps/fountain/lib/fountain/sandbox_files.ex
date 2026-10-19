@@ -199,10 +199,17 @@ defmodule Fountain.SandboxFiles do
       end
 
     Enum.uniq_by(
-      Enum.map([@home | working], &{&1, "sandbox:"}) ++
+      [{@home, "sandbox:"} | Enum.map(working, &{&1, working_tag(&1)})] ++
         Enum.map(mount_roots(sandbox), &{&1, "mount:"}),
       &elem(&1, 0)
     )
+  end
+
+  # A working directory outside the home and /tmp was admitted at its launch
+  # under a repository mount, read as the environment was then, so it is held
+  # to a mount's rule: a root only inside a checkout.
+  defp working_tag(dir) do
+    if under?(dir, @home) or under?(dir, "/tmp"), do: "sandbox:", else: "mount:"
   end
 
   # ownership: the caller fetched `sandbox` tenant-scoped, and the
@@ -689,6 +696,15 @@ defmodule Fountain.SandboxFiles do
     inside=
     home=
     first=1
+    # The directory, or one of its ancestors below /, has a `.git`.
+    in_checkout() {
+      c=$1
+      while [ -n "$c" ] && [ "$c" != / ]; do
+        [ -e "$c/.git" ] && return 0
+        c=${c%/*}
+      done
+      return 1
+    }
     while [ "$#" -ge 2 ]; do
       named=$1
       case $2 in
@@ -719,10 +735,12 @@ defmodule Fountain.SandboxFiles do
         # With no home, no other root counts either: the home that did not
         # resolve may be the one a working directory was checked against.
         continue
-      elif [ -n "$mount" ] && [ ! -e "$r/.git" ]; then
-        # A repository mount is a root only once it is a checkout: the
-        # environment is read as it is now, and a mount added to it after
-        # the machine was set up names a directory nothing cloned to.
+      elif [ -n "$mount" ] && ! in_checkout "$r"; then
+        # A repository mount, or a working directory outside the home and
+        # /tmp (which can only lie under one), is a root only inside a
+        # checkout: the environment is read as it is now, and a mount added
+        # to it after the machine was set up names a directory nothing
+        # cloned to.
         continue
       elif [ "$r" != "$named" ]; then
         case $logical in

@@ -207,7 +207,8 @@ defmodule Fountain.Conversations.ConfigHomeTest do
                  "fountain-dirs",
                  @home,
                  "/home/sprite/it's",
-                 "/home/sprite/.managoat"
+                 "/home/sprite/.managoat",
+                 ""
                ]
 
         {:ok, "", 0}
@@ -217,10 +218,29 @@ defmodule Fountain.Conversations.ConfigHomeTest do
                ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/home/sprite/it's"}))
     end
 
-    test "a cwd that physically lies in the config homes is refused, as exit 7" do
+    test "a cwd outside the home and /tmp asks for a checkout" do
+      test = self()
+
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", ["-c", _script | args], _opts ->
+        send(test, {:checkout, List.last(args)})
+        {:ok, "", 0}
+      end)
+
+      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+      assert_received {:checkout, "checkout"}
+      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/tmp/x"}))
+      assert_received {:checkout, ""}
+    end
+
+    test "a cwd that physically lies in the config homes is exit 7; one in no checkout is 8" do
       expect(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "", 7} end)
 
       assert {:error, {:conversation_directories, :cwd_inside_config_homes}} =
+               ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+
+      expect(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "", 8} end)
+
+      assert {:error, {:conversation_directories, :cwd_not_in_checkout}} =
                ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
     end
 
@@ -240,7 +260,7 @@ defmodule Fountain.Conversations.ConfigHomeTest do
       %{dir: dir, managoat: managoat, home: Path.join(managoat, "c/#{@id}")}
     end
 
-    defp dirs(c, cwd) do
+    defp dirs(c, cwd, checkout \\ "") do
       {_out, code} =
         System.cmd("bash", [
           "-c",
@@ -248,10 +268,25 @@ defmodule Fountain.Conversations.ConfigHomeTest do
           "fountain-dirs",
           c.home,
           cwd,
-          c.managoat
+          c.managoat,
+          checkout
         ])
 
       code
+    end
+
+    test "with `checkout`, the cwd must lie in a checkout, and nothing is made otherwise", c do
+      bare = Path.join(c.dir, "opt")
+      File.mkdir_p!(bare)
+      assert dirs(c, bare, "checkout") == 8
+      assert dirs(c, Path.join(bare, "new"), "checkout") == 8
+      refute File.exists?(Path.join(bare, "new"))
+
+      clone = Path.join(c.dir, "work/app")
+      File.mkdir_p!(Path.join(clone, ".git"))
+      assert dirs(c, clone, "checkout") == 0
+      assert dirs(c, Path.join(clone, "api/v2"), "checkout") == 0
+      assert File.dir?(Path.join(clone, "api/v2"))
     end
 
     test "creates both directories", c do

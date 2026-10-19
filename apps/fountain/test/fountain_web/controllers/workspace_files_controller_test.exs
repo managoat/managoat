@@ -288,7 +288,7 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
 
     ctx |> get_api("/api/sandboxes/#{implicit_sandbox.id}/files") |> json_response(200)
     assert_received {:exec_args, ["/work/app" | rest]}
-    assert rest == ["/home/sprite", "sandbox:/home/sprite", "/work/app", "sandbox:/work/app"]
+    assert rest == ["/home/sprite", "sandbox:/home/sprite", "/work/app", "mount:/work/app"]
   end
 
   test "an implicit workspace's sandbox keeps its conversation's directory as the base", ctx do

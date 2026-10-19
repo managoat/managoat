@@ -254,7 +254,11 @@ defmodule Fountain.Conversations.ConfigHome do
   end
 
   defp make_directories(handle, conv) do
-    args = [home(conv), cwd(conv), managoat_dir()]
+    cwd = cwd(conv)
+    # A cwd outside the home and /tmp was admitted under a repository mount,
+    # read as the environment is now: it must lie in a checkout.
+    checkout = if under?(cwd, @image_home) or under?(cwd, "/tmp"), do: "", else: "checkout"
+    args = [home(conv), cwd, managoat_dir(), checkout]
 
     case Managoat.Sandbox.Retry.with_backoff(
            fn ->
@@ -269,6 +273,7 @@ defmodule Fountain.Conversations.ConfigHome do
          ) do
       {:ok, _out, 0} -> :ok
       {:ok, _out, 7} -> {:error, {:conversation_directories, :cwd_inside_config_homes}}
+      {:ok, _out, 8} -> {:error, {:conversation_directories, :cwd_not_in_checkout}}
       {:ok, _out, code} -> {:error, {:conversation_directories, {:exit, code}}}
       {:error, reason} -> {:error, {:conversation_directories, reason}}
     end
@@ -281,14 +286,28 @@ defmodule Fountain.Conversations.ConfigHome do
   # would put this conversation's agent in another's config home. So the
   # nearest existing ancestor of the cwd is resolved physically before
   # anything is created there, and the cwd itself after, and either inside
-  # the physical config-homes directory is exit 7. Paths are positional
-  # parameters, never interpolated.
+  # the physical config-homes directory is exit 7. With `checkout` (a cwd
+  # outside the home and /tmp, so under a repository mount), the nearest
+  # existing ancestor must lie in a checkout (it or an ancestor below `/` has
+  # a `.git`), or it is exit 8: a mount added to the environment after the
+  # machine was set up names nothing cloned. Paths are positional parameters,
+  # never interpolated. These are checks at launch, not a guarantee: something
+  # with root on the machine can swap a directory for a symlink afterwards.
   @spec directories_script() :: String.t()
   def directories_script do
     ~S"""
     home=$1
     cwd=$2
     managoat=$3
+    checkout=$4
+    in_checkout() {
+      c=$1
+      while [ -n "$c" ] && [ "$c" != / ]; do
+        [ -e "$c/.git" ] && return 0
+        c=${c%/*}
+      done
+      return 1
+    }
     inside() {
       p=$(cd -- "$1" 2>/dev/null && pwd -P && printf '.') || exit 1
       p=${p%$'\n.'}
@@ -300,6 +319,7 @@ defmodule Fountain.Conversations.ConfigHome do
     d=$cwd
     while [ ! -e "$d" ] && [ "$d" != / ]; do d=$(dirname -- "$d"); done
     inside "$d"
+    if [ -n "$checkout" ]; then in_checkout "$p" || exit 8; fi
     mkdir -p -- "$cwd" || exit 1
     inside "$cwd"
     """

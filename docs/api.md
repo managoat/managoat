@@ -651,7 +651,11 @@ workspace's. So an environment that clones to `/work/app` can run an agent in
 ancestors, inside `/home/sprite/.managoat`, under another home in `/home`,
 or in a system tree (`/.sprite`, `/bin`, `/boot`, `/dev`, `/etc`, `/lib*`,
 `/nix`, `/proc`, `/root`, `/run`, `/sbin`, `/snap`, `/sys`, `/usr`, `/var`) is
-still cloned, but does not widen this rule. The
+still cloned, but does not widen this rule. A `cwd` outside `/home/sprite` and
+`/tmp` must also lie in a checkout on the machine (the clone, or a directory
+under it) when the conversation starts there; otherwise its first turn fails
+setup. This matters for a workspace, whose machine clones only at setup: a
+mount added to the environment afterwards is not there yet. The
 path may not be inside `/home/sprite/.managoat`, where Managoat keeps each
 conversation's config home. Anything else returns `422 validation_failed`
 with the reason under `errors.cwd`. Managoat normalises the path
