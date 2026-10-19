@@ -41,7 +41,7 @@ many times. The fourth, the Conversation, is a run on a machine. The machine
 is the heavy work, and Managoat does it for you.
 
 <figure>
-<svg viewBox="0 0 960 552" role="img" aria-label="Three templates, one machine, in three stages. Stage one, write once: Agent, Environment and Vault are rows an account writes and reuses. Stage two, at launch: Managoat builds the machine, merges the Environment's secrets with the Vault's and the Vault wins, and starts the agent's runtime. Stage three, the machine: a sandbox receives its environment and runs exactly one Conversation, with its own transcript. The next turn lands on the same machine, and an idle machine parks until that turn wakes it. A bound secret's real value goes to the egress broker instead, the sandbox gets a placeholder, and the sandbox reaches the internet only through the broker." style="max-width:100%;height:auto">
+<svg viewBox="0 0 960 552" role="img" aria-label="Three templates, one machine, in three stages. Stage one, write once: Agent, Environment and Vault are rows an account writes and reuses. Stage two, at launch: Managoat builds the machine, merges the Environment's secrets with the Vault's and the Vault wins, and starts the agent's runtime. Stage three, the machine: a workspace's sandbox receives its environment and runs its Conversations, each with its own transcript; a Conversation launched without a workspace gets an implicit one of its own. The next turn lands on the same machine, and an idle machine parks until that turn wakes it. A bound secret's real value goes to the egress broker instead, the sandbox gets a placeholder, and the sandbox reaches the internet only through the broker." style="max-width:100%;height:auto">
   <rect width="960" height="552" rx="16" fill="#1e2129"/>
   <defs>
     <marker id="pr-a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#5796f4" stroke-width="1.5"/></marker>
@@ -56,7 +56,7 @@ is the heavy work, and Managoat does it for you.
   <text x="336" y="153" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600" fill="#d98d2b">2 · AT LAUNCH</text>
   <text x="336" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">One API call</text>
   <text x="640" y="153" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600" fill="#d98d2b">3 · THE MACHINE</text>
-  <text x="640" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">One sandbox per conversation</text>
+  <text x="640" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">Shared in a workspace, or a run’s own</text>
   <rect x="32" y="198" width="246" height="61" rx="10" fill="#2a2e38" stroke="#363b47"/>
   <text x="50" y="224" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="17" font-weight="600" fill="#f5f5f7">Agent</text>
   <text x="50" y="245" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" font-weight="400" fill="#a6a6b2">Model, runtime, skills</text>
@@ -100,7 +100,7 @@ is the heavy work, and Managoat does it for you.
   <path d="M784 409 V454" fill="none" stroke="#d98d2b" stroke-width="1.6" marker-end="url(#pr-b)"/>
   <text x="796" y="438" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="11" font-weight="400" fill="#f0c684">HTTPS_PROXY</text>
   <text x="32" y="485" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" font-weight="500" fill="#f5f5f7">Your setup is reusable.</text>
-  <text x="32" y="507" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#a6a6b2">Each run gets its own workspace.</text>
+  <text x="32" y="507" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#a6a6b2">Runs share a workspace, or get their own.</text>
 </svg>
 <figcaption><b>Three templates, one machine.</b> Agent, Environment and Vault are rows you write once. At launch Managoat builds the sandbox from the Environment, merges the secrets with the Vault winning, and starts the Agent's runtime. Each Conversation has a machine of its own, unless you launch several into one workspace, and its next turn lands on the machine the last one left. An idle machine parks, and the next turn wakes it. The fleet ceiling only refuses a new machine; it reclaims none. A bound secret's real value goes to the egress broker and the sandbox gets a placeholder, such as <code>__github_token__</code>; the sandbox reaches the internet only through the broker, which attaches the value. A secret with no binding enters the sandbox as an environment variable.</figcaption>
 </figure>

@@ -11,7 +11,9 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
       their audit row;
     * a co-tenant's failed rebuild does not fail this conversation;
     * a failed rebuild records its own reason, not `:provision_raised`;
-    * a prompt reported as not run carries its receipt and request id.
+    * a prompt reported as not run carries its receipt and request id, and
+      a provision that stands down for another owner reports a queued one
+      rather than dropping it.
 
   The turn reason inside the automatic-rebuild window is pinned in
   `live_machine_loss_test.exs`.
@@ -24,7 +26,8 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
   import ExUnit.CaptureLog
 
   alias Fountain.Conversations
-  alias Fountain.Conversations.{PromptReceipt, Rebuild, Sandbox, Termination, Turn, Wake}
+  alias Fountain.Conversations.{FreshProvision, PromptReceipt, Rebuild, Sandbox, Termination}
+  alias Fountain.Conversations.{Turn, Wake}
   alias Fountain.Machines.{Machine, Provision}
   alias Managoat.Sandbox.Handle
 
@@ -517,5 +520,57 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
     assert data["retryable"] == true
     assert data["client_request_id"] == "req-3"
     _ = eventually(fn -> not PromptReceipt.pending?(ctx.conv.id, meta[:prompt_receipt_id]) end)
+  end
+
+  describe "a provision that stands down for another owner" do
+    # `FreshProvision`'s silent arms: the machine is another owner's, so
+    # nothing is said about it, but a prompt queued for this server dies with
+    # its mailbox unless it is reported (#3001).
+    for {answer, word} <- [
+          {{:ok, :claimed_elsewhere}, "machine_busy"},
+          {{:ok, :already_terminal}, "machine_lost"},
+          {{:error, :sandbox_reset_pending}, "sandbox_unavailable"}
+        ] do
+      test "reports a queued prompt with its receipt on #{inspect(answer)}, and nothing without one",
+           ctx do
+        answer = unquote(Macro.escape(answer))
+        word = unquote(word)
+        stub(Machine, :provision, fn _id, _pipeline, _opts -> answer end)
+        state = %{conversation_id: ctx.conv.id, sandbox_id: ctx.sandbox.id}
+        run = fn -> FreshProvision.run(state, ctx.conv, ctx.sandbox, ctx.agent, nil, %{}) end
+
+        assert {:stop, :normal, _} = run.()
+        assert stages(ctx.conv.id, "wake") == []
+
+        meta = PromptReceipt.accept(ctx.conv.id, client_request_id: "req-4")
+        send(self(), {:"$gen_cast", {:initial_prompt, "hello", [], meta}})
+
+        assert {:stop, :normal, _} = run.()
+
+        assert [{"failed", data}] = stages(ctx.conv.id, "wake")
+        assert data["reason"] == word
+        assert data["retryable"] == true
+        assert data["client_request_id"] == "req-4"
+        assert data["prompt_receipt_id"] == meta[:prompt_receipt_id]
+        refute PromptReceipt.pending?(ctx.conv.id, meta[:prompt_receipt_id])
+        refute_received {:"$gen_cast", _}
+      end
+    end
+
+    for status <- ["terminated", "failed"] do
+      test "reports it as gone when the conversation is #{status}", ctx do
+        stub(Machine, :provision, fn _id, _pipeline, _opts -> {:ok, :already_terminal} end)
+        conv = ctx.conv |> Ecto.Changeset.change(status: unquote(status)) |> Repo.update!()
+        meta = PromptReceipt.accept(conv.id, client_request_id: "req-5")
+        send(self(), {:"$gen_cast", {:initial_prompt, "hello", [], meta}})
+
+        state = %{conversation_id: conv.id, sandbox_id: ctx.sandbox.id}
+
+        assert {:stop, :normal, _} =
+                 FreshProvision.run(state, conv, ctx.sandbox, ctx.agent, nil, %{})
+
+        assert [{"failed", %{"reason" => "gone", "retryable" => false}}] = stages(conv.id, "wake")
+      end
+    end
   end
 end
