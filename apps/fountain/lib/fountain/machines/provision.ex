@@ -769,14 +769,42 @@ defmodule Fountain.Machines.Provision do
 
   defp refuse_running(_moving, false), do: :ok
 
+  # Busy is a running turn, or a prompt accepted and not yet admitted: its
+  # receipt (`PromptReceipt`), which admission deletes in the turn insert's
+  # own transaction, so a prompt is always one or the other. Without this, a
+  # prompt whose wake was still bringing its server up would be dropped with
+  # that server, unreported (review of #2986). Only this boot's receipts
+  # within their TTL: an earlier boot's are reported by `PromptReceipt.recover/0`
+  # and prove nothing is in flight now.
   defp refuse_running(moving, true) do
-    case Repo.all(
-           from(t in Fountain.Conversations.Turn,
-             where: t.conversation_id in ^moving and t.status == "running",
-             distinct: true,
-             select: t.conversation_id
-           )
-         ) do
+    running =
+      Repo.all(
+        from(t in Fountain.Conversations.Turn,
+          where: t.conversation_id in ^moving and t.status == "running",
+          distinct: true,
+          select: t.conversation_id
+        )
+      )
+
+    cutoff =
+      DateTime.add(
+        DateTime.utc_now(),
+        -Fountain.Conversations.PromptReceipt.ttl_seconds(),
+        :second
+      )
+
+    accepted =
+      Repo.all(
+        from(r in Fountain.Conversations.PromptReceipt,
+          where:
+            r.conversation_id in ^moving and r.boot_id == ^Lease.boot_id() and
+              r.inserted_at >= ^cutoff,
+          distinct: true,
+          select: r.conversation_id
+        )
+      )
+
+    case Enum.uniq(running ++ accepted) do
       [] -> :ok
       busy -> {:error, {:turns_running, Enum.sort(busy)}}
     end

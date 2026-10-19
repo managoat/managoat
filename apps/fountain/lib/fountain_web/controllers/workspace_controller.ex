@@ -159,7 +159,8 @@ defmodule FountainWeb.WorkspaceController do
         "with its runtime session cleared: its agent starts fresh on its next prompt. " <>
         "Answers 202 with status provisioning; the status moves to ready or failed, each a " <>
         "workspace.status event. Refused with 409 turns_running while any conversation in " <>
-        "it has a running turn, unless interrupt is true, which ends those turns as " <>
+        "it has a running turn or a prompt accepted and not yet started, unless interrupt " <>
+        "is true, which ends those turns as " <>
         "interrupted (transcripts kept). A rebuild while the workspace is provisioning is " <>
         "409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a " <>
         "conversation's own sandbox. The vault is not touched.",
@@ -196,8 +197,9 @@ defmodule FountainWeb.WorkspaceController do
             |> json(%{
               error: "turns_running",
               message:
-                "a conversation in this workspace is running a turn; wait for it to end, " <>
-                  "or rebuild with interrupt: true to interrupt it",
+                "a conversation in this workspace is running a turn, or has a prompt that was " <>
+                  "accepted and has not started yet; wait for it to end, or rebuild with " <>
+                  "interrupt: true to interrupt it",
               conversation_ids: ids
             })
 

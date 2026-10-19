@@ -334,7 +334,8 @@ export class Workspaces {
    * next prompt. Resolves with the workspace, `provisioning`; `waitForReady`
    * follows it to `ready` (and `stale` false) or `failed`.
    *
-   * A running turn in any of its conversations refuses it with a
+   * A running turn in any of its conversations, or a prompt accepted there
+   * whose turn has not started yet, refuses it with a
    * `ManagoatError` of code `turns_running` (409, its `body.conversation_ids`
    * naming them), unless `interrupt: true`, which ends those turns as
    * interrupted with their transcripts kept. A rebuild while the workspace is

@@ -250,7 +250,8 @@ process.
   its owner, every live conversation follows it with its transcript kept and
   its session cleared, the old machine and its disk are destroyed, and the
   workspace's own provision builds the next from the environment as it is
-  then. A running turn refuses it (`409 turns_running`) unless the caller
+  then. A running turn, or a prompt accepted and not yet admitted, refuses
+  it (`409 turns_running`) unless the caller
   passes `interrupt: true`, which ends those turns as the ceiling does; a
   workspace already `provisioning` refuses it (`409 rebuild_in_progress`).
   The vault is not touched.
@@ -928,7 +929,10 @@ A PR sequence, each releasable alone:
   conversation re-attaches on its next prompt, through the follow logic of
   4b and #3007. Without `interrupt` a running turn refuses it, decided under
   the machine's advisory lock in the succession's transaction, so nothing is
-  written (`409 turns_running`, naming the conversations); with it, those
+  written (`409 turns_running`, naming the conversations), and so does a
+  prompt accepted and not yet admitted (its receipt, from this boot, which
+  admission deletes in the turn's own transaction), because its server
+  would be stopped with the prompt still in it; with it, those
   turns are ended in the same commit, as interrupted with
   `machine_destroyed`, transcripts kept, and announced and audited after it,
   so a rebuild refused for another reason (a full fleet) ends none. A

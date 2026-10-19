@@ -148,6 +148,35 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
     assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt") == []
   end
 
+  test "a prompt accepted but not yet started refuses it too, and nothing moves", ctx do
+    # A wake bringing the conversation's server up holds the prompt; the
+    # receipt is all the database knows of it until its turn is admitted.
+    waking = conversation(ctx, "pending")
+    meta = Fountain.Conversations.PromptReceipt.accept(waking.id, client_request_id: "req-1")
+
+    assert {:error, {:turns_running, [id]}} = rebuild(ctx)
+    assert id == waking.id
+    assert Repo.reload!(waking).sandbox_id == ctx.old.id
+    assert Repo.reload!(ctx.old).status == "ready"
+    assert Fountain.Conversations.PromptReceipt.pending?(waking.id, meta[:prompt_receipt_id])
+    refute_received {:provision_started, _, _}
+
+    # Once its turn is admitted (the receipt resolved) and ended, it goes.
+    :ok = Fountain.Conversations.PromptReceipt.resolve(waking.id, meta[:prompt_receipt_id])
+    assert {:ok, _} = rebuild(ctx)
+  end
+
+  test "an earlier boot's receipt, which its recovery reports, does not refuse it", ctx do
+    conv = conversation(ctx)
+
+    Repo.insert!(%Fountain.Conversations.PromptReceipt{
+      conversation_id: conv.id,
+      boot_id: "an-earlier-boot"
+    })
+
+    assert {:ok, _} = rebuild(ctx)
+  end
+
   test "interrupt: true ends the running turns as interrupted and keeps the transcripts", ctx do
     conv = conversation(ctx, "running")
     turn = insert_turn(conv, status: "running")

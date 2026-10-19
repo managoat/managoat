@@ -219,7 +219,8 @@ the lost-machine rebuild above, done when you ask and at once.
 Every conversation keeps its transcript and stays in the workspace, and its
 agent starts a fresh session on its next prompt. The workspace goes
 `provisioning`, then `ready` or `failed`, and `stale` clears. A running turn
-refuses the rebuild with `409 turns_running`, unless you pass
+refuses the rebuild with `409 turns_running`, and so does a prompt accepted
+but not yet started, unless you pass
 `interrupt: true`, which interrupts those turns and keeps their transcripts.
 A second rebuild while one is building is `409 rebuild_in_progress`. An
 implicit workspace cannot be rebuilt: it is a conversation's own sandbox.
