@@ -42,9 +42,14 @@ reattachment. The conversation response records it and the catalog
 advertises the supported values. A channel resume that asks for a different
 setting is refused, so a credential cannot be injected later.
 
-Every conversation has a sandbox of its own
-([0073](0073-one-sandbox-per-conversation.md)), so a `none` conversation can
-never inherit a credential from another conversation's machine.
+Every conversation launched without a `workspace_id` has a sandbox of its own
+([0073](0073-one-sandbox-per-conversation.md), an implicit workspace in
+[0097](0097-workspaces.md)), so a `none` conversation can never inherit a
+credential from another conversation's machine. `none` is a claim about a
+machine, so it exists only there: a launch naming a `workspace_id` with
+`none` is refused with `422 invalid_sandbox_api_access`. In a shared
+workspace this option's guarantees are bounded by 0097's one trust
+boundary: every conversation there can read the others' credentials.
 
 ## Consequences
 
@@ -76,3 +81,4 @@ them. Live provider and application acceptance tests remain release work.
 - 2026-09-05 — Decided and built: `none` omits the callback credential and requires a fresh ephemeral sandbox, refusing an existing-machine attach and later sharing (d4fb0eb8).
 - 2026-10-15 — Every sandbox is a conversation's own (0073), so the fresh-sandbox requirement and its attach and sharing refusals no longer distinguish `none`; the channel-resume refusal stands.
 - 2026-10-17 — The `owner` key is confined to its conversation tree and the read-only spawn inputs, with no account-wide level ([0096](0096-sandbox-key-confined-to-its-conversation-tree.md), #2981).
+- 2026-10-19 — Workspaces ([0097](0097-workspaces.md), step 5): `none` is refused with a `workspace_id` (`422 invalid_sandbox_api_access`) and holds per implicit workspace; in a shared one the guarantee is bounded by 0097's one trust boundary.

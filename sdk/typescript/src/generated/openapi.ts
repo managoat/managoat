@@ -674,7 +674,7 @@ export interface paths {
         put?: never;
         /**
          * Start a conversation
-         * @description Creates a sandbox + conversation pair, starts the runtime in a fresh sprite, and (if `prompt` is supplied) sends it as turn 1. With `channel_id`, resumes the latest live conversation already bound to that channel for the same agent and vault (200, `meta.resumed: true`) instead of opening a new one (201). `labels` (#1637) are stamped on the new conversation; with `channel_id`, a resume merges them into the conversation it hands back, and a sandbox callback token resuming a conversation it was not minted for is refused with 403, or with 404 when that conversation is outside the token's conversation tree. Pass `X-Managoat-Parent-Conversation-Id` header to record which conversation spawned this one. A start made with a sandbox's own key is always a child of that key's conversation: the header may be left out or name it, and any other value is refused with 404 `parent_conversation_not_found`. A start from inside a sandbox (that header, or the sandbox's own callback token) is one deeper than the conversation it came from, and a start deeper than `CONVERSATION_MAX_DEPTH` is refused with 422 `conversation_depth_exceeded`, naming `depth` and `max_depth`.
+         * @description Creates a sandbox + conversation pair, starts the runtime in a fresh sprite, and (if `prompt` is supplied) sends it as turn 1. With `channel_id`, resumes the latest live conversation already bound to that channel for the same agent and vault (200, `meta.resumed: true`) instead of opening a new one (201). `labels` (#1637) are stamped on the new conversation; with `channel_id`, a resume merges them into the conversation it hands back, and a sandbox callback token resuming a conversation it was not minted for is refused with 403, or with 404 when that conversation is outside the token's conversation tree. Pass `X-Managoat-Parent-Conversation-Id` header to record which conversation spawned this one. A start made with a sandbox's own key is always a child of that key's conversation: the header may be left out or name it, and any other value is refused with 404 `parent_conversation_not_found`. A start from inside a sandbox (that header, or the sandbox's own callback token) is one deeper than the conversation it came from, and a start deeper than `CONVERSATION_MAX_DEPTH` is refused with 422 `conversation_depth_exceeded`, naming `depth` and `max_depth`. With `workspace_id`, the conversation runs on that workspace's machine beside its other conversations, with the workspace's environment and vault; see the field.
          */
         post: operations["FountainWeb.ConversationController.create"];
         delete?: never;
@@ -1050,7 +1050,10 @@ export interface paths {
          */
         put: operations["FountainWeb.EnvironmentController.update"];
         post?: never;
-        /** Delete an environment */
+        /**
+         * Delete an environment
+         * @description Refused with 409 `source_in_use_by_workspace` while a workspace was created from it: a workspace fixes its environment for its life. Delete the workspace first.
+         */
         delete: operations["FountainWeb.EnvironmentController.delete"];
         options?: never;
         head?: never;
@@ -1070,7 +1073,7 @@ export interface paths {
         };
         /**
          * Stream every conversation's events (SSE)
-         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters as elsewhere; `?blocks=true` adds server-parsed blocks. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
+         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters as elsewhere; `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error}`) is sent when one of the caller's workspaces changes status; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
          */
         get: operations["FountainWeb.EventsController.stream"];
         put?: never;
@@ -1399,7 +1402,10 @@ export interface paths {
          */
         put: operations["FountainWeb.VaultController.update"];
         post?: never;
-        /** Delete a vault */
+        /**
+         * Delete a vault
+         * @description Refused with 409 `source_in_use_by_workspace` while a workspace was created with it: a workspace fixes its vault for its life. Delete the workspace first.
+         */
         delete: operations["FountainWeb.VaultController.delete"];
         options?: never;
         head?: never;
@@ -1470,6 +1476,51 @@ export interface paths {
          * @description Changes expiry without replacing the value. Null clears expiry; omission keeps it. Expiry is advisory and does not revoke the credential.
          */
         patch: operations["FountainWeb.VaultSecretController.update"];
+        trace?: never;
+    };
+    "/api/workspaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List workspaces
+         * @description The caller's workspaces, newest first. Implicit workspaces, one per conversation launched without workspace_id, are left out unless `implicit=true`.
+         */
+        get: operations["FountainWeb.WorkspaceController.index"];
+        put?: never;
+        /**
+         * Create a workspace
+         * @description Creates a workspace and starts setting up its machine at once, with no conversation: the environment's packages, repositories and setup script run under the broker's network floor (ADR 0019), with the vault's secrets overriding the environment's. Answers 201 with status provisioning; the status moves to ready, or to failed with an error, and each change is a workspace.status event on GET /api/events/stream. Launch conversations into it with workspace_id on POST /api/conversations, before or after it is ready. A ready workspace with no running conversation is parked after the idle timeout, like any sandbox, and woken by the next prompt. Refused with 503 fleet_full when every sandbox slot on its provider is in use.
+         */
+        post: operations["FountainWeb.WorkspaceController.create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a workspace */
+        get: operations["FountainWeb.WorkspaceController.show"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a workspace
+         * @description Terminates every live conversation in the workspace (their transcripts are kept) and destroys its machine. Not refused while conversations are running.
+         */
+        delete: operations["FountainWeb.WorkspaceController.delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/health": {
@@ -2138,7 +2189,7 @@ export interface components {
             readonly depth?: number;
             /**
              * Format: uuid
-             * @description Per-launch environment override; null means the agent's environment.
+             * @description Per-launch environment override; null means the agent's environment. A conversation in a workspace carries the workspace's.
              */
             environment_id?: string | null;
             /** @description The first turn's prompt — what to title an untitled conversation with. Null until the first turn exists. */
@@ -2196,6 +2247,11 @@ export interface components {
             usage_total?: components["schemas"]["UsageTotal"];
             /** Format: uuid */
             vault_id?: string | null;
+            /**
+             * Format: uuid
+             * @description The workspace (GET /api/workspaces/{id}) whose machine this conversation runs on: the one it was launched into, or, for a conversation with a sandbox of its own, that sandbox's implicit workspace (listed with ?implicit=true). Null for a conversation whose machine has ended with it.
+             */
+            workspace_id?: string | null;
         };
         /** ConversationCreateRequest */
         ConversationCreateRequest: {
@@ -2236,7 +2292,7 @@ export interface components {
             /**
              * Format: uuid
              * @deprecated
-             * @description No longer supported: every conversation gets a sandbox of its own, so a non-null value is refused with 422 sandbox_attach_unsupported.
+             * @description No longer supported: a non-null value is refused with 422 sandbox_attach_unsupported. To run several conversations on one machine, launch each with the same workspace_id.
              */
             sandbox_id?: string | null;
             /**
@@ -2264,6 +2320,11 @@ export interface components {
              * @description Optional vault whose secrets override the environment's baseline at sprite spawn. Must satisfy the agent's allowed_vault_ids when that allowlist is set.
              */
             vault_id?: string | null;
+            /**
+             * Format: uuid
+             * @description Run the conversation on one of the caller's workspaces (POST /api/workspaces), in its own config home and working directory, beside any other conversations there. The agent supplies the runtime, model, skills, MCP servers and permission policy; the workspace supplies the machine, the environment and the vault, and its sandbox provider wins over the agent's. An environment_id or vault_id other than the workspace's is refused with 422 workspace_fixes_environment, and the agent's environment and vault allowlists apply to the workspace's (422 environment_not_allowed, vault_not_allowed). A workspace that is not the caller's is 404. Refused with sandbox_api_access none (422 invalid_sandbox_api_access) and with machine_name (422 machine_name_with_workspace), and refused to a sandbox's own key (403 insufficient_scope, required_scope full). A launch into a workspace still provisioning is accepted; its first prompt waits for it, and a prompt into a workspace whose provision failed retries it. Conversations in one workspace share one trust boundary: each can read the others' files and credentials. With channel_id, only a conversation in this workspace is resumed.
+             */
+            workspace_id?: string | null;
         };
         /**
          * ConversationLabelsRequest
@@ -3257,6 +3318,18 @@ export interface components {
             reason: "changed";
         };
         /**
+         * StreamWorkspaceStatus
+         * @description A `workspace.status` frame on the events SSE stream: one of the caller's workspaces changed status. Sent live only, with no event id, so it is not replayed after a reconnect; read GET /api/workspaces/{id} for the state.
+         */
+        StreamWorkspaceStatus: {
+            error: string | null;
+            name?: string | null;
+            /** @enum {string} */
+            status: "provisioning" | "ready" | "failed";
+            /** Format: uuid */
+            workspace_id: string;
+        };
+        /**
          * TokenRequest
          * @description A token lifted out of an emailed link.
          */
@@ -3442,6 +3515,66 @@ export interface components {
             message: string;
             /** Format: uuid */
             user_id: string;
+        };
+        /**
+         * Workspace
+         * @description A machine the caller keeps (ADR 0097): set up once from an environment and a vault, then any agent launched into it with workspace_id, each conversation in a config home and working directory of its own. Its environment, vault and provider are fixed at create. An implicit workspace is the one a conversation launched without workspace_id gets for its own sandbox, and ends with it.
+         */
+        Workspace: {
+            /** Format: uuid */
+            environment_id: string | null;
+            /** @description Why the provision failed, when status is failed: the failing step and the end of what it printed, redacted like the transcript. Null otherwise. A prompt into a conversation in a failed workspace retries the provision. */
+            error: string | null;
+            /** Format: uuid */
+            id: string;
+            /** @description True for a conversation's own workspace, which ends with it. */
+            implicit: boolean;
+            /** Format: date-time */
+            inserted_at: string;
+            /** @description The name it was created with; null for an implicit workspace. */
+            name: string | null;
+            /**
+             * Format: uuid
+             * @description The machine the workspace has now (GET /api/workspaces/{id}/files reads it). Not a handle to keep: a machine lost at its provider is rebuilt under a new id.
+             */
+            sandbox_id: string | null;
+            /** @description sprites or e2b. */
+            sandbox_provider: string;
+            /** @description Its current machine's own status (pending, starting, ready or suspended): suspended while parked, which the next prompt wakes. Null when it has none live: lost at its provider, or a failed provision, and the next prompt builds the next. */
+            sandbox_status: string | null;
+            /**
+             * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, or on a rebuild after a loss), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
+             * @enum {string}
+             */
+            status: "provisioning" | "ready" | "failed";
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: uuid */
+            vault_id: string | null;
+        };
+        /** WorkspaceCreateRequest */
+        WorkspaceCreateRequest: {
+            /**
+             * Format: uuid
+             * @description The environment its machine is set up from: packages, repositories and setup script, run once on create. One of the caller's (404 environment_not_found otherwise).
+             */
+            environment_id: string;
+            name: string;
+            /** @description sprites or e2b; the instance default when omitted. A provider this instance has not enabled is refused with 422 sandbox_provider_disabled. */
+            sandbox_provider?: string | null;
+            /**
+             * Format: uuid
+             * @description Optional vault whose secrets override the environment's, as at a launch. One of the caller's (404 vault_not_found otherwise).
+             */
+            vault_id?: string | null;
+        };
+        /** WorkspaceListResponse */
+        WorkspaceListResponse: {
+            data: components["schemas"]["Workspace"][];
+        };
+        /** WorkspaceResponse */
+        WorkspaceResponse: {
+            data: components["schemas"]["Workspace"];
         };
     };
     responses: never;
@@ -6433,7 +6566,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A sandbox token labelling the conversation a resume landed on */
+            /** @description A sandbox token labelling the conversation a resume landed on, or naming a workspace (insufficient_scope) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -6442,7 +6575,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Agent not found, or a parent the caller may not start under (parent_conversation_not_found) */
+            /** @description Agent or workspace not found, or a parent the caller may not start under (parent_conversation_not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8214,6 +8347,15 @@ export interface operations {
                     "application/json": components["schemas"]["NegotiationError"];
                 };
             };
+            /** @description A workspace names it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Too Many Requests */
             429: {
                 headers: {
@@ -8329,7 +8471,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["StreamLogEvent"] | components["schemas"]["StreamSignal"];
+                    "text/event-stream": components["schemas"]["StreamLogEvent"] | components["schemas"]["StreamSignal"] | components["schemas"]["StreamWorkspaceStatus"];
                 };
             };
             /** @description Unauthorized */
@@ -10116,6 +10258,15 @@ export interface operations {
                     "application/json": components["schemas"]["NegotiationError"];
                 };
             };
+            /** @description A workspace names it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Too Many Requests */
             429: {
                 headers: {
@@ -10575,6 +10726,285 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.index": {
+        parameters: {
+            query?: {
+                /** @description Also list implicit workspaces. Defaults to false. */
+                implicit?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspaces */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceListResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Workspace attrs */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Workspace */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Environment or vault not found (environment_not_found, vault_not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description Validation error, or a disabled provider */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Every sandbox slot in use (fleet_full) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.show": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
                 };
             };
             /** @description Too Many Requests */

@@ -588,7 +588,9 @@ defmodule FountainWeb.ConversationController do
         "A start from inside a sandbox (that header, or the sandbox's own callback token) is one " <>
         "deeper than the conversation it came from, and a start deeper than " <>
         "`CONVERSATION_MAX_DEPTH` is refused with 422 `conversation_depth_exceeded`, naming " <>
-        "`depth` and `max_depth`.",
+        "`depth` and `max_depth`. " <>
+        "With `workspace_id`, the conversation runs on that workspace's machine beside its " <>
+        "other conversations, with the workspace's environment and vault; see the field.",
     request_body: {"Conversation attrs", "application/json", Schemas.ConversationCreateRequest},
     responses: [
       bad_request: {"Invalid request", "application/json", Schemas.Error},
@@ -602,11 +604,11 @@ defmodule FountainWeb.ConversationController do
       ok:
         {"Conversation (resumed by channel_id)", "application/json", Schemas.ConversationResponse},
       forbidden:
-        {"A sandbox token labelling the conversation a resume landed on", "application/json",
-         Schemas.Error},
+        {"A sandbox token labelling the conversation a resume landed on, or naming a " <>
+           "workspace (insufficient_scope)", "application/json", Schemas.Error},
       not_found:
-        {"Agent not found, or a parent the caller may not start under (parent_conversation_not_found)",
-         "application/json", Schemas.Error},
+        {"Agent or workspace not found, or a parent the caller may not start under " <>
+           "(parent_conversation_not_found)", "application/json", Schemas.Error},
       unprocessable_entity:
         {"Validation error, or the spawn chain is too deep (conversation_depth_exceeded)",
          "application/json", Schemas.Error}
@@ -650,7 +652,8 @@ defmodule FountainWeb.ConversationController do
     # by resuming its channel.
     opts = SandboxKey.opts(conn) ++ Audited.attribution(conn)
 
-    with {:ok, conv, outcome} <- Launch.start_or_resume_conversation(params, opts) do
+    with :ok <- workspace_scope(conn, params),
+         {:ok, conv, outcome} <- Launch.start_or_resume_conversation(params, opts) do
       # 201 when a conversation was opened; 200 when `channel_id` resumed an
       # existing one (#774). Same body either way, so a client that ignores
       # the status still gets the id it needs.
@@ -659,6 +662,23 @@ defmodule FountainWeb.ConversationController do
       |> render(:show, conversation: conv, resumed: outcome == :resumed)
     end
   end
+
+  # Naming a workspace takes a full-scope key (ADR 0097): the same refusal
+  # the workspace routes give a sandbox's own key, made before the launch,
+  # which refuses it again for a sandbox key.
+  defp workspace_scope(conn, %{"workspace_id" => id}) when is_binary(id) and id != "" do
+    case conn.assigns[:current_api_key] do
+      %Fountain.Accounts.ApiKey{} = key ->
+        if Fountain.Accounts.ApiKey.may_manage_keys?(key),
+          do: :ok,
+          else: {:error, :insufficient_scope}
+
+      _no_key ->
+        {:error, :insufficient_scope}
+    end
+  end
+
+  defp workspace_scope(_conn, _params), do: :ok
 
   operation(:wake,
     summary: "Wake a conversation without a prompt",

@@ -370,6 +370,12 @@ defmodule FountainWeb.Router do
 
     # Bulk apply for compiled managoat.yml manifests (`managoat apply`).
     post "/apply", ApplyController, :create
+
+    # Workspaces (ADR 0097): machines the owner keeps and launches
+    # conversations into. Reads too are full scope: a sandbox's own key may not
+    # create, list or delete them, and a conversation it starts gets a
+    # sandbox of its own.
+    resources "/workspaces", WorkspaceController, only: [:index, :show, :create, :delete]
   end
 
   # No `:accepts_json`, for the same reason as the conversation stream below.

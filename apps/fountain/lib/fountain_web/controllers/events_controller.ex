@@ -36,7 +36,10 @@ defmodule FountainWeb.EventsController do
         "conversation on its own; the client re-lists. `Last-Event-ID` replays what was " <>
         "missed across all owned conversations, including finished ones. Without a cursor, " <>
         "only events recorded after connection are sent. `?streams=` filters as elsewhere; " <>
-        "`?blocks=true` adds server-parsed blocks. Heartbeats every 15 s; closes after " <>
+        "`?blocks=true` adds server-parsed blocks. A `workspace.status` event (data " <>
+        "`{workspace_id, name, status, error}`) is sent when one of the caller's workspaces " <>
+        "changes status; it carries no id and is not replayed, so a client that reconnects " <>
+        "re-reads its workspaces. Heartbeats every 15 s; closes after " <>
         "60 s idle so the client reconnects. The first byte is a `: connected` comment.",
     parameters: [
       "Last-Event-ID": [
@@ -63,7 +66,9 @@ defmodule FountainWeb.EventsController do
     responses: [
       ok:
         {"SSE stream", "text/event-stream",
-         %OpenApiSpex.Schema{oneOf: [Schemas.StreamLogEvent, Schemas.StreamSignal]}}
+         %OpenApiSpex.Schema{
+           oneOf: [Schemas.StreamLogEvent, Schemas.StreamSignal, Schemas.StreamWorkspaceStatus]
+         }}
     ]
   )
 
@@ -85,6 +90,8 @@ defmodule FountainWeb.EventsController do
 
     FountainWeb.StreamDrain.subscribe()
     Phoenix.PubSub.subscribe(Fountain.PubSub, "sidebar:#{user_id}")
+    # The caller's workspaces' status changes (ADR 0097), live only.
+    :ok = Fountain.Workspaces.subscribe(user_id)
     # Take the baseline before listing/subscribing so a rapid new conversation
     # cannot disappear in the discovery window. An explicit cursor includes
     # finished conversations during replay as well.
@@ -186,6 +193,14 @@ defmodule FountainWeb.EventsController do
 
       {:log_event, _stale} ->
         sse_loop(conn, state)
+
+      # No id: a workspace's status is not in the durable feed, so it is not
+      # replayed; a client that reconnects reads the workspace.
+      {:workspace_status, payload} ->
+        case Plug.Conn.chunk(conn, "event: workspace.status\ndata: #{Jason.encode!(payload)}\n\n") do
+          {:ok, conn} -> sse_loop(conn, state)
+          {:error, _} -> conn
+        end
 
       {:sidebar_update, _} ->
         # Coalesce the burst: one refollow + one `conversations` event per

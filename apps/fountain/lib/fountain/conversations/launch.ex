@@ -66,7 +66,10 @@ defmodule Fountain.Conversations.Launch do
                                 agent's ACP session config options, copied here and not
                                 read again (ADR 0062, addendum of 2026-10-15, agent only)
     - `sandbox_mode`          — optional; only "ephemeral" is accepted (#2676): every
-                                conversation gets a sandbox of its own
+                                conversation without a `workspace_id` gets a sandbox of its own
+    - `workspace_id`          — optional; one of the caller's explicit workspaces, whose
+                                machine, environment and vault the conversation runs on
+                                (ADR 0097; `Fountain.Conversations.WorkspaceLaunch`)
     - `sandbox_api_access`    — "owner" (default) or "none"
     - `source`                — optional; one of "ui", "api", "agent" (default "api")
     - `parent_conversation_id` — optional; UUID of the conversation that spawned this one.
@@ -102,6 +105,12 @@ defmodule Fountain.Conversations.Launch do
   def start_conversation(%{"session_config" => config}, _opts)
       when not is_nil(config) and config != %{},
       do: {:error, :session_config_agent_only}
+
+  # Into one of the caller's explicit workspaces (ADR 0097, "Launching into a
+  # workspace"): `Fountain.Conversations.WorkspaceLaunch`.
+  def start_conversation(%{"workspace_id" => workspace_id} = attrs, opts)
+      when is_binary(workspace_id) and workspace_id != "",
+      do: Fountain.Conversations.WorkspaceLaunch.start(attrs, opts)
 
   def start_conversation(%{"agent_id" => agent_id, "user_id" => user_id} = attrs, opts)
       when is_binary(user_id) do
@@ -269,9 +278,10 @@ defmodule Fountain.Conversations.Launch do
     end
   end
 
-  defp resolve_sandbox_api_access(access) when access in [nil, "owner"], do: {:ok, "owner"}
-  defp resolve_sandbox_api_access("none"), do: {:ok, "none"}
-  defp resolve_sandbox_api_access(_access), do: {:error, :invalid_sandbox_api_access}
+  @doc false
+  def resolve_sandbox_api_access(access) when access in [nil, "owner"], do: {:ok, "owner"}
+  def resolve_sandbox_api_access("none"), do: {:ok, "none"}
+  def resolve_sandbox_api_access(_access), do: {:error, :invalid_sandbox_api_access}
 
   # ADR 0045's machine isolation is a claim about a machine, not about a row:
   # a `none` conversation must be alone on a fresh one. A caller-supplied name
@@ -287,7 +297,7 @@ defmodule Fountain.Conversations.Launch do
   # aliases go (#2108, #2776). An empty value is no value, as
   # `mint_machine_name/3` treats it. Two different names are refused rather
   # than one silently winning.
-  defp requested_machine_name(attrs) do
+  def requested_machine_name(attrs) do
     case {blank_to_nil(attrs["machine_name"]), blank_to_nil(attrs["sprite_name"])} do
       {nil, old} -> {:ok, old}
       {new, nil} -> {:ok, new}
@@ -306,12 +316,12 @@ defmodule Fountain.Conversations.Launch do
   # forgets everything when the conversation ends.
   # A sandbox's start is the agent's, header or not: its parent is always the
   # key's conversation (`resolve_parent/3`).
-  defp source(_attrs, sandbox_key_id) when is_binary(sandbox_key_id), do: "agent"
-  defp source(attrs, nil), do: attrs["source"] || "api"
+  def source(_attrs, sandbox_key_id) when is_binary(sandbox_key_id), do: "agent"
+  def source(attrs, nil), do: attrs["source"] || "api"
 
-  defp check_sandbox_mode(mode) when mode in [nil, "", "ephemeral"], do: :ok
-  defp check_sandbox_mode("persistent"), do: {:error, :persistent_sandbox_removed}
-  defp check_sandbox_mode(_mode), do: {:error, :invalid_sandbox_mode}
+  def check_sandbox_mode(mode) when mode in [nil, "", "ephemeral"], do: :ok
+  def check_sandbox_mode("persistent"), do: {:error, :persistent_sandbox_removed}
+  def check_sandbox_mode(_mode), do: {:error, :invalid_sandbox_mode}
 
   # `parent_conversation_id` arrives from a client-supplied header
   # (X-Managoat-Parent-Conversation-Id). The changeset only enforced an FK, so
@@ -326,19 +336,19 @@ defmodule Fountain.Conversations.Launch do
   # no header the parent is the key's conversation, and a header naming any
   # other conversation is refused as an unknown parent. A key no conversation
   # names (a rotated-away one) starts nothing.
-  defp resolve_parent(header, user_id, nil), do: resolve_parent(header, user_id)
+  def resolve_parent(header, user_id, nil), do: resolve_parent(header, user_id)
 
-  defp resolve_parent(header, user_id, sandbox_key_id) do
+  def resolve_parent(header, user_id, sandbox_key_id) do
     case Conversations.get_conversation_for_callback_key(sandbox_key_id, user_id) do
       %Conversation{id: id} = own when header in [nil, "", id] -> {:ok, own}
       _ -> {:error, :parent_not_found}
     end
   end
 
-  defp resolve_parent(nil, _user_id), do: {:ok, nil}
-  defp resolve_parent("", _user_id), do: {:ok, nil}
+  def resolve_parent(nil, _user_id), do: {:ok, nil}
+  def resolve_parent("", _user_id), do: {:ok, nil}
 
-  defp resolve_parent(id, user_id) when is_binary(id) and is_binary(user_id) do
+  def resolve_parent(id, user_id) when is_binary(id) and is_binary(user_id) do
     # A header that is not a uuid is not a conversation anyone owns.
     # `get_conversation/2` reads it as nil rather than raising (#1679), so this
     # stays the plain lookup it was.
@@ -374,7 +384,7 @@ defmodule Fountain.Conversations.Launch do
   #
   # A start made with the owner's own key and no header is depth 0 however
   # it was made: the server cannot tell it came from inside a sandbox.
-  defp resolve_depth(parent, user_id, sandbox_key_id) do
+  def resolve_depth(parent, user_id, sandbox_key_id) do
     starter_depth = max(depth_of(parent), depth_of_key(sandbox_key_id, user_id))
     depth = starter_depth + 1
     ceiling = max_depth()
@@ -395,7 +405,7 @@ defmodule Fountain.Conversations.Launch do
 
   # sobelow_skip ["SQL.Query"] — static SQL with a bound $1 UUID parameter.
   # sobelow_skip ["SQL.Query"] — static SQL with a bound $1 UUID parameter.
-  defp get_root_conversation_id(conversation_id) do
+  def get_root_conversation_id(conversation_id) do
     sql = """
     WITH RECURSIVE ancestors(id, parent_conversation_id) AS (
       SELECT id, parent_conversation_id FROM conversations WHERE id = $1
@@ -418,7 +428,7 @@ defmodule Fountain.Conversations.Launch do
     end
   end
 
-  defp broadcast_graph_update(root_id) do
+  def broadcast_graph_update(root_id) do
     Phoenix.PubSub.broadcast(
       Fountain.PubSub,
       "conversations:graph:#{root_id}",
@@ -426,7 +436,7 @@ defmodule Fountain.Conversations.Launch do
     )
   end
 
-  defp reserve_inference(conv) do
+  def reserve_inference(conv) do
     InferenceBinding.reserve(conv, Source.load(conv.inference_source))
   end
 
@@ -668,6 +678,40 @@ defmodule Fountain.Conversations.Launch do
   def start_or_resume_conversation(%{"session_config" => config}, _opts)
       when not is_nil(config) and config != %{},
       do: {:error, :session_config_agent_only}
+
+  # A channel bound to a conversation in a workspace resumes it only when the
+  # request names that workspace (ADR 0097): the binding follows the machine,
+  # and a conversation on another machine is not the one the caller asked for.
+  def start_or_resume_conversation(
+        %{
+          "channel_id" => channel_id,
+          "workspace_id" => workspace_id,
+          "agent_id" => agent_id,
+          "user_id" => user_id
+        } = attrs,
+        opts
+      )
+      when is_binary(channel_id) and channel_id != "" and is_binary(workspace_id) and
+             workspace_id != "" do
+    with :ok <-
+           if(Keyword.get(opts, :sandbox_key_id), do: {:error, :insufficient_scope}, else: :ok),
+         %Agents.Agent{} = agent <- Agents.get_agent(agent_id, user_id) || {:error, :not_found},
+         %Fountain.Workspaces.Workspace{implicit: false} = workspace <-
+           Fountain.Workspaces.get_workspace(workspace_id, user_id) || {:error, :not_found},
+         :ok <- Fountain.Conversations.WorkspaceLaunch.check_fixed(attrs, workspace),
+         :ok <- Fountain.Conversations.WorkspaceLaunch.check_allowed(agent, workspace) do
+      case find_channel_conversation_in(workspace, agent.id, channel_id) do
+        %Conversation{} = conv ->
+          resume_or_rotate(conv, agent, attrs, opts)
+
+        nil ->
+          with {:ok, conv} <- start_conversation(attrs, opts), do: {:ok, conv, :created}
+      end
+    else
+      %Fountain.Workspaces.Workspace{} -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
 
   def start_or_resume_conversation(
         %{"channel_id" => channel_id, "agent_id" => agent_id, "user_id" => user_id} = attrs,
@@ -927,19 +971,42 @@ defmodule Fountain.Conversations.Launch do
   # the binding follows the machine, not just the conversation row.
   # `suspended` is not in the list: that sandbox is parked, not gone, and its
   # disk wakes back up with the workspace on it.
+  #
+  # A conversation in an explicit workspace is resumed only by a request that
+  # names the workspace (`find_channel_conversation_in/3`), never by one that
+  # does not: that request asked for a machine of its own.
   defp find_channel_conversation(user_id, agent_id, vault_id, env_id, channel_id) do
     from(c in Conversation,
       join: s in assoc(c, :sandbox),
+      left_join: w in Fountain.Workspaces.Workspace,
+      on: w.id == c.workspace_id,
       where:
         c.user_id == ^user_id and c.agent_id == ^agent_id and c.channel_id == ^channel_id and
           c.status not in ["terminated", "failed"] and
-          s.status not in ["terminated", "failed"],
+          s.status not in ["terminated", "failed"] and
+          (is_nil(w.id) or w.implicit),
       order_by: [desc: c.inserted_at],
       limit: 1
     )
     |> where_vault(vault_id)
     |> where_environment(env_id)
     |> Repo.one()
+  end
+
+  # The newest live conversation of this agent bound to the channel in the
+  # workspace. A lost machine does not end the binding here: a workspace
+  # rebuilds its machine in place (ADR 0097, "Sandbox lost").
+  defp find_channel_conversation_in(workspace, agent_id, channel_id) do
+    Repo.one(
+      from(c in Conversation,
+        where:
+          c.user_id == ^workspace.user_id and c.workspace_id == ^workspace.id and
+            c.agent_id == ^agent_id and c.channel_id == ^channel_id and
+            c.status not in ["terminated", "failed"],
+        order_by: [desc: c.inserted_at],
+        limit: 1
+      )
+    )
   end
 
   defp where_vault(query, nil), do: from(c in query, where: is_nil(c.vault_id))
