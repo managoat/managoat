@@ -363,8 +363,6 @@ apps/fountain/test/managoat/runtimes/acp_concurrency_test.exs	0
 apps/fountain/test/managoat/runtimes/acp_test.exs	9
 apps/fountain/test/managoat/runtimes/claude_test.exs	28
 apps/fountain/test/managoat/runtimes/fake_runtime_test.exs	0
-apps/fountain/test/managoat/runtimes/gemini_session_consolidate_test.exs	1260
-apps/fountain/test/managoat/runtimes/gemini_session_store_test.exs	5
 apps/fountain/test/managoat/runtimes/instructions_test.exs	189
 apps/fountain/test/managoat/runtimes/layout_test.exs	1
 apps/fountain/test/managoat/runtimes/model_test.exs	0

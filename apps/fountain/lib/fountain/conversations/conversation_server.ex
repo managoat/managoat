@@ -1826,7 +1826,7 @@ defmodule Fountain.Conversations.ConversationServer do
     end
   end
 
-  # Close the connection (`Connection.close/3`). An autonomous turn still open
+  # Close the connection (`Connection.close/1`). An autonomous turn still open
   # is completed first: its updates are real, and ending a turn resolves what
   # the turn holds pending and stamps its row, which is the server's work. The
   # first clause is why a server with no connection skips that finish too.
@@ -1839,22 +1839,16 @@ defmodule Fountain.Conversations.ConversationServer do
 
     Connection.into_state(
       state,
-      Connection.close(Connection.from_state(state), state.conversation_id, state.handle)
+      Connection.close(Connection.from_state(state))
     )
   end
 
   # The adapter went away between turns with no turn to fail
-  # (`Connection.lost/5`).
+  # (`Connection.lost/4`).
   defp connection_lost(state, reason, meta) do
     Connection.into_state(
       state,
-      Connection.lost(
-        Connection.from_state(state),
-        state.conversation_id,
-        state.handle,
-        reason,
-        meta
-      )
+      Connection.lost(Connection.from_state(state), state.conversation_id, reason, meta)
     )
   end
 

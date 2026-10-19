@@ -111,9 +111,12 @@ defmodule Managoat.Runtimes.Gemini do
   # ACP natively, so there is no adapter install to bring it; the Sprites and
   # E2B images ship it, and a self-hosted runner does not, where every turn
   # exited 127 (`gemini: No such file or directory`, 2026-10-06). Pinned
-  # because this install is ours: 0.59.0 is the newest release the quirks in
-  # `Managoat.Runtimes.Quirks` were measured against. An image's own copy wins.
-  @cli_package "@google/gemini-cli@0.59.0"
+  # because this install is ours. Nothing older than 0.63.0 will do: before
+  # it, `session/load` erased the session it was asked to load
+  # (google-gemini/gemini-cli#28775, fixed by #29463). 0.64.0 also resolves
+  # the session by exact id (#29580) and is what loam's E2B image ships. An
+  # image's own copy wins.
+  @cli_package "@google/gemini-cli@0.64.0"
 
   # Install the CLI when it is missing, then make sure the default workspace
   # exists and is a git repo; gemini's MemoryDiscovery is happy as long as it
@@ -134,10 +137,6 @@ defmodule Managoat.Runtimes.Gemini do
       git config user.name AoD
     fi
     """
-
-    # The session-store workaround travels with the workspace (#659): it has to
-    # be on disk before the first turn ends, since that is when it first runs.
-    _ = Managoat.Runtimes.Gemini.SessionStore.install(handle)
 
     # Long enough for the ~120 MB install on a sandbox without the CLI; a
     # sandbox with it skips the install and returns in well under a second.

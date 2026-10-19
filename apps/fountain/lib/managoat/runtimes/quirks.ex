@@ -5,11 +5,9 @@ defmodule Managoat.Runtimes.Quirks do
 
   ## Why a registry rather than comments
 
-  The comments already exist, and they are good ones — `Managoat.Runtimes.ACP`
-  spends forty lines on how gemini's session store erases a session in the act
-  of loading it, and `Managoat.Runtimes.Claude` explains exactly why MCP
-  servers go in as files. Both end with some version of "delete this when
-  upstream lands."
+  The comments already exist, and they are good ones — `Managoat.Runtimes.Claude`
+  explains exactly why MCP servers go in as files, and ends with some version
+  of "delete this when upstream lands."
 
   Nothing checks that. A workaround outliving its defect is invisible: it
   keeps working, so no test fails and no user complains, and the cost shows up
@@ -110,36 +108,6 @@ defmodule Managoat.Runtimes.Quirks do
       """
     },
     %{
-      id: :gemini_session_store_consolidation,
-      runtimes: ["gemini"],
-      summary: "Managoat rewrites gemini's private chat store after every turn",
-      why: """
-      gemini's `session/load` builds a fresh config on the same session id
-      before looking the session up, and that config's chat recorder takes its
-      new-session branch: it appends a `$set` carrying only its
-      `<session_context>` bootstrap to the file it is about to read. gemini's
-      own reader treats `$set.messages` as a replacement, so loading a session
-      erases it — permanently, not just for that turn. `SessionStore`
-      consolidates the chats directory at the end of every turn: keep the file
-      with real content, delete the poisoned duplicates, park the survivor
-      under a timestamp the recorder cannot produce.
-      """,
-      upstream: "https://github.com/google-gemini/gemini-cli/issues/28775",
-      measured_against: "gemini-cli 0.53.0 through 0.56.0, verified live in both directions",
-      implemented_by: {Managoat.Runtimes.Gemini.SessionStore, :install, 1},
-      reprobe: """
-      Five consecutive turns inside one wall-clock minute with the consolidation
-      disabled. The collision is bucketed by minute, so spacing turns out hides
-      it — that is what made the original bug look random.
-      """,
-      delete_when: """
-      `session/load` stops appending a `$set` that replaces the transcript it
-      is loading. Delete `Managoat.Runtimes.Gemini.SessionStore`, its call in
-      `Gemini.prepare_sandbox/4`, the per-turn `consolidate/3` call, and the
-      mechanism section of `Managoat.Runtimes.ACP`'s moduledoc.
-      """
-    },
-    %{
       id: :gemini_usage_in_meta_quota,
       runtimes: ["gemini"],
       summary: "gemini's end-of-turn tokens are read from its own `_meta.quota`",
@@ -159,9 +127,7 @@ defmodule Managoat.Runtimes.Quirks do
       measured_against: """
       gemini-cli 0.53.0, 0.56.0 and 0.59 — byte-identical returns in
       `packages/cli/src/acp/acpSession.ts` at all three, on every
-      `session/prompt` outcome but `cancelled`. That range matters because it
-      spans the versions `:gemini_session_store_consolidation` was measured
-      against, so no sprite base image in service reports usage any other way.
+      `session/prompt` outcome but `cancelled`.
       The empty figure was observed live on 2026-09-03, the populated one
       after this landed. Upstream closed the request for the standard fields
       with no plans.

@@ -163,7 +163,7 @@ All three pinned adapters accept an HTTP server with headers on
 |---|---|---|---|
 | `claude` | claude-agent-acp 0.81.2 | yes | yes |
 | `codex` | codex-acp 2.2.2 | yes | no: the adapter refuses the whole session |
-| `gemini` | gemini-cli 0.59.0, or the image's own (0.63.0 on Sprites) | yes | yes, after it tries HTTP first |
+| `gemini` | gemini-cli 0.64.0, or the image's own (0.63.0 on Sprites) | yes | yes, after it tries HTTP first |
 
 Use `type: http` for a server that every runtime must reach.
 

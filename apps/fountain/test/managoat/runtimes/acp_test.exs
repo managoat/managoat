@@ -28,12 +28,11 @@ defmodule Managoat.Runtimes.ACPTest do
       refute ACP.enabled?(agent(runtime: "nonesuch", metadata: %{"acp" => true}))
     end
 
-    test "nothing is blocked any more: gemini ships behind the #659 workaround" do
+    test "nothing is blocked any more: gemini ships" do
       # gemini was held back because loading a session erased it — the load
       # path's own chat recorder overwrote the message list before the lookup
-      # read it (#658). `Gemini.SessionStore` consolidates the store at the end
-      # of every turn so the load cannot collide with what it is loading, which
-      # is what let this switch on.
+      # read it (#658, gemini-cli#28775). It shipped behind a store
+      # consolidation (#659), retired once gemini-cli 0.63.0 fixed the load.
       assert "gemini" in ACP.supported_runtimes()
       assert ACP.enabled?(agent(runtime: "gemini", metadata: %{}))
     end

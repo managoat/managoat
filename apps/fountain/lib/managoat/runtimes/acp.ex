@@ -20,8 +20,8 @@ defmodule Managoat.Runtimes.ACP do
 
   ## Which runtimes
 
-  All three have adapter entries and all three are shippable — gemini since #659,
-  behind the workaround described below. The two ends of the resumption story
+  All three have adapter entries and all three are shippable — gemini since #659.
+  The two ends of the resumption story
   gate 1 mapped are claude and gemini:
 
   Claude advertises `sessionCapabilities.resume`, so a turn costs a handshake
@@ -38,55 +38,15 @@ defmodule Managoat.Runtimes.ACP do
   names the session. That argv is deleted (#941), and with it the last vendor
   permission-bypass flag Fountain passed.
 
-  **Gemini was held back for eleven days** (#659) by a defect in its own
-  session store, and now ships behind a workaround for it. The mechanism is
-  worth keeping on record because the workaround is shaped by it, and because
-  it is the thing to delete when upstream lands.
-
-  Diagnosed against a live 0.53.0 on 2026-08-11 (#658). Turn 1 does write a
-  session, to `$HOME/.gemini/tmp/<project>/chats/session-<ISO minute>-<first 8
-  of the id>.jsonl`, and gemini's own `--list-sessions` finds it. **Loading it
-  is what destroys it.** `session/load` builds a fresh config on the same
-  session id *before* looking the session up, and that config's chat recorder
-  takes its new-session branch: it computes the same file name — the id's first
-  8 characters plus the current wall-clock minute — and appends a header and a
-  `$set` carrying a `messages` array holding only its `<session_context>`
-  bootstrap. Gemini's own reader treats a `$set.messages` as a **replacement**,
-  and a user message beginning `<session_context>` is ignored content, so the
-  file it just appended to now has no resumable content. It drops out of
-  `listSessions()`, and `findSession` reports `-32603` / "No previous sessions
-  found for this project" — about a session whose transcript is still sitting
-  in the same file, above the line that erased it.
-
-  That is why it looked random. The collision is bucketed by **minute**: a
-  resume in the same minute as the previous turn poisons the session's own file
-  and always fails; a minute later the poison lands in a sibling file and the
-  load succeeds. The "2 successes to 4 failures" was a wall clock, not a race.
-  Verified in both directions on live sprites.
-
-  Waiting is not a workaround: a *second* consecutive resume failed even with a
-  minute between every turn, and afterwards every older session file for that
-  project was gone. One resume is not a conversation.
-
-  It is also destructive rather than merely unreliable — a failed load leaves
-  the session unloadable forever, so a user would lose the conversation, not
-  just a turn.
-
-  **Resolved by reaching into that store on purpose** (#659, 2026-08-22).
-  `Managoat.Runtimes.Gemini.SessionStore` consolidates the chats directory at
-  the end of every turn: keep the file with real content, delete the poisoned
-  duplicates a load leaves behind, and park the survivor under a timestamp the
-  recorder cannot produce. An earlier draft of this paragraph said Fountain
-  could not do this without reaching into another product's private store —
-  which is exactly what it does, deliberately and behind a comment naming
-  google-gemini/gemini-cli#28775 so it is deleted when that lands.
-
-  Renaming once is not enough, and this is why the "wait out the minute"
-  suggestion above also fails: after every load *two* files carry the same
-  session id, and gemini dedupes by id keeping the later `lastUpdated`, which
-  is the poisoned one. Verified live on 0.56.0 — five consecutive turns inside
-  one wall-clock minute, history growing 3 → 5 → 7 → 9 → 11, content planted
-  before the first reload recalled every turn.
+  **Gemini was held back for eleven days** (#659, diagnosed in #658) by a
+  defect in its own session store: `session/load` built a fresh chat recorder
+  on the session id before looking the session up, and that recorder's
+  `$set` replaced the transcript it was about to read, so loading a session
+  erased it for good (google-gemini/gemini-cli#28775). Fountain shipped
+  gemini behind a consolidation of that store after every turn, and retired
+  it once gemini-cli 0.63.0 resolved the session before building the config
+  (#29463), re-probed live on Sprites and E2B on 2026-10-19 (#2097). ADR 0014
+  keeps the mechanism.
 
   Codex advertises `loadSession` *and* `sessionCapabilities.resume`, so it
   resumes as cheaply as Claude does, through an adapter package we install
@@ -160,14 +120,8 @@ defmodule Managoat.Runtimes.ACP do
     # that `Peer` discards. Its cwd matters more than the others' — gemini
     # walks up from it looking for a `.git` — and both that path and the
     # `git init` that satisfies it now come from `Managoat.Runtimes.Layout`.
-    # Shippable since #659. Gemini's own session store erases a session in the
-    # act of loading it (google-gemini/gemini-cli#28775, still open on 0.56.0 —
-    # the moduledoc has the mechanism), which held this entry back for eleven
-    # days. `Managoat.Runtimes.Gemini.SessionStore` consolidates the store at
-    # the end of every turn so the load cannot collide with what it is loading.
-    # Delete that module and this comment when upstream lands — the
-    # condition, and the procedure for checking it, are recorded as
-    # `:gemini_session_store_consolidation` in `Managoat.Runtimes.Quirks`.
+    # Needs gemini-cli 0.63.0 or later: older releases erase a session in the
+    # act of loading it (the moduledoc has the history).
     "gemini" => %{
       bin: "gemini",
       args: ["--acp"],

@@ -67,12 +67,12 @@ at all proves the credential, the runtime and the sandbox.
 the start. Managoat discards that replay. The cost is time at the head of a
 turn, and it grows with the transcript. The other two runtimes reattach.
 
-**Managoat repairs gemini's session store after every turn.** The store
-deletes a session while it loads it, an upstream defect
-([gemini-cli#28775](https://github.com/google-gemini/gemini-cli/issues/28775)).
-Managoat consolidates the store at the end of each turn, so a load cannot
-collide with what it loads. That workaround goes away when upstream lands a
-fix.
+**gemini-cli 0.63.0 or later.** Earlier releases delete a session while
+they load it
+([gemini-cli#28775](https://github.com/google-gemini/gemini-cli/issues/28775)),
+so a conversation loses its history on the next turn. The Sprites and E2B
+images ship a fixed release. In a sandbox with no gemini CLI, Managoat
+installs 0.64.0.
 
 ## Related
 
