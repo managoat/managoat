@@ -404,6 +404,17 @@ workspace that is not `failed` is a `ManagoatError` with code
 `workspace_not_failed`. `list({ implicit: true })` adds each conversation's
 own implicit workspace.
 
+`setupLog` reads what the last setup printed, step by step and redacted, or
+`null` before a setup has begun. Each setup replaces the previous one's log,
+and it is kept after the machine is gone. While the setup runs, `get` says
+which step is running (`setup_step`) and `events()` carries its lines as
+`workspace.setup` frames (below).
+
+```ts
+const log = await managoat.workspaces.setupLog(ws.id);
+for (const step of log?.steps ?? []) console.log(step.step, step.status, step.output);
+```
+
 A run in a workspace that names a different `environment` or `vault` is a
 `ValidationError` with code `workspace_fixes_environment`. A sandbox's own key
 cannot use workspaces: every call is a 403, so a run started from inside a
@@ -438,13 +449,17 @@ that changed since the machine was built, typed as `WorkspaceField[]`, beside
 status, error, revision, built_from_revision, stale, changed_fields}`, when
 one of your workspaces changes status or an edit to a ready one's environment
 moves its revision, as it carries the
-`conversations` change notice, `{reason}`. Neither is a log event, and
-neither is replayed after a reconnect. The SDK sets each one's `kind` to its
-event name, so a switch on `kind` tells all four apart and narrows the type:
+`conversations` change notice, `{reason}`. While a workspace's setup runs it
+also carries `workspace.setup` frames (`WorkspaceSetupEvent`):
+`{workspace_id, sandbox_id, step, status, lines, omitted_lines, at}`, whole
+redacted lines, at most one frame every 500 ms. None of these is a log event,
+and none is replayed after a reconnect. The SDK sets each one's `kind` to its
+event name, so a switch on `kind` tells all five apart and narrows the type:
 
 ```ts
 for await (const event of managoat.events()) {
   if (event.kind === "workspace.status") showWorkspace(event.workspace_id, event.status);
+  else if (event.kind === "workspace.setup") appendSetup(event.workspace_id, event.step, event.lines);
   else if (event.kind === "conversations") refreshList();
   else if (event.kind === "stage") showStage(event.conversation_id, event.stage, event.state);
 }

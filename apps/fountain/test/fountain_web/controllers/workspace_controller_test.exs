@@ -228,6 +228,84 @@ defmodule FountainWeb.WorkspaceControllerTest do
     end
   end
 
+  describe "GET /api/workspaces/:id/setup-log (#3009)" do
+    setup ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "API_SECRET", "value" => "s3cret-value-123456"})
+      :ok
+    end
+
+    defp setup_running!(data) do
+      sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+      :ok = Fountain.Workspaces.SetupOutput.begin(sandbox)
+      :ok = Fountain.Workspaces.SetupOutput.step(:packages)
+      :ok = Fountain.Workspaces.SetupOutput.output("using s3cret-value-123456\n")
+      :ok = Fountain.Workspaces.SetupOutput.flush()
+      sandbox
+    end
+
+    test "is null before a setup has begun, then the setup's steps, redacted", ctx do
+      data = create!(ctx, %{"vault_id" => ctx.vault.id})
+
+      assert %{"data" => nil} =
+               api(ctx) |> get("/api/workspaces/#{data["id"]}/setup-log") |> json_response(200)
+
+      Application.put_env(:fountain, :setup_log_flush_ms, 0)
+      on_exit(fn -> Application.delete_env(:fountain, :setup_log_flush_ms) end)
+      sandbox = setup_running!(data)
+
+      # While it runs, the workspace says which step.
+      assert %{"data" => %{"status" => "provisioning", "setup_step" => "packages"}} =
+               api(ctx) |> get("/api/workspaces/#{data["id"]}") |> json_response(200)
+
+      assert %{"data" => [%{"setup_step" => "packages"}]} =
+               api(ctx) |> get("/api/workspaces") |> json_response(200)
+
+      :ok = Fountain.Workspaces.SetupOutput.finish(:succeeded)
+
+      raw = api(ctx) |> get("/api/workspaces/#{data["id"]}/setup-log") |> response(200)
+      refute raw =~ "s3cret-value-123456"
+
+      log = Jason.decode!(raw)["data"]
+      assert log["workspace_id"] == data["id"]
+      assert log["sandbox_id"] == sandbox.id
+      assert log["status"] == "succeeded"
+      assert log["step"] == "packages"
+      assert [%{"step" => "machine"}, packages] = log["steps"]
+
+      assert %{
+               "status" => "succeeded",
+               "output" => "using [REDACTED]\n",
+               "omitted_lines" => 0,
+               "omitted_bytes" => 0
+             } = packages
+
+      # A finished setup is not a running step.
+      assert %{"data" => %{"setup_step" => nil}} =
+               api(ctx) |> get("/api/workspaces/#{data["id"]}") |> json_response(200)
+    end
+
+    test "another account's, and an implicit one, are 404", ctx do
+      data = create!(ctx, %{"vault_id" => ctx.vault.id})
+      setup_running!(data)
+      :ok = Fountain.Workspaces.SetupOutput.finish(:failed)
+
+      other = insert_active_user()
+      {_record, other_key} = insert_api_key(other)
+
+      assert %{"error" => "not_found"} =
+               api(ctx, other_key)
+               |> get("/api/workspaces/#{data["id"]}/setup-log")
+               |> json_response(404)
+
+      implicit = insert_workspace(user_id: ctx.user.id)
+
+      assert %{"error" => "not_found"} =
+               api(ctx) |> get("/api/workspaces/#{implicit.id}/setup-log") |> json_response(404)
+
+      api(ctx) |> get("/api/workspaces/not-a-uuid/setup-log") |> json_response(404)
+    end
+  end
+
   describe "DELETE /api/workspaces/:id" do
     test "ends its conversations and destroys its machine", ctx do
       data = create!(ctx)
@@ -527,7 +605,8 @@ defmodule FountainWeb.WorkspaceControllerTest do
             {:get, "/api/workspaces/#{data["id"]}", nil},
             {:delete, "/api/workspaces/#{data["id"]}", nil},
             {:post, "/api/workspaces/#{data["id"]}/rebuild", %{"interrupt" => true}},
-            {:post, "/api/workspaces/#{data["id"]}/retry", nil}
+            {:post, "/api/workspaces/#{data["id"]}/retry", nil},
+            {:get, "/api/workspaces/#{data["id"]}/setup-log", nil}
           ] do
         conn =
           api(ctx, sprite)

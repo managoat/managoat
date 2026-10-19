@@ -42,6 +42,7 @@ defmodule Fountain.Conversations.Rebuild do
   alias Fountain.Conversations
   alias Fountain.Conversations.{Output, Provisioning, Sandbox}
   alias Fountain.Machines.Machine
+  alias Fountain.Machines.Provision
   alias Fountain.Repo
   alias Fountain.Workspaces.Workspace
 
@@ -258,7 +259,10 @@ defmodule Fountain.Conversations.Rebuild do
   defp answer({:error, reason}, state, _conv)
        when reason in [:name_reused] or
               (is_tuple(reason) and elem(reason, 0) == :not_rebuildable) do
-    Logger.warning("conv #{state.conversation_id}: machine not rebuilt: #{inspect(reason)}")
+    Logger.warning(
+      "conv #{state.conversation_id}: machine not rebuilt: #{inspect(Provision.without_output(reason))}"
+    )
+
     {:rebuild, {:stop, :normal, state}}
   end
 
@@ -270,7 +274,7 @@ defmodule Fountain.Conversations.Rebuild do
   # lease lost, a database fault) nothing moved: the prompt is reported as
   # not run and the conversation stays resumable, as a refused wake left it.
   defp answer({:error, reason}, state, conv) do
-    {:rebuild, failed(state, conv, reason, %{reason: inspect(reason)})}
+    {:rebuild, failed(state, conv, reason, %{reason: inspect(Provision.without_output(reason))})}
   end
 
   defp answer(other, _state, _conv), do: other
@@ -308,8 +312,11 @@ defmodule Fountain.Conversations.Rebuild do
         metadata
       )
     else
-      Logger.warning("conv #{conv.id}: machine not rebuilt: #{inspect(reason)}")
-      retryable_stop(state, to_string_reason(reason), reason)
+      Logger.warning(
+        "conv #{conv.id}: machine not rebuilt: #{inspect(Provision.without_output(reason))}"
+      )
+
+      retryable_stop(state, to_string_reason(reason), Provision.without_output(reason))
     end
 
     {:stop, :normal, state}
@@ -478,5 +485,5 @@ defmodule Fountain.Conversations.Rebuild do
 
   defp to_string_reason(reason) when is_binary(reason), do: reason
   defp to_string_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp to_string_reason(reason), do: inspect(reason)
+  defp to_string_reason(reason), do: inspect(Provision.without_output(reason))
 end

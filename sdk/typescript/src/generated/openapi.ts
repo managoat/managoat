@@ -1073,7 +1073,7 @@ export interface paths {
         };
         /**
          * Stream every conversation's events (SSE)
-         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error, revision, built_from_revision, stale, changed_fields}`) is sent when one of the caller's workspaces changes status, and, for a ready one, after every edit that moves its environment's revision; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
+         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error, revision, built_from_revision, stale, changed_fields}`) is sent when one of the caller's workspaces changes status, and, for a ready one, after every edit that moves its environment's revision; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. While a workspace's setup runs, `workspace.setup` events (data `{workspace_id, sandbox_id, step, status, lines, omitted_lines, at}`) carry its output as whole, redacted lines: one as each step starts and ends, and output at most every 500 ms with at most 16 KiB of lines each. They are live only too; GET /api/workspaces/{id}/setup-log has what was missed. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
          */
         get: operations["FountainWeb.EventsController.stream"];
         put?: never;
@@ -1557,6 +1557,26 @@ export interface paths {
          * @description Sets up a failed workspace again, with no prompt: a new machine is built from the environment and vault as they are now, so fix the environment first. Answers 202 with status provisioning; the status moves to ready, or to failed with an error, and each change is a workspace.status event on GET /api/events/stream, as on create. A prompt into the failed workspace starts the same setup: a retry and a prompt arriving together set it up once, and the prompt waits for it. Refused with 409 workspace_not_failed unless the workspace is failed, with 422 sandbox_provider_disabled when its provider is no longer configured, and with 503 fleet_full when every sandbox slot on its provider is in use. An implicit workspace is 404: its setup is its conversation's.
          */
         post: operations["FountainWeb.WorkspaceController.retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{id}/setup-log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a workspace's last setup log
+         * @description The output of the workspace's last setup (on create, a retry, a rebuild after a loss, or a rebuild asked for), step by step, redacted like the transcript. Each setup replaces the previous one's. It is kept by Managoat rather than on the machine, so it is readable while the setup runs (written as each step starts and ends, and at most every 5 s) and after the machine is gone, and reading it never wakes a parked machine. Bounded: each step keeps its last 64 KiB of whole lines, the log 256 KiB in all, and each step says how much it dropped. data is null when no setup has been kept yet. The same lines arrive live as workspace.setup events on GET /api/events/stream. An implicit workspace is 404: its setup is in its conversation's transcript.
+         */
+        get: operations["FountainWeb.WorkspaceController.setup_log"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3448,6 +3468,32 @@ export interface components {
             reason: "changed";
         };
         /**
+         * StreamWorkspaceSetup
+         * @description A `workspace.setup` frame on the events SSE stream (#3009): output from the setup of one of the caller's explicit workspaces, as it runs. One is sent as each step starts (status running, no lines) and ends (succeeded or failed, with the lines held for it), and output in between at most every 500 ms, with at most 16 KiB of lines each. Lines are whole, redacted like the transcript, without terminal control codes, and cut at 4 KiB. Each setup's first frame is its machine step starting; sandbox_id names the machine it builds. Sent live only, with no event id; GET /api/workspaces/{id}/setup-log has the setup's kept output.
+         */
+        StreamWorkspaceSetup: {
+            /** Format: date-time */
+            at: string;
+            /** @description Whole lines printed since the previous frame, without newlines. */
+            lines: string[];
+            /** @description Lines printed since the previous frame and left out of this one to keep it within 16 KiB, oldest first. They are in the setup log. */
+            omitted_lines: number;
+            /**
+             * Format: uuid
+             * @description The machine this setup builds, usually a new one for each setup. Each setup's first frame is its machine step starting.
+             */
+            sandbox_id: string;
+            /** @enum {string} */
+            status: "running" | "succeeded" | "failed";
+            /**
+             * @description machine (the provider creates it), broker (the egress broker's floor, CA and relay), environment (the environment's and vault's variables written to it), packages, repositories, setup_script, or runtime_template (the runtime template copied into the config home of a conversation whose provision built the machine). A step is reported only when it runs.
+             * @enum {string}
+             */
+            step: "machine" | "broker" | "environment" | "packages" | "repositories" | "setup_script" | "runtime_template";
+            /** Format: uuid */
+            workspace_id: string;
+        };
+        /**
          * StreamWorkspaceStatus
          * @description A `workspace.status` frame on the events SSE stream: one of the caller's explicit workspaces changed status, or an edit to its environment changed how its machine stands against it (stale, changed_fields). Sent live only, with no event id, so it is not replayed after a reconnect; read GET /api/workspaces/{id} for the state.
          */
@@ -3698,6 +3744,11 @@ export interface components {
             sandbox_provider: string;
             /** @description Its current machine's own status (pending, starting, ready or suspended): suspended while parked, which the next prompt wakes. Null when it has none live: lost at its provider, or a failed provision, and the next prompt builds the next. */
             sandbox_status: string | null;
+            /**
+             * @description The setup step running while status is provisioning: machine, broker, environment, packages, repositories, setup_script or runtime_template. Null otherwise, for an implicit workspace, and in the moment before a setup's machine is asked for. The workspace.setup events carry each step as it starts; this is for a client that missed them.
+             * @enum {string|null}
+             */
+            setup_step: "machine" | "broker" | "environment" | "packages" | "repositories" | "setup_script" | "runtime_template" | null;
             /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. It describes the machine as built: a conversation started after an edit to env_vars or the networking fields already runs with the new values. */
             stale: boolean;
             /**
@@ -3738,6 +3789,63 @@ export interface components {
         /** WorkspaceResponse */
         WorkspaceResponse: {
             data: components["schemas"]["Workspace"];
+        };
+        /**
+         * WorkspaceSetupLog
+         * @description The output of a workspace's last setup (#3009): on create, a retry, a rebuild after a loss, or a rebuild asked for. Each setup replaces the previous one's. Kept by Managoat, not on the machine, so it is readable once the machine is gone. While the setup runs it is written as each step starts and ends, and at most every 5 s.
+         */
+        WorkspaceSetupLog: {
+            /** Format: date-time */
+            finished_at: string | null;
+            /**
+             * Format: uuid
+             * @description The machine this setup built, or tried to.
+             */
+            sandbox_id: string;
+            /** Format: date-time */
+            started_at: string;
+            /** @enum {string} */
+            status: "running" | "succeeded" | "failed";
+            /**
+             * @description The step running, or the last one that ran.
+             * @enum {string|null}
+             */
+            step: "machine" | "broker" | "environment" | "packages" | "repositories" | "setup_script" | "runtime_template" | null;
+            /** @description Each step that ran, in order. */
+            steps: components["schemas"]["WorkspaceSetupStep"][];
+            /** Format: uuid */
+            workspace_id: string;
+        };
+        /** WorkspaceSetupLogResponse */
+        WorkspaceSetupLogResponse: {
+            /** @description The last setup's log, or null when none is kept: a setup that has not started yet, or one that ran before Managoat kept them. */
+            data: (components["schemas"]["WorkspaceSetupLog"] | (null)) | null;
+        };
+        /**
+         * WorkspaceSetupStep
+         * @description One step of a workspace's setup, with the end of what it printed.
+         */
+        WorkspaceSetupStep: {
+            /** Format: date-time */
+            finished_at: string | null;
+            /** @description The bytes of those lines. */
+            omitted_bytes: number;
+            /** @description Lines dropped from the start of output to keep it within bounds. */
+            omitted_lines: number;
+            /** @description What the step printed, as whole lines each ending in a newline, redacted like the transcript: its last 64 KiB, less when the whole log passes 256 KiB. A line is cut at 4 KiB. */
+            output: string;
+            /** Format: date-time */
+            started_at: string;
+            /**
+             * @description A step the setup was in when it was cut short (its deadline) reads failed.
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed";
+            /**
+             * @description machine (the provider creates it), broker (the egress broker's floor, CA and relay), environment (the environment's and vault's variables written to it), packages, repositories, setup_script, or runtime_template (the runtime template copied into the config home of a conversation whose provision built the machine). A step is reported only when it runs.
+             * @enum {string}
+             */
+            step: "machine" | "broker" | "environment" | "packages" | "repositories" | "setup_script" | "runtime_template";
         };
     };
     responses: never;
@@ -8634,7 +8742,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["StreamLogEvent"] | components["schemas"]["StreamSignal"] | components["schemas"]["StreamWorkspaceStatus"];
+                    "text/event-stream": components["schemas"]["StreamLogEvent"] | components["schemas"]["StreamSignal"] | components["schemas"]["StreamWorkspaceStatus"] | components["schemas"]["StreamWorkspaceSetup"];
                 };
             };
             /** @description Unauthorized */
@@ -11365,6 +11473,73 @@ export interface operations {
             };
             /** @description Every sandbox slot in use (fleet_full), or the setup could not be started (sandbox_unavailable); the workspace stays failed */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.setup_log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Setup log */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceSetupLogResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

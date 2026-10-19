@@ -48,7 +48,8 @@ defmodule FountainWeb.WorkspaceController do
     render(conn, :index,
       workspaces: workspaces,
       sandboxes: sandboxes,
-      standing: Workspaces.staleness(workspaces, sandboxes)
+      standing: Workspaces.staleness(workspaces, sandboxes),
+      setup_steps: Workspaces.setup_steps(workspaces)
     )
   end
 
@@ -282,6 +283,39 @@ defmodule FountainWeb.WorkspaceController do
     end
   end
 
+  operation(:setup_log,
+    summary: "Read a workspace's last setup log",
+    description:
+      "The output of the workspace's last setup (on create, a retry, a rebuild after a loss, " <>
+        "or a rebuild asked for), step by step, redacted like the transcript. Each setup " <>
+        "replaces the previous one's. It is kept by Managoat rather than on the machine, so " <>
+        "it is readable while the setup runs (written as each step starts and ends, and at " <>
+        "most every 5 s) and after the machine is gone, and reading it never wakes a parked " <>
+        "machine. Bounded: each step keeps its last 64 KiB of whole lines, the log 256 KiB " <>
+        "in all, and each step says how much it dropped. data is null when no setup has " <>
+        "been kept yet. The same lines arrive live as workspace.setup events on " <>
+        "GET /api/events/stream. An implicit workspace is 404: its setup is in its " <>
+        "conversation's transcript.",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: [
+      ok: {"Setup log", "application/json", Schemas.WorkspaceSetupLogResponse},
+      not_found: {"Not found", "application/json", Schemas.Error}
+    ]
+  )
+
+  def setup_log(conn, %{"id" => id}) do
+    user_id = conn.assigns.current_user.id
+
+    case Workspaces.get_workspace(id, user_id) do
+      %Fountain.Workspaces.Workspace{implicit: false} = workspace ->
+        render(conn, :setup_log, log: Workspaces.setup_log(workspace))
+
+      # An implicit workspace's setup is its conversation's transcript.
+      _none_or_implicit ->
+        {:error, :not_found}
+    end
+  end
+
   defp render_one(conn, workspace) do
     sandboxes = Workspaces.current_sandboxes([workspace])
     standing = Workspaces.staleness([workspace], sandboxes)
@@ -289,7 +323,8 @@ defmodule FountainWeb.WorkspaceController do
     render(conn, :show,
       workspace: workspace,
       sandbox: Map.get(sandboxes, workspace.id),
-      standing: Map.fetch!(standing, workspace.id)
+      standing: Map.fetch!(standing, workspace.id),
+      setup_steps: Workspaces.setup_steps([workspace])
     )
   end
 end

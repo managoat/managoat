@@ -434,7 +434,9 @@ defmodule Fountain.Machines.Provision do
   `:environment` is recorded on the new row as it is inserted
   and `:provider` (`:destroy`, the default, or `:already_gone`), and
   `:notice`, the note the moved conversations get in place of the lost
-  machine's. Answers
+  machine's, and `:announce` (default `true`): `false` when the caller has
+  already broadcast the workspace's `provisioning` (a retry), so the
+  succession does not send it twice. Answers
   `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
   refusals and failures, plus `Lease.succeed/3`'s; the reservation's
   `:fleet_full` writes nothing.
@@ -637,8 +639,10 @@ defmodule Fountain.Machines.Provision do
         announce_ended_turns(ended, old, opts)
         tell_moved(old, moved, opts)
         # The workspace is `provisioning` again (`Lease.succeed/3`): an
-        # explicit one says so on its owner's event stream (ADR 0097 step 5).
-        announce_provisioning(next)
+        # explicit one says so on its owner's event stream (ADR 0097 step 5),
+        # unless the caller already has (`announce: false`, a retry, which
+        # sent it when it moved the workspace out of `failed`).
+        if Keyword.get(opts, :announce, true), do: announce_provisioning(next)
 
         case build(next, epoch, false, pipeline, opts) do
           {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
@@ -1214,7 +1218,25 @@ defmodule Fountain.Machines.Provision do
   end
 
   defp build_under_lease(%Sandbox{} = sandbox, epoch, interrupted?, fun, opts) do
-    outcome = create_and_run(sandbox, epoch, interrupted?, fun)
+    # An explicit workspace's setup is collected from here to its pipeline's
+    # answer (#3009): every setup of such a machine (a create, a retry, a
+    # rebuild asked for, a rebuild after a loss) is a build under this one
+    # owner, in the process that runs its steps. The log is written whole
+    # before the finalize, so the `ready` or `failed` a client hears next
+    # follows a complete log. Nothing for any other machine.
+    :ok = Fountain.Workspaces.SetupOutput.begin(sandbox)
+
+    outcome =
+      try do
+        create_and_run(sandbox, epoch, interrupted?, fun)
+      catch
+        # A raise out of the build leaves its setup failed, and goes on up.
+        kind, reason ->
+          Fountain.Workspaces.SetupOutput.abandon()
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+
+    :ok = Fountain.Workspaces.SetupOutput.finish(setup_outcome(outcome))
 
     case outcome do
       %{step: :built} = attempt ->
@@ -1236,6 +1258,11 @@ defmodule Fountain.Machines.Provision do
         orphaned(sandbox, epoch, attempt)
     end
   end
+
+  # How the setup collected for an explicit workspace's machine ended: its
+  # steps all ran, or one of them (the create included) did not.
+  defp setup_outcome(%{step: :built}), do: :succeeded
+  defp setup_outcome(_failed_or_orphaned), do: :failed
 
   # The machine exists and the row refused `starting`. Three situations, and
   # `main` had none of them because it wrote `starting` *before* the create
@@ -1525,16 +1552,25 @@ defmodule Fountain.Machines.Provision do
   defp reason_text(reason) when is_atom(reason), do: to_string(reason)
   defp reason_text(reason), do: reason |> without_output() |> inspect() |> String.slice(0, 200)
 
-  defp without_output({:packages, code, _tail}), do: {:packages, code}
-  defp without_output({:clone, _url, code}), do: {:clone, code}
-  defp without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
-  defp without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url
-  defp without_output({:clone_invalid_spec, _repo}), do: :clone_invalid_spec
+  @doc """
+  `reason` without what a step printed or a URL a clone token can be written
+  into: what a record that is not redacted line by line carries (the row,
+  the audit, a log line, a conversation's `provision` stage metadata). The
+  output itself is in the transcript, or a workspace's redacted `error`.
+  """
+  @spec without_output(term()) :: term()
 
-  defp without_output({:broker, :ca_install_exit, code, _out}),
+  def without_output({:packages, code, _tail}), do: {:packages, code}
+  def without_output({:setup_exit, code, _tail}), do: {:setup_exit, code}
+  def without_output({:clone, _url, code}), do: {:clone, code}
+  def without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
+  def without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url
+  def without_output({:clone_invalid_spec, _repo}), do: :clone_invalid_spec
+
+  def without_output({:broker, :ca_install_exit, code, _out}),
     do: {:broker, :ca_install_exit, code}
 
-  defp without_output(reason), do: reason
+  def without_output(reason), do: reason
 
   # ── confirm ───────────────────────────────────────────────────────────────
 

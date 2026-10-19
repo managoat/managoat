@@ -325,7 +325,7 @@ defmodule Fountain.Machines.RebuildTest do
       reject(Fountain.Conversations, :log!, 1)
 
       capture_log(fn ->
-        assert {:error, {:setup_exit, 3}, %{}} =
+        assert {:error, {:setup_exit, 3, "nope\n"}, %{}} =
                  Machine.set_up(ctx.pending.id, ctx.setup, network: ctx.network)
       end)
 

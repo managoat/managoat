@@ -232,10 +232,10 @@ export async function* streamPath<T extends object = LogEvent>(
 
 /**
  * The SSE event names that become `kind` on a frame that does not carry one:
- * the two log-event kinds, and the account stream's two notices, which are
- * not log events and are told apart from them only by this name.
+ * the two log-event kinds, and the account stream's notices, which are not
+ * log events and are told apart from them only by this name.
  */
-const TAGGED_EVENTS = new Set(["output", "stage", "workspace.status", "conversations"]);
+const TAGGED_EVENTS = new Set(["output", "stage", "workspace.status", "workspace.setup", "conversations"]);
 
 function decodeEvent(message: SseMessage): { id?: number; kind?: string } | null {
   if (!message.data) return null;

@@ -69,6 +69,21 @@ export type WorkspaceField = Workspace["changed_fields"][number];
 export type WorkspaceInput = S["WorkspaceCreateRequest"];
 /** A `workspace.status` frame on the account event stream. Live only: it is never replayed. */
 export type WorkspaceStatusEvent = S["StreamWorkspaceStatus"];
+/**
+ * A `workspace.setup` frame on the account event stream: whole, redacted
+ * lines a workspace's setup printed since the previous frame, for one step
+ * (`machine`, `broker`, `environment`, `packages`, `repositories`,
+ * `setup_script`, `runtime_template`). Live only: what was missed is in
+ * `workspaces.setupLog`. A frame whose `step` is `machine` and `status`
+ * `running` starts a setup; `sandbox_id` says which setup a frame is from.
+ */
+export type WorkspaceSetupEvent = S["StreamWorkspaceSetup"];
+/** The step a workspace's setup is running, as `Workspace.setup_step` and `WorkspaceSetupEvent.step` name it. */
+export type WorkspaceSetupStepName = WorkspaceSetupEvent["step"];
+/** A workspace's last setup, step by step, as `workspaces.setupLog` reads it. */
+export type WorkspaceSetupLog = S["WorkspaceSetupLog"];
+/** One step of a `WorkspaceSetupLog`, with the end of what it printed. */
+export type WorkspaceSetupStep = S["WorkspaceSetupStep"];
 /** The `conversations` notice on the account event stream: the conversation list changed, so list it again. */
 export type ConversationsChangedEvent = S["StreamSignal"];
 /** One prompt and everything the agent did in response. */

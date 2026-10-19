@@ -641,9 +641,10 @@ secrets overriding the environment's. The environment, vault and provider are
 fixed for the workspace's life.
 
 Without --wait the command returns as soon as the workspace exists, with
-status provisioning. With --wait it follows the setup and exits non-zero if it
-fails. Conversations can be launched into a workspace before it is ready;
-their first prompt waits for it.
+status provisioning. With --wait it follows the setup, printing each step and
+what it prints as it runs, and exits non-zero if it fails. Conversations can
+be launched into a workspace before it is ready; their first prompt waits for
+it. `managoat workspace logs` shows what the last setup printed.
 
 ```
 managoat workspace create <name> [flags]
@@ -685,6 +686,30 @@ Options:
 ```
       --implicit   also list implicit workspaces, one per conversation launched without --workspace
       --json       output JSON
+```
+
+## `managoat workspace logs`
+
+Show what a workspace's last setup printed
+
+Show the output of a workspace's last setup, step by step: on create, a
+retry, a rebuild after a loss, or `managoat workspace rebuild`. Each setup
+replaces the previous one's log. Managoat keeps it, not the machine, so it is
+there while the setup runs and after the machine is gone.
+
+The output is redacted like a transcript. Each step keeps its last 64 KiB and
+says how many earlier lines it dropped. An implicit workspace's setup is in its
+conversation's transcript instead.
+
+```
+managoat workspace logs <id-or-name> [flags]
+```
+
+Options:
+
+```
+      --json          print the log as JSON
+      --step string   show only this step (machine, broker, environment, packages, repositories, setup_script, runtime_template)
 ```
 
 ## `managoat workspace rebuild`

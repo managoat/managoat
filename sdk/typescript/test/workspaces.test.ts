@@ -10,6 +10,9 @@ import {
   type AccountEvent,
   type Workspace,
   type WorkspaceField,
+  type WorkspaceSetupEvent,
+  type WorkspaceSetupLog,
+  type WorkspaceSetupStepName,
   type WorkspaceStatusEvent,
 } from "../src/index.ts";
 
@@ -33,10 +36,40 @@ const workspace = (status: Workspace["status"], extra: Partial<Workspace> = {}):
   built_from_revision: status === "ready" ? "99999999-1111-1111-1111-111111111111" : null,
   stale: false,
   changed_fields: [],
+  setup_step: null,
   inserted_at: "2026-10-18T00:00:00Z",
   updated_at: "2026-10-18T00:00:00Z",
   ...extra,
 });
+
+const setupLog: WorkspaceSetupLog = {
+  workspace_id: WS,
+  sandbox_id: "cccccccc-1111-1111-1111-111111111111",
+  status: "failed",
+  step: "setup_script",
+  started_at: "2026-10-19T00:00:00Z",
+  finished_at: "2026-10-19T00:01:00Z",
+  steps: [
+    {
+      step: "machine",
+      status: "succeeded",
+      started_at: "2026-10-19T00:00:00Z",
+      finished_at: "2026-10-19T00:00:05Z",
+      output: "",
+      omitted_lines: 0,
+      omitted_bytes: 0,
+    },
+    {
+      step: "setup_script",
+      status: "failed",
+      started_at: "2026-10-19T00:00:05Z",
+      finished_at: "2026-10-19T00:01:00Z",
+      output: "npm ERR! missing script: build\n",
+      omitted_lines: 3,
+      omitted_bytes: 120,
+    },
+  ],
+};
 
 type Seen = { method: string; path: string; query: URLSearchParams; body: unknown };
 
@@ -91,6 +124,7 @@ function client(seen: Seen[], reads: (Workspace["status"] | number)[] = ["ready"
         message: "the workspace is already being set up; follow its status until it is ready or failed",
       });
     }
+    if (method === "GET" && url.pathname === `/api/workspaces/${WS}/setup-log`) return json(200, { data: setupLog });
     if (method === "GET" && url.pathname.startsWith(`/api/workspaces/${WS}/`))
       return json(200, { data: { path: "/home/sprite", entries: [], truncated: false } });
     if (method === "POST" && url.pathname === "/api/conversations") {
@@ -282,6 +316,48 @@ test("a sandbox key's refusal is code insufficient_scope, with the scope it need
   assert.equal((error.body as typeof body).required_scope, "full");
 });
 
+test("setupLog reads the last setup's log by name or id", async () => {
+  const seen: Seen[] = [];
+  const log = await client(seen).workspaces.setupLog("monorepo-box");
+  assert.deepEqual(log, setupLog);
+  assert.equal(seen.at(-1)?.path, `/api/workspaces/${WS}/setup-log`);
+  const failed = log?.steps.find((s) => s.status === "failed");
+  const step: WorkspaceSetupStepName | undefined = failed?.step;
+  assert.equal(step, "setup_script");
+});
+
+test("setupLog is null when no setup has been kept", async () => {
+  const fetch = async (): Promise<Response> =>
+    new Response(JSON.stringify({ data: null }), { status: 200, headers: { "content-type": "application/json" } });
+  const c = new Managoat({ baseUrl: "https://managoat.test", apiKey: "fk_test", fetch });
+  assert.equal(await c.workspaces.setupLog(WS), null);
+});
+
+test("events() yields workspace.setup frames as their own kind", async () => {
+  const frame = {
+    workspace_id: WS,
+    sandbox_id: "cccccccc-1111-1111-1111-111111111111",
+    step: "packages",
+    status: "running",
+    lines: ["Reading package lists...", "Setting up jq (1.7)"],
+    omitted_lines: 0,
+    at: "2026-10-19T00:00:01Z",
+  };
+  const fetch = async (): Promise<Response> =>
+    new Response(`event: workspace.setup\ndata: ${JSON.stringify(frame)}\n\n`, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  const c = new Managoat({ baseUrl: "https://managoat.test", apiKey: "fk_test", fetch });
+
+  const frames: WorkspaceSetupEvent[] = [];
+  for await (const event of c.events({ wait: false })) {
+    if (event.kind === "workspace.setup") frames.push(event);
+  }
+  assert.deepEqual(frames, [{ ...frame, kind: "workspace.setup" }]);
+  assert.deepEqual(frames[0]!.lines, ["Reading package lists...", "Setting up jq (1.7)"]);
+});
+
 test("events() yields workspace.status and conversations notices as their own kinds", async () => {
   const stage = { conversation_id: "conv-1", kind: "stage", stage: "turn", state: "done", ts: "2026-10-19T00:00:00Z" };
   const status = {
@@ -320,6 +396,7 @@ test("events() yields workspace.status and conversations notices as their own ki
   for (const event of seen) {
     if (event.kind === "workspace.status") statuses.push(event);
     else if (event.kind === "conversations") assert.equal(event.reason, "changed");
+    else if (event.kind === "workspace.setup") assert.fail("no setup frame was sent");
     else {
       assert.equal(event.id, 5);
       assert.equal(event.conversation_id, "conv-1");

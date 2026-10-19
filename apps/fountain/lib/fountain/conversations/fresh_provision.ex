@@ -263,13 +263,16 @@ defmodule Fountain.Conversations.FreshProvision do
   # would not create it. The row is the protocol's to fail where it claimed
   # one, and this server's where it never got that far.
   defp provision_could_not_start(state, conv, sandbox, reason) do
-    Logger.error("provision could not start: #{inspect(reason)}")
+    Logger.error(
+      "provision could not start: #{inspect(Fountain.Machines.Provision.without_output(reason))}"
+    )
+
     ConversationServer.fail_machine(sandbox.id, :provision_could_not_start, conv.id)
     announce_failed_provision(state, conv, reason)
   end
 
   defp announce_failed_provision(state, _conv, reason) do
-    ActorStatus.fail(state, %{reason: inspect(reason)})
+    ActorStatus.fail(state, %{reason: inspect(Fountain.Machines.Provision.without_output(reason))})
 
     {:stop, :normal, state}
   end
@@ -322,6 +325,10 @@ defmodule Fountain.Conversations.FreshProvision do
   # the template's directories are made in the setup script's own exec.
   defp seed_config_home(ctx, handle, {:ok, reached} = result) do
     if has_setup_script?(ctx.env) do
+      # A step of an explicit workspace's setup log, on a rebuild after a
+      # loss that this conversation runs (#3009).
+      :ok = Fountain.Workspaces.SetupOutput.step(:runtime_template)
+
       case step(ctx.state.conversation_id, "runtime_template", fn ->
              ConfigHome.seed(handle, reached.conv, ctx.agent, :into)
            end) do
@@ -406,6 +413,9 @@ defmodule Fountain.Conversations.FreshProvision do
            step(conv_id, "broker_ca_files", fn -> Egress.ca_files(state.broker, handle) end),
          sprite_env =
            ConversationServer.build_sprite_env(state, agent, env, secrets, sandbox_url, ca_files),
+         # The env file and the CA are written in tasks of their own, which
+         # report to no setup log: an explicit workspace's (#3009) is told here.
+         :ok <- Fountain.Workspaces.SetupOutput.step(:environment),
          :ok <-
            step(conv_id, "sandbox_config", fn ->
              write_sandbox_config(handle, state, agent, runtime, sprite_env, conv)

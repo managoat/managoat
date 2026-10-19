@@ -36,6 +36,10 @@ type workspaceAPI struct {
 		status int
 		body   string
 	} // "METHOD /path" → canned refusal
+	// setupFrames is what GET /api/events/stream sends, once, before it
+	// stays open; empty answers 404, as a server without the stream would.
+	setupFrames string
+	setupLog    string // GET /workspaces/<wsUUID>/setup-log's body
 }
 
 func newWorkspaceAPI(t *testing.T) *workspaceAPI {
@@ -62,6 +66,11 @@ func (w *workspaceAPI) refuse(method, path string, status int, body string) {
 
 func (w *workspaceAPI) serve(t *testing.T) func(http.ResponseWriter, *http.Request) {
 	return func(rw http.ResponseWriter, r *http.Request) {
+		// The account stream stays open, so it is served outside the lock.
+		if r.URL.Path == "/api/events/stream" {
+			w.serveEvents(rw, r)
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		if len(raw) > 0 {
@@ -110,6 +119,8 @@ func (w *workspaceAPI) serve(t *testing.T) func(http.ResponseWriter, *http.Reque
 				errText = `"setup script exited 1: npm ERR! missing script: build"`
 			}
 			_, _ = io.WriteString(rw, `{"data":{"id":"`+wsUUID+`","name":"shared","status":"`+status+`","error":`+errText+`,"sandbox_id":null,"sandbox_status":null}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/workspaces/"+wsUUID+"/setup-log":
+			_, _ = io.WriteString(rw, w.setupLog)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/workspaces/"+wsUUID+"/rebuild":
 			if body["interrupt"] != true {
 				rw.WriteHeader(http.StatusConflict)
@@ -131,6 +142,179 @@ func (w *workspaceAPI) serve(t *testing.T) func(http.ResponseWriter, *http.Reque
 			_, _ = io.WriteString(rw, `{"error":"not_found"}`)
 		}
 	}
+}
+
+func (w *workspaceAPI) serveEvents(rw http.ResponseWriter, r *http.Request) {
+	w.mu.Lock()
+	frames := w.setupFrames
+	w.setupFrames = ""
+	w.mu.Unlock()
+	if frames == "" {
+		rw.WriteHeader(http.StatusNotFound)
+		return
+	}
+	rw.Header().Set("Content-Type", "text/event-stream")
+	_, _ = io.WriteString(rw, ": connected\n\n"+frames)
+	rw.(http.Flusher).Flush()
+	<-r.Context().Done()
+}
+
+// captureOutput runs fn with os.Stdout going to a temporary file, and
+// returns what it printed.
+func captureOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = f
+	func() {
+		defer func() { os.Stdout = original }()
+		fn()
+	}()
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(f)
+	f.Close()
+	return string(out)
+}
+
+// lockedBuffer is a progress writer the follower's goroutine and the wait
+// can both write to.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func setupFrame(workspace, sandbox, step, status string, lines ...string) string {
+	if lines == nil {
+		lines = []string{}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"workspace_id": workspace, "sandbox_id": sandbox, "step": step, "status": status,
+		"lines": lines, "omitted_lines": 0, "at": "2026-10-19T00:00:00Z",
+	})
+	return "event: workspace.setup\ndata: " + string(data) + "\n\n"
+}
+
+// --wait prints the setup's steps and lines as they arrive on the account
+// stream, including those sent before the create answered, and none of
+// another workspace's (#3009).
+func TestWorkspaceCreateWaitStreamsSetupLines(t *testing.T) {
+	w := newWorkspaceAPI(t)
+	w.statuses = []string{"provisioning", "provisioning", "provisioning", "ready"}
+	w.setupFrames = setupFrame(wsUUID, "s1", "machine", "running") +
+		setupFrame(wsOtherUUID, "s9", "packages", "running", "not this workspace's") +
+		setupFrame(wsUUID, "s1", "packages", "running", "Reading package lists...", "Setting up jq") +
+		setupFrame(wsUUID, "s1", "setup_script", "failed", "make: *** Error 2")
+	progress := &lockedBuffer{}
+	workspaceProgress = progress
+	setupQuiet = 50 * time.Millisecond
+	t.Cleanup(func() { workspaceProgress = os.Stderr; setupQuiet = 300 * time.Millisecond })
+	silenceStdout(t)
+
+	cmd := testCmd(t, addWorkspaceCreateFlags, "--environment", "base", "--wait")
+	if err := workspaceCreate(cmd, "shared"); err != nil {
+		t.Fatalf("workspaceCreate --wait: %v", err)
+	}
+	got := progress.String()
+	for _, want := range []string{
+		"▸ setup: creating the machine\n",
+		"▸ setup: installing packages\n  Reading package lists...\n  Setting up jq\n",
+		"▸ setup: running the setup script\n  make: *** Error 2\n▸ setup: running the setup script failed\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("progress lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "not this workspace's") {
+		t.Errorf("printed another workspace's setup:\n%s", got)
+	}
+}
+
+func TestWorkspaceLogs(t *testing.T) {
+	t.Run("prints each step", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.setupLog = `{"data":{"workspace_id":"` + wsUUID + `","sandbox_id":"s1","status":"failed",` +
+			`"step":"setup_script","started_at":"2026-10-19T00:00:00Z","finished_at":"2026-10-19T00:01:00Z",` +
+			`"steps":[{"step":"machine","status":"succeeded","output":"","omitted_lines":0},` +
+			`{"step":"setup_script","status":"failed","output":"one\ntwo\n","omitted_lines":3}]}}`
+		out := captureOutput(t, func() {
+			cmd := testCmd(t, func(c *cobra.Command) {
+				c.Flags().String("step", "", "")
+				c.Flags().Bool("json", false, "")
+			})
+			if err := workspaceLogs(cmd, "shared"); err != nil {
+				t.Fatalf("workspaceLogs: %v", err)
+			}
+		})
+		for _, want := range []string{"setup failed", "── machine: succeeded", "── setup_script: failed", "… 3 earlier lines dropped", "  one\n  two\n"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output lacks %q:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("one step", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.setupLog = `{"data":{"status":"succeeded","steps":[{"step":"machine","status":"succeeded","output":"m\n"},{"step":"packages","status":"succeeded","output":"p\n"}]}}`
+		out := captureOutput(t, func() {
+			cmd := testCmd(t, func(c *cobra.Command) {
+				c.Flags().String("step", "", "")
+				c.Flags().Bool("json", false, "")
+			}, "--step", "packages")
+			if err := workspaceLogs(cmd, wsUUID); err != nil {
+				t.Fatalf("workspaceLogs: %v", err)
+			}
+		})
+		if !strings.Contains(out, "  p\n") || strings.Contains(out, "  m\n") {
+			t.Errorf("--step packages printed:\n%s", out)
+		}
+	})
+
+	t.Run("none kept yet", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.setupLog = `{"data":null}`
+		out := captureOutput(t, func() {
+			cmd := testCmd(t, func(c *cobra.Command) {
+				c.Flags().String("step", "", "")
+				c.Flags().Bool("json", false, "")
+			})
+			if err := workspaceLogs(cmd, wsUUID); err != nil {
+				t.Fatalf("workspaceLogs: %v", err)
+			}
+		})
+		if !strings.Contains(out, "no setup log") {
+			t.Errorf("printed:\n%s", out)
+		}
+	})
+
+	t.Run("an implicit or unknown workspace", func(t *testing.T) {
+		w := newWorkspaceAPI(t)
+		w.refuse(http.MethodGet, "/api/workspaces/"+wsUUID+"/setup-log", 404, `{"error":"not_found"}`)
+		cmd := testCmd(t, func(c *cobra.Command) {
+			c.Flags().String("step", "", "")
+			c.Flags().Bool("json", false, "")
+		})
+		err := workspaceLogs(cmd, wsUUID)
+		if err == nil || !strings.Contains(err.Error(), "transcript") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }
 
 func (w *workspaceAPI) requests() []recordedRequest {

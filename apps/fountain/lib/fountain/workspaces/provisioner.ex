@@ -259,6 +259,10 @@ defmodule Fountain.Workspaces.Provisioner do
         end,
         actor: "system:workspace_setup",
         attrs: %{machine_name: name},
+        # `Workspaces.retry_workspace/2` sent `provisioning` when it moved
+        # the workspace out of `failed`; the succession is not to send it
+        # again.
+        announce: false,
         # What the new machine is built from, as read just now: its
         # `built_from_revision` (#2987).
         environment: inputs.environment,

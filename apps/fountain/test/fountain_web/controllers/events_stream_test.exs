@@ -386,6 +386,53 @@ defmodule FountainWeb.EventsStreamTest do
     end
   end
 
+  describe "workspace.setup (#3009)" do
+    test "carries the caller's workspaces' setup output and no other account's", %{
+      user: user,
+      raw_key: key
+    } do
+      mine = insert_workspace(user_id: user.id, implicit: false, name: "mine")
+      other = insert_verified_user()
+      theirs = insert_workspace(user_id: other.id, implicit: false, name: "x")
+
+      task = stream_async(key, "/api/events/stream")
+      Process.sleep(300)
+
+      frame = fn workspace, line ->
+        %{
+          workspace_id: workspace.id,
+          sandbox_id: Ecto.UUID.generate(),
+          step: "packages",
+          status: "running",
+          lines: [line],
+          omitted_lines: 0,
+          at: DateTime.utc_now()
+        }
+      end
+
+      Fountain.Workspaces.publish_setup(user.id, frame.(mine, "Setting up jq"))
+      Fountain.Workspaces.publish_setup(other.id, frame.(theirs, "not yours"))
+
+      conn = Task.await(task, 5_000)
+
+      assert [payload] =
+               Regex.run(~r/event: workspace.setup\ndata: (\{[^\n]*\})/, conn.resp_body,
+                 capture: :all_but_first
+               )
+
+      assert %{
+               "workspace_id" => id,
+               "step" => "packages",
+               "status" => "running",
+               "lines" => ["Setting up jq"],
+               "omitted_lines" => 0
+             } = Jason.decode!(payload)
+
+      assert id == mine.id
+      refute conn.resp_body =~ "not yours"
+    end
+  end
+
   describe "?blocks=true on the per-conversation surfaces" do
     test "GET /events adds blocks for output events and [] for stage events", %{
       user: user,
