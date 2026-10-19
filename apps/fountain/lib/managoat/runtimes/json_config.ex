@@ -66,22 +66,15 @@ defmodule Managoat.Runtimes.JsonConfig do
   defp unreadable?({:ok, results}), do: :unreadable in Map.values(results)
   defp unreadable?({:error, _}), do: true
 
-  # One line per path, or the output is not the script's. No output at all
-  # reads as no files, as the single-file `cat` read this replaced did (an
-  # adapter that runs no shell answers nothing).
+  # One line per path, a missing file included, or the output is not the
+  # script's. No output at all (stdout lost on the way back) is not "no
+  # files": taken that way, a wake would write over the rest of each file.
   defp decode_all(paths, out) do
     lines = String.split(to_string(out), "\n", trim: true)
 
-    cond do
-      lines == [] ->
-        {:ok, Map.new(paths, &{&1, nil})}
-
-      length(lines) == length(paths) ->
-        decode_lines(paths, lines)
-
-      true ->
-        {:error, {:runtime_config, hd(paths), :unreadable}}
-    end
+    if length(lines) == length(paths),
+      do: decode_lines(paths, lines),
+      else: {:error, {:runtime_config, hd(paths), :unreadable}}
   end
 
   defp decode_lines(paths, lines) do

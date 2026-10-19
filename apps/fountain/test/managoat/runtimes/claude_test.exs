@@ -156,6 +156,19 @@ defmodule Managoat.Runtimes.ClaudeTest do
     refute_received {:wrote, _tmp, _body, _opts}
   end
 
+  test "a read that comes back empty writes nothing over the files", %{handle: handle} do
+    # stdout lost on the way back is not "no files": the template's hooks and
+    # the CLI's state would be written over.
+    stub_sandbox(%{})
+
+    Mimic.stub(Managoat.Sandbox, :exec, fn _h, "bash", _args, _opts -> {:ok, "", 0} end)
+
+    assert {:error, {:runtime_config, @settings, :unreadable}} =
+             Claude.write_config(handle, %{}, @home)
+
+    refute_received {:wrote, _, _, _}
+  end
+
   test "a settings.json that does not parse keeps nothing else from being written", %{
     handle: handle
   } do
