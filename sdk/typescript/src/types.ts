@@ -39,6 +39,9 @@ export type {
   VaultPatch,
   VaultSecret,
   VaultSecretMetadataPatch,
+  Workspace,
+  WorkspaceInput,
+  WorkspaceStatusEvent,
 } from "./schemas.ts";
 
 import type { Agent, Block, ConversationRecord, LogEvent } from "./schemas.ts";

@@ -39,6 +39,7 @@ nav:
           - Run Codex on a ChatGPT subscription: guides/chatgpt-subscription.md
           - Connect Linear to an agent: guides/connect-an-mcp-server.md
           - Run Gemini CLI as an API: catalog/runtimes/gemini.md
+          - Run several agents on one machine: guides/agents-in-one-workspace.md
           - Manage resources as YAML: guides/manifests.md
           - Use the CLI: cli.md
           - Call the API over HTTP: guides/http-api.md
@@ -79,6 +80,7 @@ nav:
       - How it works:
           - Architecture: architecture.md
           - About sandboxes: concepts/sandboxes.md
+          - About workspaces: concepts/workspaces.md
           - Where a secret comes from: concepts/secrets.md
           - Before a tool runs: concepts/permissions.md
           - The console, the apps, and the API: concepts/surfaces.md

@@ -4,7 +4,7 @@ import { resolveConfig, type ConfigOptions, type ResolvedConfig } from "./config
 import { Resolver } from "./resolve.ts";
 import { Run, type RunOptions } from "./run.ts";
 import { Conversation } from "./conversation.ts";
-import { Agents, Connections, Environments, Vaults } from "./resources.ts";
+import { Agents, Connections, Environments, Vaults, Workspaces } from "./resources.ts";
 import { normalizeStreams, streamPath, type StreamRequest } from "./sse.ts";
 import type {
   AuthMe,
@@ -37,6 +37,24 @@ export interface RunConfig extends RunOptions {
   vault?: string;
   /** An environment to provision from instead of the agent's own, by name or id. */
   environment?: string;
+  /**
+   * Run on a workspace's machine, by id or exact name (never a prefix), beside whatever else runs
+   * there, instead of in a sandbox of the conversation's own (ADR 0097). Sent
+   * as `workspace_id`. The workspace fixes the environment and vault, so
+   * `environment` and `vault` may only name its own (`422
+   * workspace_fixes_environment` otherwise). Conversations in one workspace
+   * can read and change each other's files and tokens; leave it out for
+   * isolation. See `managoat.workspaces`.
+   */
+  workspace?: string;
+  /**
+   * The directory inside the sandbox the agent runs in, fixed for the
+   * conversation's life: `/home/sprite` or a directory under it (for a
+   * gemini agent, also under `/tmp`), created if missing. Omit it for the
+   * runtime's default. With `workspace`, it is how several agents share one
+   * machine in different folders.
+   */
+  cwd?: string;
   /** Display title for the conversation. */
   title?: string;
   /** Images to attach to the first prompt, as the API's `ImageInput` shape. */
@@ -97,6 +115,8 @@ export class Managoat {
   readonly vaults: Vaults;
   /** OAuth grants to remote MCP servers (ADR 0085). */
   readonly connections: Connections;
+  /** Machines you keep and run many conversations on (ADR 0097). */
+  readonly workspaces: Workspaces;
 
   private readonly resolver: Resolver;
 
@@ -111,6 +131,7 @@ export class Managoat {
     this.environments = new Environments(this.api, this.resolver);
     this.vaults = new Vaults(this.api, this.resolver);
     this.connections = new Connections(this.api);
+    this.workspaces = new Workspaces(this.api, this.resolver);
   }
 
   /**
@@ -132,16 +153,21 @@ export class Managoat {
       this.api,
       {
         start: async () => {
-          const [agent, vaultId, environmentId] = await Promise.all([
+          const [agent, vaultId, environmentId, workspaceId] = await Promise.all([
             this.resolver.resolve("/api/agents", "agent", config.agent),
             this.resolver.resolveId("/api/vaults", "vault", config.vault),
             this.resolver.resolveId("/api/environments", "environment", config.environment),
+            config.workspace
+              ? this.resolver.resolveExact("/api/workspaces", "workspace", config.workspace).then((w) => w.id)
+              : undefined,
           ]);
 
           const body: Record<string, unknown> = { agent_id: agent.id };
           if (prompt) body.prompt = prompt;
           if (vaultId) body.vault_id = vaultId;
           if (environmentId) body.environment_id = environmentId;
+          if (workspaceId) body.workspace_id = workspaceId;
+          if (config.cwd) body.cwd = config.cwd;
           if (config.title) body.title = config.title;
           if (config.images?.length) body.images = config.images;
           // Presence, not truthiness: an explicitly empty id is a 422 the caller
@@ -271,7 +297,9 @@ export class Managoat {
   /**
    * The entries of one directory on a sandbox, directories first then by
    * name (ADR 0039). `path` is absolute or relative to the agent's working
-   * directory; omit it for that directory itself.
+   * directory; omit it for that directory itself. On a workspace's machine,
+   * which several conversations share, a relative path resolves from
+   * `/home/sprite` instead; `workspaces.files` reads it by workspace.
    *
    * The four disk reads — this, `sandboxFile`, `sandboxGitStatus` and
    * `sandboxDiff` — are the whole of what the API offers on a disk; there is
@@ -279,8 +307,9 @@ export class Managoat {
    * a `ready` sandbox (one Managoat parked is not resumed:
    * `sandbox_not_ready`; a `ready` one its provider put to sleep is woken,
    * and billed), are
-   * confined to `/home/sprite` and the runtime's workspace
-   * (`path_outside_sandbox`), and come back redacted — the sandbox's
+   * confined to `/home/sprite` and the agent's working directory (on a
+   * workspace's machine, every live conversation's) (`path_outside_sandbox`),
+   * and come back redacted — the sandbox's
    * environment and vault values read `[REDACTED]`, as in the transcript.
    */
   async sandboxFiles(id: string, path?: string): Promise<SandboxListing> {

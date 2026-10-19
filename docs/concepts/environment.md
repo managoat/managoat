@@ -80,6 +80,14 @@ installation more time.
 The overall 30-minute provisioning deadline still applies; a failed or timed-out
 setup does not start the agent. This controls setup, not inference time or spend.
 
+A setup script cannot configure the runtime by writing into the image's
+`~/.claude`, `~/.codex` or `~/.gemini`: each conversation reads a config home
+of its own. A conversation's setup runs with `$CLAUDE_CONFIG_DIR`,
+`$CODEX_HOME` or `$GEMINI_CLI_HOME` naming it, so write there. A
+[workspace](workspaces.md)'s setup runs once, before any conversation, with
+none of those set, so it reaches no agent's configuration; put that on the
+agent instead.
+
 The setup step ends when the script exits. A process the script starts in the
 background, such as a dev server, keeps running, but what it prints after the
 script exits is not in the setup log. Redirect its output to a file if you

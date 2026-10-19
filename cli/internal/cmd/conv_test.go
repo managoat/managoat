@@ -94,6 +94,20 @@ func TestHandleStageEvent(t *testing.T) {
 			wantErr:  nil,
 		},
 		{
+			// ADR 0097: the ceiling parks a workspace's machine and cuts
+			// every running turn on it first; the work did not finish.
+			name:     "a turn cut by the ceiling's park fails",
+			data:     map[string]any{"stage": "turn", "state": "interrupted", "data": `{"reason":"machine_parked"}`},
+			terminal: true,
+			wantErr:  errSandboxExpired,
+		},
+		{
+			name:     "a turn cut by its machine's destroy fails",
+			data:     map[string]any{"stage": "turn", "state": "interrupted", "data": `{"reason":"machine_destroyed"}`},
+			terminal: true,
+			wantErr:  errMachineDestroyed,
+		},
+		{
 			// The server stops after publishing this (conversation_server.ex),
 			// so nothing more is coming.
 			name:     "reattach failed is terminal and fails",

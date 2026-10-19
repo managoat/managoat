@@ -29,6 +29,7 @@ var (
 	acpEnvironment string
 	acpPermission  string
 	acpCwd         string
+	acpWorkspace   string
 )
 
 func init() {
@@ -69,6 +70,12 @@ path under /home/sprite (or /tmp for a gemini agent), created if missing.
 Without it the runtime's default stands. It is not your editor's project
 directory, which session/new sends and the sandbox cannot see.
 
+--workspace opens every session on one workspace's machine (managoat
+workspace) instead of a sandbox of its own, beside whatever else runs there.
+The workspace fixes the environment and vault, so --environment and --vault
+may only name its own. Pair it with --cwd to give each editor entry a folder.
+Conversations in one workspace can read and change each other's files.
+
 Nobody answering is an answer: an unanswered prompt is denied after the
 server's timeout, and so is one your editor dismisses or disconnects from. The
 turn continues either way.
@@ -84,6 +91,7 @@ not on your machine.`,
 	acpCmd.Flags().StringVar(&acpEnvironment, "environment", "", "environment name or id to provision each session's conversation from, instead of the agent's own")
 	acpCmd.Flags().StringVar(&acpPermission, "permission", "", `what happens before the agent runs a tool: auto_allow, ask, auto_deny, or key=verdict pairs (for example "execute=ask")`)
 	acpCmd.Flags().StringVar(&acpCwd, "cwd", "", "working directory inside the sandbox for each session's agent (absolute, under /home/sprite)")
+	acpCmd.Flags().StringVar(&acpWorkspace, "workspace", "", "workspace name or id every session's conversation runs on, instead of a sandbox of its own")
 	acpCmd.Flags().StringVar(&acpLogLevel, "log-level", "info", "stderr log level: debug, info, warn, error")
 	rootCmd.AddCommand(acpCmd)
 }
@@ -117,6 +125,7 @@ func runACP() error {
 			environment: acpEnvironment,
 			permission:  permission,
 			cwd:         acpCwd,
+			workspace:   acpWorkspace,
 		},
 		acpAgent,
 		Version,
@@ -201,6 +210,9 @@ type fountainAPI struct {
 	// cwd is the in-sandbox working directory every conversation this
 	// process opens runs in; empty leaves the runtime's default.
 	cwd string
+	// workspace names the workspace (ADR 0097) every conversation this
+	// process opens runs on; empty gives each a sandbox of its own.
+	workspace string
 }
 
 // parsePermissionPolicy turns --permission into the policy the API takes.
@@ -342,11 +354,21 @@ func (f fountainAPI) CreateConversation(_ context.Context, agentID string, opts 
 		body["cwd"] = f.cwd
 	}
 
+	// The workspace whose machine the conversation joins. With a channel key
+	// the server resumes only a conversation already in that workspace.
+	if f.workspace != "" {
+		id, err := resolveWorkspaceID(api.New(f.opts), f.workspace)
+		if err != nil {
+			return "", false, err
+		}
+		body["workspace_id"] = id
+	}
+
 	// No prompt: the conversation is created empty and the editor's first
 	// `session/prompt` becomes turn 1. Provisioning starts server-side either
 	// way, so the sandbox is warming while the developer types.
 	if err := api.New(f.opts).Post("/conversations", body, &resp); err != nil {
-		return "", false, err
+		return "", false, explainAPIError(err)
 	}
 	id := output.ToString(resp.Data["id"])
 	if id == "" {

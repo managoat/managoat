@@ -6,6 +6,7 @@
  * to do with those numbers. So `code` is the primary axis here, status the
  * secondary one, and the conditions worth retrying say so themselves.
  */
+import type { Workspace } from "./schemas.ts";
 
 /** The `error` strings the API sends. Open — a new one is a string, not a break. */
 export type ManagoatErrorCode =
@@ -23,6 +24,12 @@ export type ManagoatErrorCode =
   | "environment_not_found"
   | "vault_not_allowed"
   | "parent_conversation_not_found"
+  | "workspace_fixes_environment"
+  | "machine_name_with_workspace"
+  | "invalid_sandbox_api_access"
+  | "source_in_use_by_workspace"
+  | "sandbox_not_ready"
+  | "workspace_failed"
   | "not_found"
   | "unauthorized"
   | (string & {});
@@ -136,6 +143,24 @@ export class TimeoutError extends ManagoatError {
     super(message);
     this.conversationId = conversationId;
     this.partialText = partialText;
+  }
+}
+
+/**
+ * A workspace's setup failed (`status: "failed"`), seen by
+ * `workspaces.waitForReady`. `workspace.error` says which step failed and
+ * the end of what it printed, redacted. A prompt into a conversation in the
+ * workspace retries the setup.
+ */
+export class WorkspaceFailedError extends ManagoatError {
+  readonly workspace: Workspace;
+  constructor(workspace: Workspace) {
+    super(
+      `Workspace ${workspace.name ?? workspace.id} failed to set up` +
+        (workspace.error ? `: ${workspace.error}` : ""),
+      { code: "workspace_failed", body: workspace },
+    );
+    this.workspace = workspace;
   }
 }
 

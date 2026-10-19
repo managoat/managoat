@@ -1,6 +1,6 @@
 # Glossary
 
-Here are the terms Managoat uses, and the five that carry more than one
+Here are the terms Managoat uses, and the six that carry more than one
 meaning. Where a word has more than one sense, this page lists the senses and
 names the one the docs use.
 
@@ -48,6 +48,18 @@ Two senses, and they are close to opposite. The docs mean the first.
    credentials. Nothing about it relates to Managoat's Vault, except the shape
    of the encryption. The Vault page sets the collision out.
 
+### Workspace
+
+Two senses. The docs mean the first.
+
+1. **The Managoat object.** A machine you create from an environment and
+   keep, which many conversations run on. Read
+   [About workspaces](../concepts/workspaces.md).
+2. **A runtime's working directory.** Claude Code and Codex call the
+   directory an agent runs in its workspace, as in Codex's `workspace-write`
+   mode, and gemini's default is `/tmp/gemini-workspace`. The docs say
+   **working directory**, or `cwd`.
+
 ### Computer
 
 Some apps use this word for the machine an agent works on. The docs say
@@ -67,15 +79,18 @@ Some apps use this word for the machine an agent works on. The docs say
 | **MCP server** | A Model Context Protocol server that an Agent gives its runtime. You declare it in `mcp_servers`. |
 | **Reaper** | The background sweep that suspends an idle sandbox, and destroys one that passed a configured ceiling. |
 | **Runtime** | What a sandbox runs. One of `claude`, `codex`, `gemini`, which are coding-agent CLIs, or `acp`, which is a command the Agent names. |
-| **Sandbox** | The isolated machine that a Conversation runs in. Each Conversation has its own. Managoat provisions it at launch and reclaims it on the lifetime rules. `GET /api/sandboxes` lists them. |
+| **Config home** | A conversation's own runtime configuration directory on its sandbox, `~/.managoat/c/<conversation id>`: its skills, instructions, MCP configuration and session. |
+| **Implicit workspace** | The workspace a conversation launched without `workspace_id` gets for its own sandbox, ended with it. Listed with `GET /api/workspaces?implicit=true`. |
+| **Sandbox** | The isolated machine that a Conversation runs in. Each Conversation has its own, unless it was launched into a workspace. Managoat provisions it at launch and reclaims it on the lifetime rules. `GET /api/sandboxes` lists them. |
 | **Sandbox provider** | A backend that Managoat provisions sandboxes on. Sprites or E2B. Read [the sandbox contract](../integrations/sandbox-contract.md). |
 | **Skill** | A `SKILL.md` that Managoat writes into the sandbox, inline or from GitHub. |
 | **Sprite** | One sandbox on the Sprites provider. Not a Managoat concept. Read [Sprites](../integrations/sprites.md). |
 | **Substitution** | `${VAR}` interpolation in an Agent config, resolved from the merged secrets at spawn. |
 | **Suspend** | To scale a sandbox to zero and keep its disk, so the agent's memory survives. |
 | **Turn** | One prompt, and the work that comes after it, in a Conversation. |
+| **Workspace** | A machine you create from an environment and keep, which many conversations share, each in its own working directory. One trust boundary. Read [About workspaces](../concepts/workspaces.md). |
 
-## Two things that sound like primitives and are not
+## Three things that sound like primitives and are not
 
 A **long-lived agent** is not an object. It is a Conversation that you keep,
 by its id or by a `channel_id` of your own.
@@ -85,3 +100,8 @@ Conversation starts, one for each Conversation. You can list them and read
 one. Read
 [Sandboxes](../api.md#sandboxes) and
 [About conversations](../concepts/conversation.md).
+
+A **workspace** is a machine you create and keep, and is the one sandbox you
+name. It configures nothing of its own: its environment and vault are two of
+the primitives, and it only decides where conversations run. Read
+[About workspaces](../concepts/workspaces.md).

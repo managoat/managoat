@@ -102,7 +102,7 @@ is the heavy work, and Managoat does it for you.
   <text x="32" y="485" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" font-weight="500" fill="#f5f5f7">Your setup is reusable.</text>
   <text x="32" y="507" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="400" fill="#a6a6b2">Each run gets its own workspace.</text>
 </svg>
-<figcaption><b>Three templates, one machine.</b> Agent, Environment and Vault are rows you write once. At launch Managoat builds the sandbox from the Environment, merges the secrets with the Vault winning, and starts the Agent's runtime. Each Conversation has a machine of its own, and its next turn lands on the machine the last one left. An idle machine parks, and the next turn wakes it. The fleet ceiling only refuses a new machine; it reclaims none. A bound secret's real value goes to the egress broker and the sandbox gets a placeholder, such as <code>__github_token__</code>; the sandbox reaches the internet only through the broker, which attaches the value. A secret with no binding enters the sandbox as an environment variable.</figcaption>
+<figcaption><b>Three templates, one machine.</b> Agent, Environment and Vault are rows you write once. At launch Managoat builds the sandbox from the Environment, merges the secrets with the Vault winning, and starts the Agent's runtime. Each Conversation has a machine of its own, unless you launch several into one workspace, and its next turn lands on the machine the last one left. An idle machine parks, and the next turn wakes it. The fleet ceiling only refuses a new machine; it reclaims none. A bound secret's real value goes to the egress broker and the sandbox gets a placeholder, such as <code>__github_token__</code>; the sandbox reaches the internet only through the broker, which attaches the value. A secret with no binding enters the sandbox as an environment variable.</figcaption>
 </figure>
 
 A Conversation starts. At that moment Managoat merges the Environment's
@@ -142,7 +142,7 @@ each attempt.
 
 ## What Managoat does not have
 
-There is no fifth primitive. Two things look like one and are not.
+There is no fifth primitive. Three things look like one and are not.
 
 A **long-lived agent** is not an object. It is a Conversation that you keep,
 by its id or by a `channel_id` of your own.
@@ -152,6 +152,16 @@ Conversation starts, one for each Conversation, and it ends with that
 Conversation. You can list sandboxes and read one.
 Read [About sandboxes](concepts/sandboxes.md) and the
 [Sandboxes section](api.md#sandboxes) of the API reference.
+
+A **workspace** is a machine you keep. You create it from an Environment and
+a Vault, and then launch any number of Conversations into it, each in its own
+folder. It is something you create and delete, but it configures nothing: its
+Environment and Vault are two of the four, and the Agents that run there are
+a third. It changes only where a run happens. Every Conversation launched
+without one gets a workspace of its own, which is the sandbox above.
+Conversations in one workspace can read and influence each other, so it is
+also a choice to give up isolation. Read
+[About workspaces](concepts/workspaces.md).
 
 ## Where to go next
 

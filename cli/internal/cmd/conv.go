@@ -95,6 +95,7 @@ func init() {
 	runCmd.Flags().String("vault", "", "vault name or id")
 	runCmd.Flags().String("environment", "", "environment name or id to provision from, instead of the agent's own")
 	runCmd.Flags().String("cwd", "", "working directory inside the sandbox for the agent (absolute, under /home/sprite; created if missing)")
+	runCmd.Flags().String("workspace", "", "workspace name or id to run on, beside the conversations already there")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -301,6 +302,26 @@ func runAgent(cmd *cobra.Command, target string) error {
 	if prompt == "" {
 		Fatal("missing -p <prompt>")
 	}
+	body, err := runBody(cmd, target, prompt)
+	if err != nil {
+		Fatal(err.Error())
+	}
+
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := activeClient().Post("/conversations", body, &resp); err != nil {
+		Fatal(explainAPIError(err).Error())
+	}
+	convID := output.ToString(resp.Data["id"])
+	fmt.Fprintf(os.Stderr, "▸ conversation %s\n", convID)
+	// Fresh conversation: there is no history to skip, and draining first
+	// could miss provisioning events emitted between create and follow.
+	return followUntilIdle(convID, "", output.ToString(body["client_request_id"]))
+}
+
+// runBody is the launch request `run` sends, from its flags.
+func runBody(cmd *cobra.Command, target, prompt string) (map[string]any, error) {
 	vault, _ := cmd.Flags().GetString("vault")
 	environment, _ := cmd.Flags().GetString("environment")
 
@@ -318,19 +339,16 @@ func runAgent(cmd *cobra.Command, target string) error {
 	if cwd, _ := cmd.Flags().GetString("cwd"); cwd != "" {
 		body["cwd"] = cwd
 	}
-
-	c := activeClient()
-	var resp struct {
-		Data map[string]any `json:"data"`
+	// A workspace supplies the environment and vault, so the two flags are
+	// only accepted when they name its own; the server says so if not.
+	if workspace, _ := cmd.Flags().GetString("workspace"); workspace != "" {
+		id, err := resolveWorkspaceID(activeClient(), workspace)
+		if err != nil {
+			return nil, err
+		}
+		body["workspace_id"] = id
 	}
-	if err := c.Post("/conversations", body, &resp); err != nil {
-		Fatal(err.Error())
-	}
-	convID := output.ToString(resp.Data["id"])
-	fmt.Fprintf(os.Stderr, "▸ conversation %s\n", convID)
-	// Fresh conversation: there is no history to skip, and draining first
-	// could miss provisioning events emitted between create and follow.
-	return followUntilIdle(convID, "", output.ToString(body["client_request_id"]))
+	return body, nil
 }
 
 // ── stream loop ─────────────────────────────────────────────────────────
@@ -500,6 +518,19 @@ func handleStageEvent(data map[string]any) (bool, error) {
 		return true, nil
 
 	case stage == "turn" && state == "interrupted":
+		// The machine ending under a running turn interrupts it too, and that
+		// is not the clean exit a deliberate interrupt is: the work did not
+		// finish (ADR 0097). At the max-lifetime ceiling a workspace's
+		// machine is parked with its disk, and a deleted workspace's machine
+		// is destroyed with it.
+		switch innerDataString(data, "reason") {
+		case "machine_parked":
+			fmt.Fprintf(os.Stderr, "▸ turn cut off: the machine reached its max lifetime and was parked — its disk and sessions are kept, and the next prompt wakes it\n")
+			return true, errSandboxExpired
+		case "machine_destroyed":
+			fmt.Fprintf(os.Stderr, "▸ turn cut off: its machine was destroyed or replaced (a deleted workspace, a rebuild after a loss, the lifetime ceiling, or an operator's reap)\n")
+			return true, errMachineDestroyed
+		}
 		// Deliberate `managoat conv interrupt` (possibly from another
 		// shell). Clean exit: without this case the stream sat out the
 		// full idle timeout waiting for a turn/done that never comes.

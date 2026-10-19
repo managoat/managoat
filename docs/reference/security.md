@@ -76,8 +76,10 @@ requires an ownership note at each call. One search finds them all. A
 cross-tenant isolation suite in CI asserts that another account's resources
 answer 404.
 
-Every sandbox belongs to one conversation, and Managoat destroys it when that
-conversation ends. A second conversation cannot attach to it. Read
+A sandbox belongs to one conversation, and Managoat destroys it when that
+conversation ends, unless the caller launched conversations into one
+[workspace](../concepts/workspaces.md), whose machine they share. No
+conversation can attach to another's sandbox by its id. Read
 [One machine per conversation](../concepts/sandboxes.md#one-machine-per-conversation).
 
 ## Whether one conversation can reach another's
@@ -101,6 +103,14 @@ route is added to its allowlist. Read
 - A full-scope key that you put in an environment or vault reaches the whole
   account, from any sandbox that gets it.
 - `sandbox_api_access: "none"` gives a sandbox no key at all.
+- **None of this separates conversations in one
+  [workspace](../concepts/workspaces.md).** They share one disk and one user,
+  so each can read the others' files, config homes, process environments and
+  keys, and plant hooks or instructions the others then follow. What one
+  sandbox key reaches there is in effect what all of theirs reach. A
+  conversation launched without a workspace keeps every guarantee above. A
+  sandbox key cannot create or use a workspace, so an agent cannot put itself
+  beside another conversation.
 
 ## What is recorded when something changes, and for how long
 

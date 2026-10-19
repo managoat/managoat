@@ -33,6 +33,17 @@ Release dates are the UTC day npm published the version.
 
 ## [Unreleased]
 
+### Added
+
+- `managoat.workspaces` (ADR 0097): `create`, `list` (`{ implicit: true }`
+  adds implicit ones), `get`, `delete`, `waitForReady` (throws
+  `WorkspaceFailedError` on a failed setup), and the four disk reads by
+  workspace, `files`, `file`, `gitStatus` and `diff`. Needs a server with
+  `/api/workspaces`.
+- `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
+- The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
+  workspace refusal codes on `ManagoatErrorCode`.
+
 ---
 
 ## [12.4.0] - 2026-10-16

@@ -11,12 +11,19 @@ import type {
   McpConnectionInput,
   McpConnectionLogin,
   Secret,
+  SandboxDiff,
+  SandboxFile,
+  SandboxListing,
+  SandboxStatus,
   Vault,
   VaultInput,
   VaultPatch,
   VaultSecret,
   VaultSecretMetadataPatch,
+  Workspace,
+  WorkspaceInput,
 } from "./types.ts";
+import { ManagoatError, WorkspaceFailedError } from "./errors.ts";
 
 /**
  * Payloads here use the API's own key names (`environment_id`, `mcp_servers`,
@@ -221,4 +228,211 @@ export class Connections {
   async delete(id: string): Promise<void> {
     await this.http.request("DELETE", `${this.path}/${encodeURIComponent(id)}`);
   }
+}
+
+/** How `workspaces.waitForReady` waits. */
+export interface WaitForReadyOptions {
+  /** Give up after this many ms. Default 30 minutes, about a setup's own deadline. */
+  timeoutMs?: number;
+  /** How often to read the workspace, in ms. Default 2000. */
+  intervalMs?: number;
+  /** Stop waiting. The setup goes on at the server. */
+  signal?: AbortSignal;
+  /** Called with the workspace each time its status changes, the first read included. */
+  onStatus?: (workspace: Workspace) => void;
+}
+
+/**
+ * Workspaces (ADR 0097): machines the caller keeps. A workspace is set up once
+ * from an environment and an optional vault, on create; then any agent is
+ * launched into it with `run(prompt, { agent, workspace, cwd })`, each
+ * conversation in a working directory and config home of its own. Its
+ * environment, vault and provider are fixed for its life.
+ *
+ * **A workspace is one trust boundary.** Every conversation in it runs as
+ * the same user on the same disk, so each can read the others' files,
+ * config homes and tokens, and plant instructions or hooks the others then
+ * follow. Launch without a workspace to give a conversation a sandbox of its
+ * own.
+ *
+ * Its machine is parked when idle, like any sandbox, and woken by the next
+ * prompt. The max-lifetime ceiling parks it rather than destroying it, so it
+ * lives until you delete it or its provider loses it, and Managoat does not
+ * cap how many you keep: delete the ones you are done with.
+ *
+ * A sandbox's own key (`MANAGOAT_TOKEN` inside a sandbox) cannot use any of
+ * this: every call answers 403, and a conversation it starts gets a sandbox
+ * of its own.
+ */
+export class Workspaces {
+  private readonly http: HttpClient;
+  private readonly resolver: Resolver;
+  private readonly path = "/api/workspaces";
+
+  constructor(http: HttpClient, resolver: Resolver) {
+    this.http = http;
+    this.resolver = resolver;
+  }
+
+  /**
+   * The account's workspaces, newest first. `implicit: true` adds the
+   * implicit ones: the sandbox of its own that each conversation launched
+   * without a workspace gets, which ends with it.
+   */
+  async list(opts: { implicit?: boolean } = {}): Promise<Workspace[]> {
+    return this.http.list<Workspace>(this.path, {
+      query: { implicit: opts.implicit ? "true" : undefined },
+    });
+  }
+
+  /**
+   * One workspace, by id or exact name. Unlike agents and vaults, a workspace
+   * name is never matched by prefix, and names need not be unique: an
+   * ambiguous one throws.
+   */
+  async get(nameOrId: string): Promise<Workspace> {
+    return this.http.data<Workspace>("GET", `${this.path}/${await this.id(nameOrId)}`);
+  }
+
+  /**
+   * Create a workspace and start setting up its machine at once. It comes
+   * back `provisioning`; `waitForReady` follows it to `ready` or `failed`.
+   * Conversations may be launched into it before then, and their first
+   * prompt waits for the setup. A full fleet is a `NotReadyError`
+   * (`fleet_full`).
+   */
+  async create(input: WorkspaceInput): Promise<Workspace> {
+    const created = await this.http.data<Workspace>("POST", this.path, { body: input });
+    this.resolver.forget(this.path);
+    return created;
+  }
+
+  /**
+   * Delete a workspace: every live conversation in it is terminated (their
+   * transcripts are kept) and its machine is destroyed with its disk. Not
+   * refused while conversations are running. An implicit workspace is a
+   * `NotFoundError` here; deleting its conversation is how it goes.
+   */
+  async delete(nameOrId: string): Promise<void> {
+    await this.http.request("DELETE", `${this.path}/${await this.id(nameOrId)}`);
+    this.resolver.forget(this.path);
+  }
+
+  /**
+   * Read the workspace until its setup settles. Resolves with it when it is
+   * `ready`; throws `WorkspaceFailedError` when it is `failed`, and a
+   * `ManagoatError` with code `timeout` when `timeoutMs` passes first.
+   *
+   * It polls rather than following `workspace.status` on `events()`: that
+   * event is never replayed, so a follower has to read the workspace anyway
+   * to know where it started. A read that fails in a way worth retrying (a
+   * 5xx, a deploy, the network) is retried until the deadline; any other
+   * failure is thrown.
+   */
+  async waitForReady(nameOrId: string, opts: WaitForReadyOptions = {}): Promise<Workspace> {
+    const id = await this.id(nameOrId);
+    const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
+    const intervalMs = opts.intervalMs ?? 2000;
+    const deadline = Date.now() + timeoutMs;
+    let last: Workspace | null = null;
+
+    while (true) {
+      if (opts.signal?.aborted) throw new ManagoatError(`Stopped waiting for workspace ${id}`);
+      try {
+        const workspace = await this.http.data<Workspace>("GET", `${this.path}/${id}`, {
+          signal: opts.signal,
+        });
+        if (workspace.status !== last?.status) opts.onStatus?.(workspace);
+        last = workspace;
+        if (workspace.status === "ready") return workspace;
+        if (workspace.status === "failed") throw new WorkspaceFailedError(workspace);
+      } catch (error) {
+        if (opts.signal?.aborted) throw new ManagoatError(`Stopped waiting for workspace ${id}`, { cause: error });
+        if (!(error instanceof ManagoatError) || error instanceof WorkspaceFailedError || !transient(error)) {
+          throw error;
+        }
+      }
+      if (Date.now() + intervalMs > deadline) {
+        throw new ManagoatError(
+          `Workspace ${id} is still ${last?.status ?? "unread"} after ${timeoutMs} ms`,
+          { code: "timeout", body: last },
+        );
+      }
+      await sleep(intervalMs, opts.signal);
+    }
+  }
+
+  /**
+   * The entries of one directory on the workspace's machine, directories
+   * first then by name. `path` is absolute or relative to `/home/sprite`;
+   * omit it for `/home/sprite` itself.
+   *
+   * The four disk reads (this, `file`, `gitStatus`, `diff`) read the
+   * workspace's current machine as `Managoat#sandboxFiles` reads a sandbox:
+   * confined to `/home/sprite` and the working directory of every live
+   * conversation in the workspace (`path_outside_sandbox` otherwise),
+   * redacted with the workspace's environment and vault and every live
+   * conversation's credentials, and answered only by a `ready` machine. A
+   * parked, provisioning or lost one is `409 sandbox_not_ready` with its
+   * status, and a read never wakes one Managoat parked. A workspace with no
+   * machine at all is a `NotFoundError`.
+   */
+  async files(nameOrId: string, path?: string): Promise<SandboxListing> {
+    return this.http.data<SandboxListing>("GET", `${this.path}/${await this.id(nameOrId)}/files`, {
+      query: { path },
+    });
+  }
+
+  /** One file on the workspace's machine; `content` is text or base64 per `encoding`. See `files`. */
+  async file(nameOrId: string, path: string, opts: { maxBytes?: number } = {}): Promise<SandboxFile> {
+    return this.http.data<SandboxFile>("GET", `${this.path}/${await this.id(nameOrId)}/file`, {
+      query: { path, max_bytes: opts.maxBytes },
+    });
+  }
+
+  /**
+   * `git status` of the repository containing `path` (default `/home/sprite`)
+   * on the workspace's machine. Entry paths are relative to `repoRoot`. See
+   * `Managoat#sandboxGitStatus` for what it shows that a diff cannot.
+   */
+  async gitStatus(
+    nameOrId: string,
+    opts: { path?: string; untracked?: "normal" | "all" | "no" } = {},
+  ): Promise<SandboxStatus> {
+    return this.http.data<SandboxStatus>("GET", `${this.path}/${await this.id(nameOrId)}/git-status`, {
+      query: { path: opts.path, untracked: opts.untracked },
+    });
+  }
+
+  /** `git diff` of the repository containing `path` (default `/home/sprite`) on the workspace's machine. */
+  async diff(
+    nameOrId: string,
+    opts: { path?: string; staged?: boolean; ref?: string; maxBytes?: number } = {},
+  ): Promise<SandboxDiff> {
+    return this.http.data<SandboxDiff>("GET", `${this.path}/${await this.id(nameOrId)}/diff`, {
+      query: { path: opts.path, staged: opts.staged, ref: opts.ref, max_bytes: opts.maxBytes },
+    });
+  }
+
+  private async id(nameOrId: string): Promise<string> {
+    return (await this.resolver.resolveExact(this.path, "workspace", nameOrId)).id;
+  }
+}
+
+/** A read worth repeating: the server or the way to it is briefly unavailable. */
+function transient(error: ManagoatError): boolean {
+  return error.status === 0 || error.status >= 500 || error.status === 429;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener("abort", done);
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }

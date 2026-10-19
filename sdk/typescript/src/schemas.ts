@@ -52,6 +52,16 @@ export type SandboxDiff = S["SandboxDiff"];
 export type SandboxStatus = S["SandboxStatus"];
 /** One changed path of a `SandboxStatus`. */
 export type SandboxChange = S["SandboxChange"];
+/**
+ * A machine the caller keeps (ADR 0097): set up once from an environment and
+ * a vault, then any agent launched into it, each conversation in a working
+ * directory of its own.
+ */
+export type Workspace = S["Workspace"];
+/** What `workspaces.create` sends. Its environment, vault and provider are fixed for its life. */
+export type WorkspaceInput = S["WorkspaceCreateRequest"];
+/** A `workspace.status` frame on the account event stream. Live only: it is never replayed. */
+export type WorkspaceStatusEvent = S["StreamWorkspaceStatus"];
 /** One prompt and everything the agent did in response. */
 export type Turn = S["Turn"];
 /** One row of a conversation's log feed. */
