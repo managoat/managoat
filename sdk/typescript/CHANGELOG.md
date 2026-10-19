@@ -31,7 +31,7 @@ Release dates are the UTC day npm published the version.
 
 ---
 
-## [Unreleased]
+## [12.5.0] - 2026-10-19
 
 ### Added
 
@@ -39,7 +39,7 @@ Release dates are the UTC day npm published the version.
   adds implicit ones), `get`, `delete`, `waitForReady` (throws
   `WorkspaceFailedError` on a failed setup), and the four disk reads by
   workspace, `files`, `file`, `gitStatus` and `diff`. Needs a server with
-  `/api/workspaces`.
+  `/api/workspaces` (Managoat v0.37.0 or later).
 - `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
 - The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
   workspace refusal codes on `ManagoatErrorCode`.
