@@ -127,7 +127,7 @@ defmodule Fountain.Conversations.WorkspaceLaunchTest do
       assert id == conv.id
     end
 
-    test "a failed one is retried by the first prompt's wake, through a rebuild", ctx do
+    test "a failed one is left to the first prompt's wake, which the rebuild path takes", ctx do
       {:ok, _} = update_sandbox(ctx.sandbox, %{status: "failed"})
       reject(&Conversations.register_server/2)
       stub(Wake, :wake_in_background, fn _conv_id, _prompt, _images -> :ok end)
@@ -138,6 +138,31 @@ defmodule Fountain.Conversations.WorkspaceLaunchTest do
       assert {:rebuild, %Sandbox{id: id}} = Rebuild.wake_target(conv, ctx.agent)
       assert id == ctx.sandbox.id
       assert Rebuild.target(conv, Repo.reload!(ctx.sandbox), ctx.agent) == :rebuild
+    end
+
+    test "a parked one is not resumed by a launch without a prompt", ctx do
+      {:ok, _} = update_sandbox(ctx.sandbox, %{status: "suspended"})
+      reject(&Conversations.register_server/2)
+      reject(&Wake.wake_in_background/3)
+      reject(&Fountain.Machines.Machine.ensure_up/2)
+
+      assert {:ok, conv} = Launch.start_conversation(attrs(ctx))
+      assert conv.sandbox_id == ctx.sandbox.id
+    end
+
+    test "a parked one is woken by the launch's prompt", ctx do
+      test = self()
+      {:ok, _} = update_sandbox(ctx.sandbox, %{status: "suspended"})
+      reject(&Conversations.register_server/2)
+
+      stub(Wake, :wake_in_background, fn conv_id, _prompt, _images ->
+        send(test, {:wake, conv_id})
+        :ok
+      end)
+
+      assert {:ok, conv} = Launch.start_conversation(attrs(ctx, %{"prompt" => "hi"}))
+      assert_received {:wake, id}
+      assert id == conv.id
     end
 
     test "without a prompt nothing is woken", ctx do
@@ -265,6 +290,34 @@ defmodule Fountain.Conversations.WorkspaceLaunchTest do
       assert other.id != in_ws.id
       assert other.workspace_id != ctx.workspace.id
       assert other.sandbox_id != ctx.sandbox.id
+    end
+
+    test "a resume into the workspace refuses a machine name too", ctx do
+      started(self())
+
+      {:ok, _conv, :created} =
+        Launch.start_or_resume_conversation(attrs(ctx, %{"channel_id" => "c3"}))
+
+      assert {:error, :machine_name_with_workspace} =
+               Launch.start_or_resume_conversation(
+                 attrs(ctx, %{"channel_id" => "c3", "machine_name" => "mine"})
+               )
+    end
+
+    test "a rotation replaces the binding under the workspace's lock", ctx do
+      started(self())
+
+      {:ok, old, :created} =
+        Launch.start_or_resume_conversation(attrs(ctx, %{"channel_id" => "c4"}))
+
+      assert {:ok, fresh, :created} =
+               Launch.start_or_resume_conversation(
+                 attrs(ctx, %{"channel_id" => "c4", "fresh" => true})
+               )
+
+      assert fresh.id != old.id
+      assert Repo.reload!(old).channel_id == nil
+      assert Repo.reload!(fresh).channel_id == "c4"
     end
 
     test "is refused a different environment than the workspace's", ctx do

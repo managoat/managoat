@@ -752,7 +752,7 @@ A PR sequence, each releasable alone:
   `transition_reason`, the `sandbox.provision_failed` audit and the log line
   carry a failing step and its exit code, not the output it quoted, on every
   provision.
-- 2026-10-19 — Step 5b built: `/api/workspaces` (create, list with
+- 2026-10-18 — Step 5b built: `/api/workspaces` (create, list with
   `?implicit=true`, show, delete; full scope, and not on the sandbox key's
   allowlist), with `status`, `error`, `sandbox_id` and `sandbox_status`;
   `workspace_id` on `POST /api/conversations` and on the conversation;
@@ -760,12 +760,15 @@ A PR sequence, each releasable alone:
   not replayed); and `409 source_in_use_by_workspace` on deleting an
   environment or vault an explicit workspace names. A launch into a workspace
   binds the conversation to its current sandbox under the workspace's machine
-  lock, reserving no fleet slot; on a `ready` or parked machine its server
-  attaches it at once, and otherwise (provisioning, failed, lost) the
-  launch's prompt, if any, goes to the conversation's wake, which waits for
-  the provision, retries a failed one or rebuilds a lost one. Calls made
-  here: a `machine_name` with `workspace_id` is
-  `422 machine_name_with_workspace`; `vault_id` is optional on create (the
+  lock, taken before any row as the machine layer orders them, reserving no
+  fleet slot; on a `ready` machine its server attaches it at once, and
+  otherwise (parked, provisioning, failed, lost) the launch's prompt, if any,
+  goes to the conversation's wake, which resumes a parked machine, waits for
+  the provision, retries a failed one or rebuilds a lost one; a launch with
+  no prompt resumes nothing. A workspace's `sandbox_id` is null whenever it
+  has no live machine. Calls made here: a `machine_name` with `workspace_id`
+  is `422 machine_name_with_workspace`, on a channel resume too; `vault_id`
+  is optional on create (the
   ADR's identity names a vault, but an account need not have one); a channel
   resume names the workspace and finds only conversations in it, and a
   channel request without `workspace_id` never resumes a conversation in an

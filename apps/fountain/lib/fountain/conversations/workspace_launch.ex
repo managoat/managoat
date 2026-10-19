@@ -29,10 +29,11 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
   fleet slot is reserved: the fleet counts machines, and the workspace's is
   already counted. With its own config home and working directory, it
   attaches to the machine as a reattach does (`ConversationServer`), so its
-  server is started at once when the machine is up. A workspace still being
-  provisioned, one whose provision failed, and one whose machine was lost get
-  no server yet: the conversation's first prompt wakes it, which waits for a
-  provision in progress, retries a failed one and rebuilds a lost one
+  server is started at once when the machine is up. A workspace whose machine
+  is parked, still being provisioned, failed or lost gets no server yet: the
+  conversation's first prompt wakes it (a wake is lazy per conversation, so a
+  launch with no prompt resumes nothing), which resumes a parked machine,
+  waits for a provision in progress, retries a failed one and rebuilds a lost one
   (`Fountain.Conversations.Wake`, `Fountain.Conversations.Rebuild`). A prompt
   sent with the launch is handed to that wake.
   """
@@ -236,7 +237,9 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
     end
   end
 
-  defp no_machine_name(attrs) do
+  @doc false
+  # Also the channel resume's, so a resume into a workspace refuses a name too.
+  def no_machine_name(attrs) do
     case Launch.requested_machine_name(attrs) do
       {:ok, name} when name in [nil, ""] -> :ok
       {:ok, _name} -> {:error, :machine_name_with_workspace}
@@ -248,13 +251,22 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
 
   # The conversation bound to the workspace's current sandbox, in one commit
   # under the tenant's source lock (as every launch takes it) and then the
-  # workspace's machine lock, in the machine layer's order: the advisory lock
-  # before the workspace's row. The workspace is read again under it, so one
-  # deleted meanwhile reads as gone, and its current sandbox is the one a
-  # rebuild's succession has left, which takes the same lock.
+  # workspace's machine lock, before any row: the machine layer's order (the
+  # advisory lock, then conversations, then the workspace), which a rebuild's
+  # succession and a turn admission take too. A rotation's row lock on the
+  # conversation it replaces therefore comes after it (review of step 5b: the
+  # other order deadlocks against a succession). The workspace is read again
+  # under it, so one deleted meanwhile reads as gone, and its current sandbox
+  # is the one a rebuild's succession has left.
   defp reserve(%Workspace{} = workspace, conversation_attrs, opts) do
     Repo.transaction(fn ->
       :ok = InferenceCredentials.lock_source(conversation_attrs.user_id)
+
+      Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
+        @machine_lock_namespace,
+        # `Conversations.sandbox_lock_key/1` of any of the workspace's sandboxes.
+        :erlang.phash2(workspace.id)
+      ])
 
       Repo.one(
         from(a in Agents.Agent,
@@ -269,12 +281,6 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
         :ok -> :ok
         {:error, reason} -> Repo.rollback(reason)
       end
-
-      Repo.query!("SELECT pg_advisory_xact_lock($1, $2)", [
-        @machine_lock_namespace,
-        # `Conversations.sandbox_lock_key/1` of any of the workspace's sandboxes.
-        :erlang.phash2(workspace.id)
-      ])
 
       locked =
         Repo.one(
@@ -304,14 +310,14 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
     end)
   end
 
-  # The machine is up (or parked, which the server's own reattach resumes):
-  # its server attaches the conversation now, as a reattach does, and the
-  # launch's prompt is queued behind that. Anything else, or a server the
-  # machine refuses right now (a co-tenant's park holds it), is left to the
-  # conversation's first prompt, whose wake waits for or rebuilds the
-  # machine; a prompt sent with the launch is handed to that wake.
-  defp start_server(conv, %Sandbox{status: status} = sandbox, runtime_module, attrs, timing)
-       when status in ["ready", "suspended"] do
+  # The machine is up: its server attaches the conversation now, as a
+  # reattach does, and the launch's prompt is queued behind that. Anything
+  # else (parked, provisioning, failed, lost), or a server the machine refuses
+  # right now (a co-tenant's park holds it), is left to the conversation's
+  # first prompt, whose wake resumes, waits for or rebuilds the machine; a
+  # prompt sent with the launch is handed to that wake. A launch with no
+  # prompt does not resume a parked machine (ADR 0097: wake is lazy).
+  defp start_server(conv, %Sandbox{status: "ready"} = sandbox, runtime_module, attrs, timing) do
     case Conversations.register_server(
            sandbox.id,
            Launch.child_spec(conv.id, sandbox.id, runtime_module)

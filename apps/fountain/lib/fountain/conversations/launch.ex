@@ -699,7 +699,8 @@ defmodule Fountain.Conversations.Launch do
          %Fountain.Workspaces.Workspace{implicit: false} = workspace <-
            Fountain.Workspaces.get_workspace(workspace_id, user_id) || {:error, :not_found},
          :ok <- Fountain.Conversations.WorkspaceLaunch.check_fixed(attrs, workspace),
-         :ok <- Fountain.Conversations.WorkspaceLaunch.check_allowed(agent, workspace) do
+         :ok <- Fountain.Conversations.WorkspaceLaunch.check_allowed(agent, workspace),
+         :ok <- Fountain.Conversations.WorkspaceLaunch.no_machine_name(attrs) do
       case find_channel_conversation_in(workspace, agent.id, channel_id) do
         %Conversation{} = conv ->
           resume_or_rotate(conv, agent, attrs, opts)

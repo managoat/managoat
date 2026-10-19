@@ -130,4 +130,4 @@ them.
 ## History
 
 - 2026-10-17 — Decided by Jake and built (#2981).
-- 2026-10-19 — Amended by [0097](0097-workspaces.md) step 5: workspaces are full scope, a start from a sandbox may not name a `workspace_id`, and the tree confinement is bounded by a shared workspace's one trust boundary (decision 6).
+- 2026-10-18 — Amended by [0097](0097-workspaces.md) step 5: workspaces are full scope, a start from a sandbox may not name a `workspace_id`, and the tree confinement is bounded by a shared workspace's one trust boundary (decision 6).

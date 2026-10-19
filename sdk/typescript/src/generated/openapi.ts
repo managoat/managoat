@@ -1073,7 +1073,7 @@ export interface paths {
         };
         /**
          * Stream every conversation's events (SSE)
-         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters as elsewhere; `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error}`) is sent when one of the caller's workspaces changes status; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
+         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error}`) is sent when one of the caller's workspaces changes status; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
          */
         get: operations["FountainWeb.EventsController.stream"];
         put?: never;
@@ -3323,7 +3323,7 @@ export interface components {
          */
         StreamWorkspaceStatus: {
             error: string | null;
-            name?: string | null;
+            name: string | null;
             /** @enum {string} */
             status: "provisioning" | "ready" | "failed";
             /** Format: uuid */
@@ -3535,7 +3535,7 @@ export interface components {
             name: string | null;
             /**
              * Format: uuid
-             * @description The machine the workspace has now (GET /api/workspaces/{id}/files reads it). Not a handle to keep: a machine lost at its provider is rebuilt under a new id.
+             * @description The machine the workspace has now, or null when it has none live (lost, or a failed provision). Not a handle to keep: a machine lost at its provider is rebuilt under a new id.
              */
             sandbox_id: string | null;
             /** @description sprites or e2b. */

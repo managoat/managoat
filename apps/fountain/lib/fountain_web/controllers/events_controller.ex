@@ -35,7 +35,7 @@ defmodule FountainWeb.EventsController do
         "created, titled, read, deleted, finished — and the stream follows a new " <>
         "conversation on its own; the client re-lists. `Last-Event-ID` replays what was " <>
         "missed across all owned conversations, including finished ones. Without a cursor, " <>
-        "only events recorded after connection are sent. `?streams=` filters as elsewhere; " <>
+        "only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); " <>
         "`?blocks=true` adds server-parsed blocks. A `workspace.status` event (data " <>
         "`{workspace_id, name, status, error}`) is sent when one of the caller's workspaces " <>
         "changes status; it carries no id and is not replayed, so a client that reconnects " <>

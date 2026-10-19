@@ -137,7 +137,8 @@ defmodule FountainWeb.Schemas do
           format: :uuid,
           nullable: true,
           description:
-            "The machine the workspace has now (GET /api/workspaces/{id}/files reads it). " <>
+            "The machine the workspace has now, or null when it has none live (lost, or a " <>
+              "failed provision). " <>
               "Not a handle to keep: a machine lost at its provider is rebuilt under a new id."
         },
         sandbox_status: %Schema{
@@ -227,7 +228,7 @@ defmodule FountainWeb.Schemas do
         status: %Schema{type: :string, enum: Fountain.Workspaces.Workspace.statuses()},
         error: %Schema{type: :string, nullable: true}
       },
-      required: [:workspace_id, :status, :error]
+      required: [:workspace_id, :name, :status, :error]
     })
   end
 

@@ -163,6 +163,7 @@ defmodule FountainWeb.WorkspaceControllerTest do
       assert body["status"] == "failed"
       assert body["error"] =~ "exited 1"
       assert body["sandbox_status"] == nil
+      assert body["sandbox_id"] == nil
     end
   end
 

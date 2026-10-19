@@ -22,7 +22,9 @@ defmodule FountainWeb.WorkspaceJSON do
       sandbox_provider: w.provider,
       status: w.status,
       error: w.error,
-      sandbox_id: sandbox && sandbox.id,
+      # None after a loss or a failed provision (ADR 0097): an ended machine
+      # is not one the workspace has.
+      sandbox_id: if(sandbox_status(sandbox), do: sandbox.id),
       sandbox_status: sandbox_status(sandbox),
       inserted_at: w.inserted_at,
       updated_at: w.updated_at
