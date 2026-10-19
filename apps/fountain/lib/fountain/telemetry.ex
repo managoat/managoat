@@ -129,6 +129,7 @@ defmodule Fountain.Telemetry do
 
     one_shots = [
       @prefix ++ [:stage],
+      @prefix ++ [:floor, :settle],
       @prefix ++ [:turn, :first_output],
       @prefix ++ [:turn, :first_update],
       @prefix ++ [:turn, :first_text],

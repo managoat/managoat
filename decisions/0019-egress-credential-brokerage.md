@@ -137,19 +137,59 @@ character in a target, CR or LF in a header) is refused with 403.
 
 Every sandbox gets `%NetworkPolicy{allow: [broker_host]}`
 (`Provisioning.apply_broker_floor/3`): written on cold provision, and
-asserted on every reattach (a wake, or the first turn after a restart). A
-reattach to a machine the provider reports running reads the policy back
-where the adapter can (`Sandbox.ensure_network_policy/2`; Sprites does) and
-writes it only when the provider does not report exactly the floor; a
-failed, slow or raising read counts as a mismatch, and any other machine is
-written as before. That skip trusts the provider's stored policy to be the
-one it enforces. The write is not free: a Sprites policy write resets the
-guest's open TCP flows when it takes effect, and a second write about a
-second after the first left 6 of 6 test sprites cutting 1–2.5 % of their
-flows for the 50 s they were watched (#2964). Since workspaces, the first
-attach after a setup follows the workspace's own write by about a second,
-and a later attach to a shared machine lands while other conversations
-stream. It is a floor, not a default a tenant may widen: placeholders are
+asserted on every reattach (a wake, or the first turn after a restart).
+
+A write is not free on Sprites. It resets the guest's open TCP flows when it
+takes effect, which on production can be a couple of seconds after the API
+answers. A second write about a second after the first left 6 of 6 test
+sprites cutting 1–2.5 % of their flows for the 50 s they were watched
+(#2964). Three rules follow from that:
+
+- **On Sprites the floor is the first thing written.** A cold provision
+  starts the write when the machine exists, beside the host-side steps
+  (callback key, sandbox URL, broker session), and awaits it before the
+  sandbox config, whose CA install starts the transport relay and its
+  readiness handshake to the broker. Nothing before that opens a guest
+  connection, so the floor's write still precedes anything that dials out.
+  Its effect can lag the answer, so the relay handshake may meet it. A cut
+  handshake costs up to the relay's 10 s setup timeout, then a retry. E2B
+  keeps the old order: config, then the floor, then the packages.
+- **The first prompt waits for the floor to settle.** A Sprites provision or
+  reattach does not finish until 2 s after its floor step returned
+  (`Fountain.Conversations.FloorSettle`). The wait is measured from that
+  moment, so it adds nothing when the steps after the floor already took
+  that long.
+  - On 2026-10-17 all 29 stalled cold first turns had sent their first model
+    request 1.76–2.14 s after the write returned. None of about 2,700 whose
+    request went 2.2 s or later did.
+  - The request follows the prompt by at least 1.07 s (3,138 first turns that
+    day), so it lands at least about 3.07 s after the write. That is 0.93 s
+    past the last stall.
+  - Replayed over that day's provisions with the floor written first, the
+    wait adds a median 0.15 s (p90 0.45 s). A 3 s window would have added a
+    median 1.15 s.
+  - Each hold logs `fountain.floor.settle` with the gap and the time added.
+  - The 2 s is provisional. The stall band was measured under the old order,
+    and the write now overlaps other work. Revisit it against the logged
+    gaps and the first-turn stall rate after the change ships.
+  - A reattach holds only when it wrote the floor, or found it in force on a
+    machine created in the last minute (a workspace setup's write). A wake
+    of an older machine is not held.
+- **A reattach does not rewrite a floor already in force.** It reads the
+  policy back where the adapter can (`Sandbox.ensure_network_policy/2`;
+  Sprites does) and writes only when the provider does not report exactly
+  the floor. A failed, slow or raising read counts as a mismatch. The
+  provider's status does not decide it: Sprites reports a sprite it has just
+  created and run a command on as `cold`. A status gate therefore rewrote,
+  a second later, the floor a workspace setup had just written. The skip
+  trusts the provider's stored policy to be the one it enforces.
+  - Measured 2026-10-19 on a test sprite with the floor written once and
+    then left idle 12 minutes: its uptime showed about 100 s suspended, and
+    it was restored with the same boot. After that wake, non-broker hosts
+    were still refused with no rewrite.
+  - A wake that boots afresh (a new boot ID) was not tested.
+
+The floor is not a default a tenant may widen: placeholders are
 worthless to an attacker only if the attacker cannot reach an arbitrary host
 to try them against. `Provisioning.check_broker_support/2` refuses a provider
 without `:network_policy` with `{:broker, :backend_lacks_network_policy}`.
@@ -395,3 +435,4 @@ them.
 - 2026-10-17 — Remote broker removed; the broker runs inside Managoat only, with a home-generated `BROKER_CA_SEED` ([0093](0093-the-broker-runs-inside-managoat.md)).
 - 2026-10-17 — Section 2 names the floor's two call sites; the "warm restore" path it also named no longer exists.
 - 2026-10-19 — Section 2: a reattach to a running machine leaves a floor the provider reports in force alone instead of rewriting it, because a Sprites policy write resets the sandbox's open flows (#2964).
+- 2026-10-19 — Section 2: on Sprites the floor is written first, before the CA and relay, and a provision or reattach holds the first prompt until 2 s after it. A reattach skips a floor in force whatever status the provider reports (#2964).

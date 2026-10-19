@@ -555,21 +555,21 @@ defmodule Fountain.Conversations.Egress do
   Ensure the floor before an existing machine receives credentials or resumes.
 
   A machine may predate the deployment's broker, from before brokerage was
-  unconditional, so the floor is asserted on every attach. On a machine the
-  provider reports running (`running?: true`) it is written only when the
-  provider does not already report it: a Sprites write resets the machine's
-  open flows, and in a workspace those include other conversations' model
-  streams (fountain#2964). A parked or waking machine has no flows to lose,
-  so its floor is written, as before, rather than trusted across the wake.
-  Policy failures are retryable and never establish that its disk is gone.
+  unconditional, so the floor is asserted on every attach. It is written only
+  when the provider does not already report exactly the floor: a Sprites
+  write resets the machine's open flows, and in a workspace those include
+  other conversations' model streams (fountain#2964). Whether the machine is
+  running does not decide it: Sprites reports a sprite it has just created
+  and run a command on as `cold` (measured 2026-10-19), so a status gate
+  rewrote the floor a workspace had written a second before, the double
+  write that leaves a sprite cutting flows. Policy failures are retryable and
+  never establish that its disk is gone.
   """
-  @spec reattach_policy(Managoat.Sandbox.Handle.t(), String.t(), keyword()) ::
-          :ok | {:error, term()}
-  def reattach_policy(handle, conv_id, opts \\ []) do
+  @spec reattach_policy(Managoat.Sandbox.Handle.t(), String.t()) ::
+          {:ok, :written | :unchanged} | {:error, term()}
+  def reattach_policy(handle, conv_id) do
     with :ok <- Provisioning.check_broker_support(handle.provider, conv_id) do
-      Provisioning.apply_broker_floor(handle, conv_id,
-        if_changed: Keyword.get(opts, :running?, false)
-      )
+      Provisioning.apply_broker_floor(handle, conv_id, if_changed: true)
     end
   end
 

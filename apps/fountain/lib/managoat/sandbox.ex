@@ -384,7 +384,7 @@ defmodule Managoat.Sandbox do
   `apply_network_policy/2`, and answers `{:ok, :written}`.
 
   A skip trusts the provider's report of its stored policy to be the policy
-  it enforces. Callers pass only a machine they know to be running.
+  it enforces (ADR 0019 §2).
   """
   @spec ensure_network_policy(Handle.t(), NetworkPolicy.t()) ::
           {:ok, :unchanged | :written} | {:error, error()}

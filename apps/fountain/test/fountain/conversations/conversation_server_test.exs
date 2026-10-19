@@ -610,6 +610,66 @@ defmodule Fountain.Conversations.ConversationServerTest do
       GenServer.stop(pid)
     end
 
+    # A Sprites floor write resets the guest's open flows when it takes effect
+    # (#2964), so it goes before the CA install starts the relay, whose
+    # readiness is a real handshake to the broker, and the provision holds
+    # the conversation's first prompt for what is left of the settle window.
+    test "on Sprites the floor is written before the CA and relay, and the settle is recorded",
+         %{user: user} do
+      stub_happy_sprite()
+      test_pid = self()
+      ref = make_ref()
+
+      :telemetry.attach(
+        "floor-settle-#{inspect(ref)}",
+        [:fountain, :floor, :settle],
+        fn _name, measurements, metadata, _ ->
+          send(test_pid, {:settle, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("floor-settle-#{inspect(ref)}") end)
+
+      agent = insert_agent(user_id: user.id, runtime: "claude")
+      sandbox = insert_sandbox(user_id: user.id, status: "pending")
+
+      conv =
+        insert_conversation(
+          user_id: user.id,
+          agent: agent,
+          runtime: "claude",
+          sandbox_id: sandbox.id,
+          status: "pending"
+        )
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :apply_broker_floor, fn _h, _c ->
+        send(test_pid, :network_policy)
+        :ok
+      end)
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :install_broker_ca, fn _h, _c ->
+        send(test_pid, :broker_ca)
+        :ok
+      end)
+
+      {pid, _ref, :alive} = start_server(conv)
+
+      # The first of the two in the mailbox, which keeps arrival order.
+      assert_received first when first in [:network_policy, :broker_ca]
+      assert first == :network_policy
+      assert_received :broker_ca
+      refute_received :network_policy
+
+      conv_id = conv.id
+
+      assert_received {:settle, %{held_ms: 0, gap_ms: gap},
+                       %{conv_id: ^conv_id, provider: :sprites, path: "fresh"}}
+
+      assert gap >= 0
+      GenServer.stop(pid)
+    end
+
     test "a GitHub skill installs after the floor, through the proxy", %{user: user} do
       stub_happy_sprite()
       test_pid = self()

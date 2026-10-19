@@ -78,6 +78,10 @@ config :fountain, :gauge_poller_enabled, false
 # fast without changing the retry logic under test.
 config :fountain, Managoat.Sandbox.Retry, base_ms: 1
 
+# The floor settle hold waits up to 2 s after a Sprites floor write; tests
+# that exercise it pass their own window to `FloorSettle.hold/3`.
+config :fountain, Fountain.Conversations.FloorSettle, settle_ms: 0
+
 # The registry settle window (#800) is a real-time wait; keep tests brisk.
 config :fountain, :conversation_registry_settle_ms, 150
 

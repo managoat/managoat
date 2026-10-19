@@ -1209,3 +1209,9 @@ A PR sequence, each releasable alone:
   down. The instance default keeps its lazy credential check here too, so a
   reattach's lookup now turns a raise into its retryable failure rather than
   a crash.
+- 2026-10-19 — A conversation that attaches to a workspace's machine no
+  longer rewrites the network floor when the provider already reports it.
+  On Sprites a write resets the machine's open flows. The workspace's write
+  followed by the attach's, a second apart, left sprites cutting flows
+  (#2964). The skip ignores the provider's status, which reads `cold` on a
+  sprite just set up ([0019](0019-egress-credential-brokerage.md) §2).

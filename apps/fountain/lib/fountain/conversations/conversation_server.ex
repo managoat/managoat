@@ -627,17 +627,19 @@ defmodule Fountain.Conversations.ConversationServer do
 
     # A broker failure lands in the transient arm below: it says nothing
     # about the sandbox, and the next wake mints again.
-    with {:ok, info} <-
+    with {:ok, _info} <-
            Managoat.Sandbox.Retry.with_backoff(
              fn -> Reattachment.lookup(handle) end,
              label: "sprite lookup on wake"
            ),
          {:ok, state} <- Egress.prepare_state(state),
          {:ok, ca_files} <- Egress.ca_files(state.broker, handle),
-         :ok <-
-           Egress.reattach_policy(handle, state.conversation_id,
-             running?: match?(%{status: :running}, info)
-           ) do
+         {:ok, floor} <- Egress.reattach_policy(handle, state.conversation_id) do
+      # A floor this attach wrote, or found on a machine set up a moment ago
+      # (a workspace's own write), still settles; one in force for longer
+      # does not (#2964).
+      floor_mark = Fountain.Conversations.FloorSettle.mark_attach(handle, floor, sandbox)
+
       Output.publish_stage(state.conversation_id, "reattach", "started", %{
         machine_name: sandbox.machine_name,
         # The old key, kept beside machine_name until #2776.
@@ -656,6 +658,14 @@ defmodule Fountain.Conversations.ConversationServer do
         # along and only one of them was a wake. See `take_machine/2`.
         case take_machine(sandbox, conv) do
           {:ok, sandbox} ->
+            # The conversation can take a prompt once this returns.
+            _ =
+              Fountain.Conversations.FloorSettle.hold(floor_mark, %{
+                conv_id: state.conversation_id,
+                provider: handle.provider,
+                path: "reattach"
+              })
+
             new_state = %{
               state
               | handle: handle,

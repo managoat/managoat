@@ -139,25 +139,44 @@ defmodule Fountain.Conversations.ConversationServerBrokerTest do
       assert Enum.map(stage_events(conv.id, "network"), & &1.state) == ["started", "done"]
     end
 
-    test "a machine not reported running gets the floor written, whatever it reports", %{
-      conv: conv
-    } do
+    # Sprites calls a sprite it has just created and run a command on `cold`
+    # (measured 2026-10-19): gating on status rewrote a workspace's fresh
+    # floor a second after it was written, the double write of #2964.
+    test "a floor in force is left alone whatever status the provider reports", %{conv: conv} do
       configure_broker()
       test = self()
 
-      stub(Managoat.Sandbox.Sprites, :get, fn _h -> {:ok, %{status: :suspended, raw: %{}}} end)
-      reject(Managoat.Sandbox.Sprites, :network_policy_in_force?, 2)
+      stub(Managoat.Sandbox.Sprites, :get, fn _h ->
+        {:ok, %{status: :unknown, raw: %{"status" => "cold"}}}
+      end)
+
+      stub(Managoat.Sandbox.Sprites, :network_policy_in_force?, fn _h, _policy ->
+        send(test, :checked)
+        true
+      end)
+
+      reject(Managoat.Sandbox.Sprites, :apply_network_policy, 2)
+
+      {pid, _ref, :alive} = start_server(conv)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive :checked
+      assert Enum.map(stage_events(conv.id, "network"), & &1.state) == ["started", "done"]
+    end
+
+    test "a floor not in force is written on the wake", %{conv: conv} do
+      configure_broker()
+      test = self()
 
       stub(Managoat.Sandbox.Sprites, :apply_network_policy, fn _h, policy ->
-        send(test, {:wake_step, {:policy, policy}})
+        send(test, {:written, policy})
         :ok
       end)
 
       {pid, _ref, :alive} = start_server(conv)
       on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
-      assert_receive {:wake_step,
-                      {:policy, %Managoat.Sandbox.NetworkPolicy{allow: ["broker.test"]}}}
+      assert_receive {:written, %Managoat.Sandbox.NetworkPolicy{allow: ["broker.test"]}}
     end
 
     for reason <- [:not_found, :forbidden] do
