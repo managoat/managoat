@@ -1,6 +1,6 @@
 {
   "name": "@managoat/sdk",
-  "version": "12.5.0",
+  "version": "13.0.0",
   "description": "Run a coding agent on a real computer, with your repos and your credentials, in one call.",
   "license": "Apache-2.0",
   "publishConfig": {

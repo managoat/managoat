@@ -31,13 +31,15 @@ Release dates are the UTC day npm published the version.
 
 ---
 
-## [Unreleased]
+## [13.0.0] - 2026-10-19
 
-The next release is a major one. `managoat.events()` changes type, from
-`LogEvent` to `AccountEvent`, and its `workspace.status` and `conversations`
-notices, which arrived with no `kind`, now arrive with `kind` set to their
-event name: code that told them
-apart by a missing `kind` has to switch on it instead. See **Changed**.
+Follows Managoat v0.38.0, which changes the body of every refusal for a key's
+scope (`error` is now `insufficient_scope`; the sentence moved to `message`)
+and adds workspace rebuild, retry and staleness. Two changes break callers:
+`managoat.events()` changes type, from `LogEvent` to `AccountEvent`, and its
+`workspace.status` and `conversations` notices, which arrived with no `kind`,
+now arrive with `kind` set to their event name, so code that told them apart
+by a missing `kind` has to switch on it instead. See **Changed**.
 
 ### Added
 
@@ -50,18 +52,18 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
   that changed since, typed as the new `WorkspaceField`. A `workspace.status`
   event is also sent when an edit to the environment moves its revision, and
   `Environment` carries `revision` too.
-  Needs a Managoat server later than v0.37.2.
+  Needs Managoat v0.38.0 or later.
 - `managoat.workspaces.rebuild(nameOrId, { interrupt })`: destroy the
   workspace's machine, with its disk, and set up a new one from the
   environment as it is now, keeping every conversation and its transcript.
   It resolves `provisioning`; follow it with `waitForReady`. The
   `turns_running` and `rebuild_in_progress` codes on `ManagoatErrorCode`.
-  Needs a Managoat server later than v0.37.2.
+  Needs Managoat v0.38.0 or later.
 - `managoat.workspaces.retry(nameOrId)`: sets a failed workspace up again
   with no prompt, from its environment and vault as they are now, and comes
   back `provisioning` for `waitForReady` to follow. A workspace that is not
   `failed` is a `ManagoatError` with code `workspace_not_failed` (409), now
-  on `ManagoatErrorCode`. Needs a Managoat server later than v0.37.2.
+  on `ManagoatErrorCode`. Needs Managoat v0.38.0 or later.
 
 ### Changed
 
