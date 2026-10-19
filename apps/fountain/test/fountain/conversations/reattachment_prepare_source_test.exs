@@ -77,7 +77,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
     assert_received {:relay_owner, owner}
     assert owner == ctx.conv.id
 
-    sandbox = explicit_workspace!(Repo.get!(Fountain.Conversations.Sandbox, ctx.conv.sandbox_id))
+    sandbox = explicit_workspace!(Fountain.Machines.Lease.get(ctx.conv.sandbox_id))
     assert :ok = Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
     assert_received {:relay_owner, owner}
     assert owner == sandbox.workspace_id

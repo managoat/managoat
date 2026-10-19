@@ -47,7 +47,7 @@ defmodule Fountain.Conversations.LaunchCommitBoundaryTest do
                end)
 
       assert counts == {Repo.aggregate(Conversation, :count), Repo.aggregate(Sandbox, :count)}
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
       assert Repo.reload!(ctx.conv).status == "idle"
     end
   end

@@ -47,8 +47,8 @@ defmodule Fountain.Conversations.TerminationFencePolicyTest do
     replacement = insert_sandbox(user_id: ctx.user.id, status: "ready")
     {:ok, _} = Conversations.update_conversation(ctx.conv, %{sandbox_id: replacement.id})
     assert {:error, :sandbox_unavailable} = fence(ctx)
-    refute Repo.reload!(ctx.sandbox).transition == "destroying"
-    refute Repo.reload!(replacement).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
+    refute Fountain.Machines.Lease.get(replacement.id).transition == "destroying"
     assert events(ctx) == []
   end
 
@@ -56,14 +56,14 @@ defmodule Fountain.Conversations.TerminationFencePolicyTest do
     other = insert_verified_user()
     foreign = insert_conversation(user_id: other.id)
     assert {:error, :sandbox_unavailable} = fence(%{ctx | conv: foreign})
-    refute Repo.reload!(ctx.sandbox).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
     assert events(ctx) == []
   end
 
   test "a missing terminating conversation refuses without mutation", ctx do
     Repo.delete!(ctx.conv)
     assert {:error, :sandbox_unavailable} = fence(ctx)
-    refute Repo.reload!(ctx.sandbox).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
     assert events(ctx) == []
   end
 

@@ -162,7 +162,7 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
     eventually(fn ->
       case Repo.reload!(conv) do
         %{sandbox_id: id} = moved when id != old.id ->
-          sandbox = Repo.get!(Sandbox, id)
+          sandbox = Fountain.Machines.Lease.get(id)
           if sandbox.status == "ready", do: {moved, sandbox}
 
         _ ->
@@ -476,7 +476,7 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
         next =
           eventually(fn ->
             case Repo.reload!(conv).sandbox_id do
-              id when id != ctx.old.id -> Repo.get!(Sandbox, id)
+              id when id != ctx.old.id -> Fountain.Machines.Lease.get(id)
               _ -> nil
             end
           end)

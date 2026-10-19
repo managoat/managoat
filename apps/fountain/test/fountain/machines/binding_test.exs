@@ -98,7 +98,7 @@ defmodule Fountain.Machines.BindingTest do
         assert {:ok, :destroyed} = Machine.detach(ctx.sandbox.id, detach_opts(ctx))
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert [_] = Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.destroyed")
     end
 
@@ -108,8 +108,8 @@ defmodule Fountain.Machines.BindingTest do
 
       assert {:ok, :fenced} = Machine.detach(ctx.sandbox.id, detach_opts(ctx, destroy: false))
 
-      assert Repo.reload!(ctx.sandbox).transition == "destroying"
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
     end
 
     test "the fence carries the caller's destroy reason as the row's word", ctx do
@@ -140,7 +140,7 @@ defmodule Fountain.Machines.BindingTest do
 
       assert_received {:fence_opts, opts}
       assert opts[:transition_reason] == :replaced
-      assert Repo.reload!(ctx.sandbox).transition_reason == "replaced"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition_reason == "replaced"
     end
 
     test "refuses a live lease after waiting, and writes no fence", ctx do
@@ -155,7 +155,7 @@ defmodule Fountain.Machines.BindingTest do
       waited = System.monotonic_time(:millisecond) - started
       assert waited >= 250, "the wait gave up without waiting at all"
       assert waited < 5_000
-      refute Repo.reload!(ctx.sandbox).transition == "destroying"
+      refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
       assert Repo.reload!(ctx.conv).status == "idle"
     end
 
@@ -168,7 +168,7 @@ defmodule Fountain.Machines.BindingTest do
       assert {:error, :detach_expired} =
                Binding.detach(ctx.sandbox.id, conversation_id: ctx.conv.id, deadline: past)
 
-      fenced = Repo.reload!(ctx.sandbox)
+      fenced = Fountain.Machines.Lease.get(ctx.sandbox.id)
       refute fenced.transition == "destroying", "an expired detach fenced the machine"
       assert fenced.status == "ready"
 
@@ -178,7 +178,7 @@ defmodule Fountain.Machines.BindingTest do
       assert {:ok, :fenced} =
                Binding.detach(ctx.sandbox.id, conversation_id: ctx.conv.id, deadline: future)
 
-      assert Repo.reload!(ctx.sandbox).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
     end
 
     test "a detach whose caller has given up is refused, not run late", ctx do
@@ -219,10 +219,10 @@ defmodule Fountain.Machines.BindingTest do
       Task.await(park)
       assert %Fountain.Machines.Occupancy{} = Machine.who_is_here(ctx.sandbox.id)
 
-      refute Repo.reload!(ctx.sandbox).transition == "destroying",
+      refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying",
              "the owner fenced a machine for nobody"
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "detach and park, in both orders", ctx do
@@ -253,8 +253,8 @@ defmodule Fountain.Machines.BindingTest do
       end)
 
       Task.await(park)
-      refute Repo.reload!(ctx.sandbox).transition == "destroying"
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
 
       # Detach first: the machine is gone, and the park that follows finds it.
       stub(Managoat.Sandbox, :destroy, fn _ -> :ok end)
@@ -275,7 +275,7 @@ defmodule Fountain.Machines.BindingTest do
   # The turn's status as the `parking` stamp's own statement completes — read
   # on the same connection, right behind it.
   def report_stamp(_event, _measurements, %{query: query, params: params}, {test, turn_id}) do
-    if String.contains?(query, "UPDATE \"sandboxes\"") and "parking" in params do
+    if String.contains?(query, "UPDATE \"workspaces\"") and "parking" in params do
       send(test, {:stamped, Repo.get!(Turn, turn_id).status})
     end
   end
@@ -395,7 +395,7 @@ defmodule Fountain.Machines.BindingTest do
       # stamp still has it ended by the time the provider is asked, which is
       # why the suspend stub below is not enough on its own.
       stub(Managoat.Sandbox, :suspend, fn _ ->
-        assert Repo.reload!(ctx.sandbox).transition == "parking"
+        assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "parking"
         assert Repo.get!(Turn, turn_id).status == "interrupted"
         :ok
       end)
@@ -611,7 +611,7 @@ defmodule Fountain.Machines.BindingTest do
       stamp(ctx, lease_epoch: 4, lease_node: dead_lease_holder())
 
       assert {:ok, 5} = Lease.claim(ctx.sandbox.id)
-      assert Repo.reload!(ctx.sandbox).lease_node == Lease.holder(self())
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_node == Lease.holder(self())
     end
 
     test "a holder that is alive keeps it", ctx do
@@ -641,7 +641,7 @@ defmodule Fountain.Machines.BindingTest do
                  )
       end)
 
-      assert is_nil(Repo.reload!(ctx.sandbox).transition)
+      assert is_nil(Fountain.Machines.Lease.get(ctx.sandbox.id).transition)
     end
   end
 
@@ -693,7 +693,7 @@ defmodule Fountain.Machines.BindingTest do
       assert %Fountain.Machines.Occupancy{} = Machine.who_is_here(ctx.sandbox.id)
 
       refute_received :resumed_at_provider, "the owner resumed a machine for nobody"
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "and a caller still waiting when the park finishes is answered (the positive control)",
@@ -735,7 +735,7 @@ defmodule Fountain.Machines.BindingTest do
       assert_receive {:park, {:ok, :parked}}, 5_000
       Task.await(park)
 
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
     end
 
     test "a message in a shape an earlier release sent is refused, not run", ctx do
@@ -755,7 +755,7 @@ defmodule Fountain.Machines.BindingTest do
                  GenServer.call(owner, {:ensure_up, [actor: "system:wake"]})
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
   end
 

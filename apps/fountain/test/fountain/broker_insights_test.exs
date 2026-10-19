@@ -340,7 +340,7 @@ defmodule Fountain.Broker.Native.InsightsTest do
         insert_conversation(
           user_id: user.id,
           agent: insert_agent(user_id: user.id),
-          sandbox: Repo.get!(Fountain.Conversations.Sandbox, conv.sandbox_id)
+          sandbox: Fountain.Machines.Lease.get(conv.sandbox_id)
         )
 
       streams!(user, conv, 5, error: "client_closed")

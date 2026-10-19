@@ -13,16 +13,16 @@ defmodule Fountain.Machines.BootSweep do
   sandbox's, which a migration alone cannot promise once a rollback to a
   release before ADR 0097 has run and been rolled forward again.
 
-  The lease sweep also carries onto the workspaces the stamps a release before
-  ADR 0097 step 3b wrote on sandbox rows, and copies the workspaces' columns
-  back onto their sandboxes for a rollback, so since 3b it is more than
-  tidiness on a deployment that rolled back.
+  The lease sweep is on the workspaces only. Until the sandbox's own lease
+  columns were dropped (#3000) it also carried a stamp a rolled-back release
+  wrote there onto the workspace, and copied the workspace's back; the drop
+  migration made that carry once.
 
   A failure is logged, not raised: every lease of an earlier boot already reads
   as dead (`Lease.live?/1`), the tidying half (no stale holder on the admin
   table, no stale `parking` stamp for the next owner to take over) can wait a
-  boot, and the carry and the copy are retried by the next one; a database
-  hiccup at boot must not stop the node starting.
+  boot, and the reconcile is retried by the next one; a database hiccup at
+  boot must not stop the node starting.
 
   `config :fountain, :machine_boot_sweep, false` turns it off; the test suite
   does, and calls `Lease.sweep_boot/0` itself.
@@ -42,7 +42,7 @@ defmodule Fountain.Machines.BootSweep do
   end
 
   # The workspaces first: a live sandbox an earlier release made without one
-  # gets one, and its stamps are carried, before the lease sweep reads them.
+  # gets one before the lease sweep reads the workspaces.
   # Each step logs its own failure and the other still runs.
   defp sweep do
     reconcile_workspaces()

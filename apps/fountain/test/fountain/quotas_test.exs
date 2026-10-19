@@ -228,7 +228,7 @@ defmodule Fountain.QuotasTest do
 
       # The two answers are asserted against each other, not against a literal:
       # that is what makes this a pin on the copy rather than a second opinion.
-      refute Lease.live?(Repo.reload!(ctx.sandbox))
+      refute Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id))
       assert active_sandbox_count(ctx.user.id) == 0
     end
 
@@ -237,7 +237,7 @@ defmodule Fountain.QuotasTest do
 
       put_lease(ctx.sandbox.id, lease_node: nil)
 
-      refute Lease.live?(Repo.reload!(ctx.sandbox))
+      refute Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id))
       assert active_sandbox_count(ctx.user.id) == 0
     end
 

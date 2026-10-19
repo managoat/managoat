@@ -120,6 +120,9 @@ defmodule FountainWeb.ConversationJSON do
       # aliases (#2776).
       sprite_name: s.machine_name,
       status: s.status,
+      # The workspace's (ADR 0097): every caller reads the row through
+      # `Fountain.Machines.Lease` (the conversation's `sandbox` preload, the
+      # sandbox routes' `get_sandbox/2`), since the sandbox has no column.
       transition: s.transition,
       provider: s.provider,
       # The identity the disk was built from.

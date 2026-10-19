@@ -452,7 +452,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
 
       capture_log(fn -> Provisioner.run(workspace.id, sandbox.id) end)
 
-      assert Repo.reload!(sandbox).transition_reason == "{:packages, 100}"
+      assert Fountain.Machines.Lease.get(sandbox.id).transition_reason == "{:packages, 100}"
 
       assert [event] = Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.provision_failed")
       assert event.metadata["reason"] == "{:packages, 100}"
@@ -478,7 +478,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert %Workspace{status: "failed", error: error} = Repo.reload!(workspace)
       assert error =~ "proxy is"
       refute error =~ token
-      refute Repo.reload!(sandbox).transition_reason =~ token
+      refute Fountain.Machines.Lease.get(sandbox.id).transition_reason =~ token
     end
   end
 
@@ -562,7 +562,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
 
       assert_received {:destroyed, name}
       assert name == ctx.sandbox.machine_name
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       # Transcripts are kept: the conversation is terminated, not deleted.
       assert Repo.reload!(ctx.conv).status == "terminated"
       refute Repo.get(Workspace, ctx.workspace.id)
@@ -646,7 +646,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
 
       refute Provisioner.running?(ctx.workspace.id)
       assert_received {:destroyed, _}
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       refute Repo.get(Workspace, ctx.workspace.id)
       assert workspace_sessions(ctx.workspace.id) == []
     end

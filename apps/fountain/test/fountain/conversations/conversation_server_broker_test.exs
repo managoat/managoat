@@ -217,7 +217,7 @@ defmodule Fountain.Conversations.ConversationServerBrokerTest do
         assert :normal = assert_stopped(ref, 5_000)
         assert Fountain.Repo.reload!(sandbox).status == retired.status
         assert Fountain.Repo.reload!(sandbox).terminated_at == retired.terminated_at
-        assert Fountain.Repo.reload!(sandbox).transition == retired.transition
+        assert Fountain.Machines.Lease.get(sandbox.id).transition == retired.transition
         assert Fountain.Repo.reload!(conv).sandbox_id == replacement.id
         assert Fountain.Repo.reload!(conv).status == "idle"
         assert Fountain.Repo.reload!(replacement).status == "ready"
@@ -639,7 +639,7 @@ defmodule Fountain.Conversations.ConversationServerBrokerTest do
         assert_received :ready_claimed
         assert Fountain.Repo.reload!(sandbox).status == retired.status
         assert Fountain.Repo.reload!(sandbox).terminated_at == retired.terminated_at
-        assert Fountain.Repo.reload!(sandbox).transition == retired.transition
+        assert Fountain.Machines.Lease.get(sandbox.id).transition == retired.transition
         assert Fountain.Repo.reload!(conv).status == "idle"
         assert Fountain.Repo.reload!(conv).sandbox_id == replacement.id
         assert Fountain.Repo.reload!(replacement).status == "ready"

@@ -1039,3 +1039,17 @@ A PR sequence, each releasable alone:
   store, on the disk where the file routes read it, redacted, like the
   config homes. No new ADR: this completes step 1's config home for the setup
   step 5 moved ahead of every conversation.
+- 2026-10-19 — The two-release column drops (#3000), once v0.37.0 had
+  deployed: `sandboxes.applied_skills`, unread since step 1, and the
+  sandbox's copy of the lease (`lease_epoch`, `lease_node`, `transition`,
+  `transition_reason`), written since step 3b only for a rollback. The
+  `Sandbox` struct keeps the four as virtual fields that only a read through
+  `Machines.Lease` fills; a conversation's `sandbox` is preloaded through
+  `Lease.machines/0`, so the conversation object's `sandbox.transition` is
+  the workspace's, as is that of the current sandbox a launch into a
+  workspace checks. The copy-back and the boot sweep's carry are gone; the
+  drop migration makes the carry once before it drops the columns. A
+  sandbox with no workspace (a row retired before this ADR) reads no lease
+  and no transition, and a fence's stamp on one is refused. From this
+  release on, a rollback below it needs the migration's `down` first, which
+  restores the columns from the workspaces.

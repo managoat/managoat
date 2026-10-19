@@ -1325,7 +1325,7 @@ defmodule Fountain.Conversations.ConversationServerTest do
       conv: conv,
       sandbox: sandbox
     } do
-      {:ok, _} = Repo.delete(Repo.get!(Fountain.Conversations.Sandbox, sandbox.id))
+      {:ok, _} = Repo.delete(Fountain.Machines.Lease.get(sandbox.id))
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->

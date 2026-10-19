@@ -785,7 +785,12 @@ defmodule Fountain.Conversations.Launch do
               from c in Conversation,
                 where: c.id == ^conv.id and c.user_id == ^conv.user_id,
                 lock: "FOR UPDATE",
-                preload: [:sandbox, :agent, :vault, :agent_version]
+                preload: [
+                  :agent,
+                  :vault,
+                  :agent_version,
+                  sandbox: ^Fountain.Machines.Lease.machines()
+                ]
             )
 
           # Ownership: `current` is the tenant-scoped `FOR UPDATE` read above.

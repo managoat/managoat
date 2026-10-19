@@ -71,15 +71,15 @@ defmodule Fountain.Machines.Lease do
   (`lock_machine/2`) does the same, so a compare-and-set and a fence, a
   registration or a turn admission cannot deadlock on the two rows.
 
-  ## Written twice (ADR 0097, step 3)
+  ## Only on the workspace (ADR 0097, step 3)
 
-  Until the release after this one drops them, the sandbox keeps its own four
-  columns, and every write here copies the workspace's onto the workspace's
-  live sandbox in the same transaction (and onto the sandbox a write is
-  addressed to). Nothing in this release reads them. They are there so that a
-  rollback to the release before, which reads only the sandbox's, finds the
-  machine as this one left it. `Fountain.Workspaces._unsafe_reconcile_live/0`
-  carries the other way at boot, for the stamps such a release writes.
+  The sandbox's own four columns were written as a copy of the workspace's
+  for one release, so that a rollback to a release reading only them found
+  the machine as this one left it, and the boot sweep carried a stamp such a
+  release wrote back onto the workspace. Both went with the columns (#3000,
+  `20261019150100_drop_sandbox_lease_columns`): the `Sandbox` struct's four
+  lease fields are virtual, and only a struct read through this module
+  carries them.
 
   ## The workspace's current sandbox (step 3c)
 
@@ -99,11 +99,11 @@ defmodule Fountain.Machines.Lease do
   Every live sandbox has one: every sandbox is born with one, and the boot
   sweep gives one to any that a release before ADR 0097 made. A sandbox
   retired before ADR 0097 has none, and nothing owns it: `claim/2` answers
-  `{:error, :no_workspace}`, and its four fields are read from its own row,
-  as before ADR 0097, so a stamp a fence writes there (`put_transition!/4`)
-  is still seen by every reader. The protocols answer such a row as the
-  terminal row it is (`unowned/1`) and refuse one that is somehow live as
-  busy: only a failed boot reconcile leaves one, until the next boot.
+  `{:error, :no_workspace}`, and its four fields read as their defaults (no
+  epoch, no holder, no transition): there is no row left to hold them, so
+  `put_transition!/4` can stamp nothing there. The protocols answer such a
+  row as the terminal row it is (`unowned/1`) and refuse one that is somehow
+  live as busy: only a failed boot reconcile leaves one, until the next boot.
   """
 
   import Ecto.Query
@@ -124,25 +124,6 @@ defmodule Fountain.Machines.Lease do
   @boot_key {__MODULE__, :boot_id}
 
   @destroying "destroying"
-
-  # The boot sweep's first statement: a stamp a release before ADR 0097 step
-  # 3b wrote on a live sandbox's own row only (it read and wrote no other),
-  # carried onto the workspace before anything here reads the workspace's.
-  # Under this release the two agree at every commit, so on a deployment that
-  # never rolled back it writes nothing. The epoch never goes backwards, so no
-  # epoch that release handed out is handed out again.
-  @carry_sql """
-  UPDATE workspaces w
-     SET lease_epoch = GREATEST(w.lease_epoch, s.lease_epoch),
-         transition = s.transition,
-         transition_reason = s.transition_reason
-    FROM sandboxes s
-   WHERE s.workspace_id = w.id
-     AND s.status NOT IN ('terminated', 'failed')
-     AND (w.transition IS DISTINCT FROM s.transition
-          OR w.transition_reason IS DISTINCT FROM s.transition_reason
-          OR w.lease_epoch < s.lease_epoch)
-  """
 
   # The only columns a machine's owner may write through `cas_update/3`.
   # `lease_*` are absent on purpose — a lease changes hands through the
@@ -256,8 +237,10 @@ defmodule Fountain.Machines.Lease do
   first binding is the sandbox and its second, named `:workspace`, the
   workspace (`NULL` columns for a sandbox with none), so a caller can add
   `where: [s, w] ...` or `where: as(:workspace).transition == ...`. The select
-  replaces the sandbox's own copies of the four fields with the workspace's;
-  a sandbox with no workspace keeps its own.
+  fills the sandbox's four virtual lease fields from the workspace; a sandbox
+  with no workspace reads their defaults. It also serves as a preload query
+  (`preload: [sandbox: ^Lease.machines()]`), which is how a conversation
+  carries its machine's transition.
   """
   @spec machines() :: Ecto.Query.t()
   def machines do
@@ -267,26 +250,20 @@ defmodule Fountain.Machines.Lease do
       on: w.id == s.workspace_id,
       select: %{
         s
-        | lease_epoch:
-            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_epoch, w.lease_epoch),
-          lease_node:
-            fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.lease_node, w.lease_node),
+        | lease_epoch: coalesce(w.lease_epoch, 0),
+          lease_node: w.lease_node,
           # The workspace's transition is its current sandbox's (see the
           # moduledoc): a retired sandbox beside a live one reads none.
           transition:
             fragment(
-              "CASE WHEN ? IS NULL THEN ? WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
-              w.id,
-              s.transition,
+              "CASE WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
               s.status,
               s.workspace_id,
               w.transition
             ),
           transition_reason:
             fragment(
-              "CASE WHEN ? IS NULL THEN ? WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
-              w.id,
-              s.transition_reason,
+              "CASE WHEN ? NOT IN ('terminated', 'failed') OR NOT EXISTS (SELECT 1 FROM sandboxes AS o WHERE o.workspace_id = ? AND o.status NOT IN ('terminated', 'failed')) THEN ? END",
               s.status,
               s.workspace_id,
               w.transition_reason
@@ -363,8 +340,8 @@ defmodule Fountain.Machines.Lease do
         transition_reason: nil
     }
 
-  # No workspace: the sandbox's own columns are its only record, as they were
-  # before ADR 0097 (see the moduledoc).
+  # No workspace: nothing holds a lease or a transition for it (see the
+  # moduledoc), so the virtual fields keep their defaults.
   defp overlay(%Sandbox{} = sandbox, nil, _current?), do: sandbox
 
   # Whether `sandbox` is its workspace's current one (see the moduledoc): live,
@@ -422,13 +399,8 @@ defmodule Fountain.Machines.Lease do
   has not proved readiness, even when the row was already `ready` before the
   provider put it to sleep. Registration refuses that stamp too (#2560).
 
-  First, a stamp a release before this one wrote on a live sandbox's row only
-  is carried onto its workspace (see `@carry_sql`), so a rollback and a roll
-  forward lose nothing even when `Workspaces._unsafe_reconcile_live/0` failed
-  this boot. A live sandbox with no workspace, which only that failure
-  leaves, has its own columns swept the same way. Then the workspaces' columns
-  are copied onto their live sandboxes where they differ ("Written twice"),
-  all in one transaction.
+  One statement, on `workspaces` only: a sandbox keeps no lease of its own to
+  sweep, carry or copy (see the moduledoc).
 
   Returns the number of workspaces it cleared.
   """
@@ -441,23 +413,16 @@ defmodule Fountain.Machines.Lease do
     {:ok, count} =
       Repo.transaction(fn ->
         Repo.query!("SET LOCAL lock_timeout = '10s'")
-        sweep_rows(prefix)
+        {count, _} = Repo.update_all(swept(prefix), [])
+        count
       end)
 
     if count > 0, do: Logger.info("machine leases: cleared #{count} left by an earlier boot")
     count
   end
 
-  defp sweep_rows(prefix) do
-    _ = Repo.query!(@carry_sql)
-    {count, _} = Repo.update_all(swept(Workspace, prefix), [])
-    _ = Repo.update_all(from(s in swept(Sandbox, prefix), where: is_nil(s.workspace_id)), [])
-    _ = copy_to_sandboxes(:all, nil)
-    count
-  end
-
-  defp swept(schema, prefix) do
-    from(r in schema,
+  defp swept(prefix) do
+    from(r in Workspace,
       where:
         (not is_nil(r.lease_node) and not like(r.lease_node, ^prefix)) or
           (not is_nil(r.transition) and r.transition not in ["destroying", "resuming"] and
@@ -539,8 +504,7 @@ defmodule Fountain.Machines.Lease do
     {:ok, result} =
       Repo.transaction(fn ->
         case Repo.update_all(held_by(sandbox_id, epoch), set: [lease_node: nil]) do
-          {1, [workspace_id]} ->
-            _ = copy_to_sandboxes(workspace_id, sandbox_id)
+          {1, [_workspace_id]} ->
             :ok
 
           {0, _} ->
@@ -563,7 +527,7 @@ defmodule Fountain.Machines.Lease do
   it, after the write.
 
   `transition` and `transition_reason` are written to the workspace and
-  everything else to the sandbox, with the copy the moduledoc describes.
+  everything else to the sandbox.
   `updated_at` moves on the sandbox with every write, and not with a claim or
   a release, so it keeps meaning "the machine changed".
 
@@ -718,18 +682,10 @@ defmodule Fountain.Machines.Lease do
 
     workspace = written_workspace(workspace, workspace_sets)
 
-    # The copy ("Written twice"), in the statement that writes the machine's
-    # own columns.
-    copy =
-      [lease_epoch: workspace.lease_epoch, lease_node: workspace.lease_node] ++
-        if current?,
-          do: [transition: workspace.transition, transition_reason: workspace.transition_reason],
-          else: []
-
     sets =
       sandbox_sets
       |> stamp_terminated_at(sandbox, now)
-      |> Keyword.merge([updated_at: now] ++ copy)
+      |> Keyword.put(:updated_at, now)
 
     {1, [written]} =
       Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id, select: s), set: sets)
@@ -806,7 +762,7 @@ defmodule Fountain.Machines.Lease do
   retired (`terminated`, unless it already is); a new `pending` sandbox
   inserted from `attrs`, in the workspace, with the workspace's user,
   environment, vault and provider; the workspace stamped `provisioning`
-  (reason `rebuild`) and its lease copied onto the new row. So the new
+  (reason `rebuild`), which the new row reads as its own. So the new
   machine is born under the lease that retired the old one: no second owner
   ever claims it, and no epoch belongs to only one sandbox.
 
@@ -861,7 +817,6 @@ defmodule Fountain.Machines.Lease do
           ]
         )
 
-      _ = copy_to_sandboxes(workspace.id, nil)
       {:ok, overlay(Repo.get!(Sandbox, next.id), workspace)}
     end
   end
@@ -941,11 +896,18 @@ defmodule Fountain.Machines.Lease do
 
   Inside the caller's transaction, under the machine's advisory lock and after
   `lock_machine(sandbox_id, :update)`; that order is the caller's to keep.
-  Written to the workspace and copied onto its live sandbox and this one; a
-  sandbox with no workspace has its own columns written. `touch: true` also
-  moves the sandbox's `updated_at`, which the fence's stamp does:
-  `SandboxReaper.sweep_fenced_teardowns/0` measures its grace from it.
-  Returns how many sandbox rows were written: `0` for one that vanished.
+  Written to the workspace when `sandbox_id` is its current sandbox (see the
+  moduledoc). `touch: true` also moves the sandbox's `updated_at`, which the
+  fence's stamp does: `SandboxReaper.sweep_fenced_teardowns/0` measures its
+  grace from it.
+
+  Returns `1` when the sandbox is there and reads the transition asked for
+  afterwards, and `0` otherwise: for a row that vanished, and for a stamp
+  that no row can hold, on a sandbox with no workspace or a retired one
+  beside a live successor (neither reads a transition). So the fence's
+  `Destroy.stamp_intent!/2` rolls its transaction back rather than record an
+  intent no reader would see. A clear on such a sandbox is `1`: it already
+  reads none.
   """
   @spec put_transition!(Ecto.UUID.t(), String.t() | nil, String.t() | nil, keyword()) ::
           non_neg_integer()
@@ -958,22 +920,22 @@ defmodule Fountain.Machines.Lease do
           0
 
         nil ->
-          {count, _} =
-            Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox_id), set: sets)
-
-          count
+          unheld(transition)
 
         workspace_id ->
-          if current?(Repo.get(Sandbox, sandbox_id) || %Sandbox{status: "pending"}) do
-            {1, _} =
-              Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
+          case Repo.get(Sandbox, sandbox_id) do
+            nil ->
+              0
 
-            copy_to_sandboxes(workspace_id, sandbox_id)
-          else
-            {count, _} =
-              Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox_id), set: sets)
+            %Sandbox{} = sandbox ->
+              if current?(sandbox) do
+                {1, _} =
+                  Repo.update_all(from(w in Workspace, where: w.id == ^workspace_id), set: sets)
 
-            count
+                1
+              else
+                unheld(transition)
+              end
           end
       end
 
@@ -985,61 +947,10 @@ defmodule Fountain.Machines.Lease do
     count
   end
 
-  # The copy ("Written twice"): the workspace's four columns onto its live
-  # sandbox, and onto `also` whatever its status, which is the sandbox the
-  # write was addressed to. `:all` copies every workspace onto its live
-  # sandbox, for the boot sweep. Returns how many sandboxes it wrote.
-  defp copy_to_sandboxes(workspace_id, also) do
-    query =
-      from s in Sandbox,
-        join: w in Workspace,
-        on: w.id == s.workspace_id,
-        update: [
-          set: [
-            lease_epoch: w.lease_epoch,
-            lease_node: w.lease_node,
-            transition: w.transition,
-            transition_reason: w.transition_reason
-          ]
-        ]
-
-    query =
-      case {workspace_id, also} do
-        # Only the rows that differ: a workspace per launch, and most agree.
-        {:all, _} ->
-          where(
-            query,
-            [s, w],
-            s.status not in @terminal_statuses and
-              (fragment("? IS DISTINCT FROM ?", s.lease_node, w.lease_node) or
-                 fragment("? IS DISTINCT FROM ?", s.transition, w.transition) or
-                 fragment("? IS DISTINCT FROM ?", s.transition_reason, w.transition_reason) or
-                 s.lease_epoch != w.lease_epoch)
-          )
-
-        {id, nil} ->
-          where(query, [s, w], w.id == ^id and s.status not in @terminal_statuses)
-
-        # The sandbox written, when it is current: live, or with no live
-        # sibling (see the moduledoc).
-        {id, also} ->
-          where(
-            query,
-            [s, w],
-            w.id == ^id and
-              (s.status not in @terminal_statuses or
-                 (s.id == ^also and
-                    not exists(
-                      from(o in Sandbox,
-                        where: o.workspace_id == ^id and o.status not in @terminal_statuses
-                      )
-                    )))
-          )
-      end
-
-    {count, _} = Repo.update_all(query, [])
-    count
-  end
+  # A sandbox no workspace row speaks for: a clear is already true of it, and
+  # a stamp has nowhere to go.
+  defp unheld(nil), do: 1
+  defp unheld(_stamp), do: 0
 
   defp do_claim(sandbox_id, holder, opts) do
     superseded = superseded_holder(Keyword.get(opts, :supersede))
@@ -1077,7 +988,6 @@ defmodule Fountain.Machines.Lease do
 
         case Repo.update_all(claimed, set: [lease_epoch: epoch, lease_node: holder]) do
           {1, _} ->
-            _ = copy_to_sandboxes(workspace_id, sandbox_id)
             log_claim(sandbox_id, holder, epoch, current)
             {:ok, epoch}
 
@@ -1148,6 +1058,10 @@ defmodule Fountain.Machines.Lease do
   defp cast_attr(:transition, value) do
     if value in Sandbox.transitions(), do: {:ok, value}, else: :error
   end
+
+  # The struct's field is virtual (the column is the workspace's), so the
+  # schema gives it no `:type`.
+  defp cast_attr(:transition_reason, value), do: Ecto.Type.cast(:string, value)
 
   defp cast_attr(field, value) when field in @writable,
     do: Ecto.Type.cast(Sandbox.__schema__(:type, field), value)

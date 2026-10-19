@@ -107,7 +107,7 @@ defmodule Fountain.Conversations do
         nil
 
       conv ->
-        conv = Repo.preload(conv, [:user, :agent, :sandbox])
+        conv = Repo.preload(conv, [:user, :agent, sandbox: Lease.machines()])
 
         turn_count =
           Repo.aggregate(from(t in Turn, where: t.conversation_id == ^id), :count)
@@ -246,7 +246,7 @@ defmodule Fountain.Conversations do
         join: s in Sandbox,
         on: s.id == c.sandbox_id,
         where: c.status in ["idle", "running"] and s.status == "ready",
-        preload: [:sandbox]
+        preload: [sandbox: ^Lease.machines()]
     )
   end
 
@@ -257,7 +257,7 @@ defmodule Fountain.Conversations do
   def _unsafe_get_conversation(id) do
     Conversation
     |> Repo.get(id)
-    |> Repo.preload([:sandbox, :agent, :vault, :agent_version])
+    |> Repo.preload([:agent, :vault, :agent_version, sandbox: Lease.machines()])
   end
 
   @doc """
@@ -266,7 +266,7 @@ defmodule Fountain.Conversations do
   def _unsafe_get_conversation!(id) do
     Conversation
     |> Repo.get!(id)
-    |> Repo.preload([:sandbox, :agent, :vault, :agent_version])
+    |> Repo.preload([:agent, :vault, :agent_version, sandbox: Lease.machines()])
   end
 
   @doc """
@@ -284,7 +284,7 @@ defmodule Fountain.Conversations do
   def get_conversation(id, user_id) when is_binary(user_id) do
     with {:ok, _} <- Ecto.UUID.dump(id),
          conv when not is_nil(conv) <- Repo.get_by(Conversation, id: id, user_id: user_id) do
-      Repo.preload(conv, [:sandbox, :agent, :vault, :agent_version])
+      Repo.preload(conv, [:agent, :vault, :agent_version, sandbox: Lease.machines()])
     else
       _ -> nil
     end
@@ -599,7 +599,13 @@ defmodule Fountain.Conversations do
       # The first turn rides along, as it does on the list: `first_prompt` in
       # the JSON is what a client titles an untitled conversation with.
       conv ->
-        Repo.preload(conv, [:sandbox, :agent, :vault, :agent_version, turns: first_turn_query()])
+        Repo.preload(conv, [
+          :agent,
+          :vault,
+          :agent_version,
+          sandbox: Lease.machines(),
+          turns: first_turn_query()
+        ])
     end
   end
 

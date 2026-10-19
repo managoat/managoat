@@ -105,14 +105,7 @@ defmodule Fountain.Quotas do
 
         excluded ->
           from [s, w] in query,
-            where:
-              s.id != ^excluded or
-                fragment(
-                  "CASE WHEN ? IS NULL THEN ? ELSE ? END",
-                  w.id,
-                  s.transition,
-                  w.transition
-                ) == "destroying"
+            where: s.id != ^excluded or w.transition == "destroying"
       end
 
     Repo.one(query) || 0
@@ -126,7 +119,7 @@ defmodule Fountain.Quotas do
   # The transition and the lease are the sandbox's workspace's (ADR 0097,
   # step 3b), and count only while the sandbox itself is live: a workspace
   # names one machine's operation, not its retired sandboxes'. A sandbox with
-  # no workspace is read off its own row, as `Lease.machines/0` reads it.
+  # no workspace holds no stamp, as `Lease.machines/0` reads it.
   defp active_sandboxes do
     from s in Sandbox,
       left_join: w in Fountain.Workspaces.Workspace,
@@ -134,23 +127,9 @@ defmodule Fountain.Quotas do
       where:
         s.status in @active_statuses or
           (s.status not in ["terminated", "failed"] and
-             (fragment("CASE WHEN ? IS NULL THEN ? ELSE ? END", w.id, s.transition, w.transition) ==
-                "destroying" or
-                (fragment(
-                   "CASE WHEN ? IS NULL THEN ? ELSE ? END",
-                   w.id,
-                   s.transition,
-                   w.transition
-                 ) == "resuming" and
-                   like(
-                     fragment(
-                       "CASE WHEN ? IS NULL THEN ? ELSE ? END",
-                       w.id,
-                       s.lease_node,
-                       w.lease_node
-                     ),
-                     ^"#{Lease.boot_prefix()}%"
-                   ))))
+             (w.transition == "destroying" or
+                (w.transition == "resuming" and
+                   like(w.lease_node, ^"#{Lease.boot_prefix()}%"))))
   end
 
   @doc """

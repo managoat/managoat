@@ -92,7 +92,7 @@ defmodule Fountain.Conversations.RehydratorTest do
     log = ExUnit.CaptureLog.capture_log(fn -> assert sweep() == 0 end)
     assert log =~ "machine_resuming"
     refute_received {:worker_start, _}
-    assert Repo.reload!(conv.sandbox).transition == "resuming"
+    assert Fountain.Machines.Lease.get(conv.sandbox.id).transition == "resuming"
   end
 
   test "boot skips an abandoned destroy, where stage 6a started a server on it" do
@@ -134,7 +134,7 @@ defmodule Fountain.Conversations.RehydratorTest do
     assert log =~ "machine_destroying"
     refute_received {:worker_start, _}
 
-    kept = Repo.reload!(conv.sandbox)
+    kept = Fountain.Machines.Lease.get(conv.sandbox.id)
     assert kept.transition == "destroying"
     assert kept.transition_reason == "terminated"
   end
@@ -157,7 +157,7 @@ defmodule Fountain.Conversations.RehydratorTest do
     log = ExUnit.CaptureLog.capture_log(fn -> assert sweep() == 0 end)
     assert log =~ "machine_destroying"
     refute_received {:worker_start, _}
-    assert Repo.reload!(conv.sandbox).transition == "destroying"
+    assert Fountain.Machines.Lease.get(conv.sandbox.id).transition == "destroying"
   end
 
   test "a lease claimed after the sweep's own check is refused at the door, and says so" do
@@ -173,7 +173,7 @@ defmodule Fountain.Conversations.RehydratorTest do
     conv = resumable("idle")
 
     stub(Fountain.RuntimeDispatch, :for_agent, fn c ->
-      Repo.get!(Fountain.Conversations.Sandbox, conv.sandbox_id)
+      Fountain.Machines.Lease.get(conv.sandbox_id)
       |> put_lease(held())
 
       Mimic.call_original(Fountain.RuntimeDispatch, :for_agent, [c])

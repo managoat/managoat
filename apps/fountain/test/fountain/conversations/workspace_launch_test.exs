@@ -165,7 +165,9 @@ defmodule Fountain.Conversations.WorkspaceLaunchTest do
 
       assert {:rebuild, %Sandbox{id: id}} = Rebuild.wake_target(conv, ctx.agent)
       assert id == ctx.sandbox.id
-      assert Rebuild.target(conv, Repo.reload!(ctx.sandbox), ctx.agent) == :rebuild
+
+      assert Rebuild.target(conv, Fountain.Machines.Lease.get(ctx.sandbox.id), ctx.agent) ==
+               :rebuild
     end
 
     test "a parked one is not resumed by a launch without a prompt", ctx do

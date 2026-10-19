@@ -149,9 +149,9 @@ defmodule Fountain.Conversations.Rehydrator do
   # prompt comes back, and by then the operation has finished or its lease has
   # expired. `{:skip, _}` is the sweep's own "not now" shape.
   defp check_machine_free(%{sandbox: %Sandbox{} = preloaded}) do
-    # The preload is the sandbox row; its lease and transition are its
-    # workspace's (ADR 0097, step 3b), so the row is read again through
-    # `Machines.Lease`.
+    # The preload was read through `Machines.Lease` with the conversation
+    # list, before the servers before this one started; the lease and
+    # transition (the workspace's, ADR 0097) are read again now.
     sandbox = Fountain.Machines.Lease.get(preloaded.id) || preloaded
 
     cond do

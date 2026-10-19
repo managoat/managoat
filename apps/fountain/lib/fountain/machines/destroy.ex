@@ -244,15 +244,26 @@ defmodule Fountain.Machines.Destroy do
   no lease — that is what a fence *is* — and the protocol's own stamp, one step
   later and under its epoch, restates it. Raises on a failed update, like the
   `Repo.update!/1` it replaces, because the caller's transaction is the thing
-  that has to roll back.
+  that has to roll back; a live sandbox with no workspace, which has nowhere
+  to hold the stamp, rolls it back as `:machine_busy`.
   """
   @spec stamp_intent!(Sandbox.t(), String.t()) :: Sandbox.t()
   def stamp_intent!(%Sandbox{} = locked, reason) when is_binary(reason) do
-    # On the machine's workspace, and copied onto the sandbox (ADR 0097, step
+    # On the machine's workspace (ADR 0097, step
     # 3b): in the fence's transaction, after its `Lease.lock_machine/2`.
     case Lease.put_transition!(locked.id, "destroying", reason, touch: true) do
-      0 -> raise Ecto.StaleEntryError, struct: locked, action: :update
-      _ -> Lease.get(locked.id)
+      # A live sandbox with no workspace (only a failed boot reconcile leaves
+      # one, until the next boot) has no row to hold the stamp, and nothing
+      # can own it to destroy it: refused as busy, as `Lease.unowned/1`
+      # refuses it to the protocols.
+      0 when is_nil(locked.workspace_id) ->
+        Repo.rollback(:machine_busy)
+
+      0 ->
+        raise Ecto.StaleEntryError, changeset: Ecto.Changeset.change(locked), action: :update
+
+      _ ->
+        Lease.get(locked.id)
     end
   end
 

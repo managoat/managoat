@@ -41,18 +41,24 @@ defmodule FountainWeb.ConversationTerminateDestroyTest do
     # Answered, and the destroy is still at the provider: the row is fenced, so
     # nothing else can reach the machine meanwhile.
     assert_receive {:destroying, destroyer}, 2_000
-    assert %Sandbox{transition: "destroying"} = sandbox = Repo.get!(Sandbox, ctx.sandbox.id)
+
+    assert %Sandbox{transition: "destroying"} =
+             sandbox = Fountain.Machines.Lease.get(ctx.sandbox.id)
+
     refute sandbox.status == "terminated"
 
     send(destroyer, :finish)
-    assert eventually(fn -> Repo.get!(Sandbox, ctx.sandbox.id).status == "terminated" end)
+
+    assert eventually(fn ->
+             Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
+           end)
   end
 
   test "an internal caller still destroys before it returns", ctx do
     stub(Managoat.Sandbox.Sprites, :destroy, fn _handle -> :ok end)
 
     assert :ok = Termination.terminate_conversation(ctx.conv.id, actor: "test")
-    assert Repo.get!(Sandbox, ctx.sandbox.id).status == "terminated"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
   end
 
   defp eventually(fun, tries \\ 50) do
