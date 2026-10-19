@@ -63,8 +63,14 @@ defmodule Managoat.Runtimes.TemplateTest do
     )
   end
 
-  defp stages(ctx),
-    do: Path.wildcard(Path.join(ctx.managoat, ".template-stage.*"), match_dot: true)
+  # Stages left behind; a commit's `.ok` marker stays, for a retry to read,
+  # until the hourly sweep.
+  defp stages(ctx) do
+    ctx.managoat
+    |> Path.join(".template-stage.*")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.reject(&String.ends_with?(&1, ".ok"))
+  end
 
   describe "a new config home (an attach to a machine that is already up)" do
     test "gets the runtime's template, with modes kept", ctx do
@@ -362,6 +368,21 @@ defmodule Managoat.Runtimes.TemplateTest do
       assert {out, 0} = System.cmd("bash", again)
       assert out =~ ~r/managoat-template (present|done)/
     end
+  end
+
+  test "a commit retried after it failed is not taken for done", ctx do
+    stage = Path.join(ctx.managoat, ".template-stage.gone")
+    argv = ["-c", Template.script(), "t", "commit", "into", "", ctx.home, "", stage, "", ""]
+    assert {_out, 3} = System.cmd("bash", argv)
+  end
+
+  test "the first status line is the answer", ctx do
+    # A template file's name can carry a newline; nothing after the status counts.
+    stub(Sandbox, :exec, fn _h, "bash", _args, _opts ->
+      {:ok, "managoat-template unreadable x?\nmanagoat-template done\n", 0}
+    end)
+
+    assert {:error, {:runtime_template, {:unreadable, "x?"}}} = seed(ctx, "claude", :new)
   end
 
   test "an entry the sandbox user cannot read fails the seed, naming it", ctx do

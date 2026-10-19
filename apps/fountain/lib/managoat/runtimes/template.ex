@@ -170,6 +170,7 @@ defmodule Managoat.Runtimes.Template do
       fi
       rm -rf -- "$aside" "$stage"
     fi
+    : > "$stage.ok"
     echo "managoat-template done"
   }
 
@@ -177,8 +178,12 @@ defmodule Managoat.Runtimes.Template do
     commit)
       if ! own_stage; then
         if [ -e "$stage" ] || [ -L "$stage" ]; then exit 2; fi
-        if [ "$mode" = new ]; then echo "managoat-template present"; else echo "managoat-template done"; fi
-        exit 0
+        if [ -f "$stage.ok" ]; then echo "managoat-template done"; exit 0; fi
+        if [ "$mode" = new ] && { [ -e "$home" ] || [ -L "$home" ]; }; then
+          echo "managoat-template present"
+          exit 0
+        fi
+        exit 3
       fi
       commit || { rm -rf -- "$stage" "$stage.m"; exit 1; }
       exit 0
@@ -202,7 +207,8 @@ defmodule Managoat.Runtimes.Template do
   bad=$(cd -- "$src" && find . -mindepth 1 \( -type f -o -type d \) \
     \( ! -readable -o \( -type d ! -executable \) \) -print -quit 2>/dev/null)
   if [ -n "$bad" ]; then
-    printf 'managoat-template unreadable %s\n' "${bad#./}"
+    bad=${bad#./}
+    printf 'managoat-template unreadable %s\n' "${bad//[[:cntrl:]]/?}"
     exit 0
   fi
 
@@ -240,6 +246,7 @@ defmodule Managoat.Runtimes.Template do
   done <<< "$merged"
 
   if [ "$found" = 1 ]; then
+    mkdir -m 700 -- "$stage.m" || { rm -rf -- "$stage"; exit 1; }
     echo "managoat-template staged $stage"
     exit 0
   fi
@@ -402,20 +409,21 @@ defmodule Managoat.Runtimes.Template do
 
   # The script's status line, and with `staged` the merged files' contents.
   # Output with no status (stdout lost on the way back) is not taken for
-  # success: the seed fails and a later attach tries again.
+  # success: the seed fails and a later attach tries again. The first status
+  # wins, so nothing printed after it can change the answer.
   defp parse(out) do
     out
     |> String.split("\n", trim: true)
     |> Enum.reduce(%{status: :unrecognised, files: %{}}, fn line, acc ->
       case String.split(line, " ", parts: 4) do
         ["managoat-template", "staged", stage] ->
-          %{acc | status: {:staged, stage}}
+          status(acc, {:staged, stage})
 
         ["managoat-template", status] when status in ["none", "present", "done"] ->
-          %{acc | status: String.to_existing_atom(status)}
+          status(acc, String.to_existing_atom(status))
 
         ["managoat-template", "unreadable" | path] ->
-          %{acc | status: {:unreadable, Enum.join(path, " ")}}
+          status(acc, {:unreadable, Enum.join(path, " ")})
 
         ["managoat-template", kind, file, encoded] when kind in ["file", "current"] ->
           key = if kind == "file", do: :template, else: :current
@@ -440,6 +448,9 @@ defmodule Managoat.Runtimes.Template do
         status
     end
   end
+
+  defp status(%{status: :unrecognised} = acc, status), do: %{acc | status: status}
+  defp status(acc, _later), do: acc
 
   defp quote_shell(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 end

@@ -145,8 +145,10 @@ defmodule Fountain.Conversations.ConversationServerConversationAuthTest do
         %{"claude" => ".mcp.json", "gemini" => "settings.json"}[unquote(runtime)]
 
       if mcp_file do
+        # Written beside the file and renamed over it (`JsonConfig`).
         assert Enum.any?(written, fn {path, data} ->
-                 String.ends_with?(path, mcp_file) and data =~ ~s("fs")
+                 (String.ends_with?(path, mcp_file) or
+                    String.contains?(path, mcp_file <> ".managoat.")) and data =~ ~s("fs")
                end),
                "no #{mcp_file} naming fs in #{inspect(Enum.map(written, &elem(&1, 0)))}"
       end

@@ -66,23 +66,34 @@ defmodule Managoat.Runtimes.JsonConfig do
   defp unreadable?({:ok, results}), do: :unreadable in Map.values(results)
   defp unreadable?({:error, _}), do: true
 
-  # One line per path, or the output is not the script's.
+  # One line per path, or the output is not the script's. No output at all
+  # reads as no files, as the single-file `cat` read this replaced did (an
+  # adapter that runs no shell answers nothing).
   defp decode_all(paths, out) do
     lines = String.split(to_string(out), "\n", trim: true)
 
-    if length(lines) == length(paths) do
-      {:ok,
-       paths
-       |> Enum.zip(lines)
-       |> Map.new(fn {path, line} ->
-         case decode_line(line) do
-           {:ok, value} -> {path, value}
-           :error -> {path, :unreadable}
-         end
-       end)}
-    else
-      {:error, {:runtime_config, hd(paths), :unreadable}}
+    cond do
+      lines == [] ->
+        {:ok, Map.new(paths, &{&1, nil})}
+
+      length(lines) == length(paths) ->
+        decode_lines(paths, lines)
+
+      true ->
+        {:error, {:runtime_config, hd(paths), :unreadable}}
     end
+  end
+
+  defp decode_lines(paths, lines) do
+    {:ok,
+     paths
+     |> Enum.zip(lines)
+     |> Map.new(fn {path, line} ->
+       case decode_line(line) do
+         {:ok, value} -> {path, value}
+         :error -> {path, :unreadable}
+       end
+     end)}
   end
 
   defp decode_line("-"), do: {:ok, nil}

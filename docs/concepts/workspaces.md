@@ -189,6 +189,12 @@ environment has a setup script.
   the broker. Put MCP servers on the [agent](agent.md), not in the template.
   Managoat writes no codex `config.toml`, so a template's `config.toml` is
   used as it is, and any `[mcp_servers]` it names start beside the agent's.
+- **Files are copied byte for byte, paths in them included.** A file that
+  names an absolute path under the template, such as the records of a Claude
+  plugin installed into the template, still points at the template. What it
+  points at is shared, so a later change there reaches every conversation.
+  Name `$CLAUDE_CONFIG_DIR` (or `$CODEX_HOME`) in a hook command, not the
+  template's path.
 - **Only regular files and directories are copied, with their modes**, so a
   hook script stays executable. A symlink is skipped, not followed, and so
   is anything that is not a file. A template, or a runtime's directory in it,
