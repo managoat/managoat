@@ -963,6 +963,9 @@ defmodule Fountain.Conversations.Wake do
   # The ones a retry of the same prompt can succeed on without the caller
   # changing anything: the provider or the fleet was busy.
   # `machine_lost`: the next prompt rebuilds the machine (ADR 0097).
+  # `workspace_setup_failed` is the exception: the next prompt runs the setup
+  # again (#3013), which succeeds unchanged only if the failure was
+  # transient; usually the environment needs fixing first.
   @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy machine_lost workspace_setup_failed)a
 
   defp retryable_wake_failure?(reason) when is_atom(reason),

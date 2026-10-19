@@ -234,16 +234,39 @@ defmodule Fountain.Workspaces.WorkspaceRetryTest do
                Workspaces.retry_workspace(ready, actor: "api")
     end
 
-    test "a rebuild (#2986) while a retry has not yet made its machine is in progress", ctx do
+    test "a rebuild (#2986) whose machine is made while a retry's task is registered is built",
+         ctx do
       {workspace, failed} = failed_workspace!(ctx)
-      stub(Provisioner, :retry, fn _workspace, _sandbox_id -> {:ok, self()} end)
-      {:ok, workspace} = Workspaces.retry_workspace(workspace, actor: "api")
+      test = self()
 
-      assert {:error, :rebuild_in_progress} =
-               Workspaces.rebuild_workspace(workspace, actor: "api")
+      # The retry's task, registered under the workspace after the rebuild
+      # looked (so the rebuild was not refused), and about to follow it.
+      holder =
+        spawn(fn ->
+          {:ok, _} = Registry.register(Fountain.WorkspaceSetupRegistry, workspace.id, failed.id)
+          send(test, :registered)
 
-      failed_id = failed.id
-      assert [%Sandbox{id: ^failed_id, status: "failed"}] = sandboxes_of(workspace)
+          receive do
+            :go -> :ok
+          end
+        end)
+
+      assert_receive :registered
+      stub(Provisioner, :running?, fn _id -> false end)
+      stub(Provisioner, :start, fn w, id -> call_original(Provisioner, :start, [w, id]) end)
+
+      capture_log(fn ->
+        assert {:ok, %Workspace{status: "provisioning"}} =
+                 Workspaces.rebuild_workspace(workspace, actor: "api")
+
+        [next] = Enum.reject(sandboxes_of(workspace), &(&1.id == failed.id))
+        assert Repo.reload!(next).status == "pending"
+
+        # Its provision waits for the retry's task, then builds it.
+        send(holder, :go)
+        wait_until(fn -> Repo.reload!(next).status == "ready" end)
+        wait_until(fn -> Repo.reload!(workspace).status == "ready" end)
+      end)
     end
 
     test "an implicit workspace, and one being deleted, are not found", ctx do

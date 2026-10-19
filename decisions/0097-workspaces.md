@@ -1101,5 +1101,10 @@ A PR sequence, each releasable alone:
   - The retry's deadline is the provision deadline, counted from the start
     of the retry's task, so a retry that first waited for another setup's
     lease has that much less time to build.
-  - The retry is not the rebuild of a working machine (#2986), which it
-    never touches.
+  - The retry is not the rebuild of a working machine (#2986). A rebuild
+    asked for while a retry's task is running is `409
+    rebuild_in_progress`. One that gets in before the task has made its
+    machine replaces the failed row itself; the retry then follows it, and
+    the rebuild's own setup waits for the retry's task to finish before it
+    builds. A rebuild after a retry has already failed again starts once
+    more from the failed row, as the caller asked.

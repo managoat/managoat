@@ -41,13 +41,18 @@ defmodule Fountain.Workspaces.Provisioner do
   Start the provision of `workspace`'s machine behind `sandbox_id` in the
   background. Answers once the task is started; what it does is reported
   through the workspace's status.
+
+  A task of the workspace's already registered is waited out briefly, as
+  `retry/2` waits: a rebuild (#2986) whose new row was made while a retry's
+  task was registered builds it once that task, which follows the rebuild,
+  has gone (review of #3013).
   """
   @spec start(Workspace.t(), Ecto.UUID.t()) :: {:ok, pid()} | {:error, term()}
   def start(%Workspace{id: workspace_id}, sandbox_id) when is_binary(sandbox_id) do
     Task.Supervisor.start_child(Fountain.TaskSupervisor, fn ->
-      case Registry.register(@registry, workspace_id, sandbox_id) do
-        {:ok, _owner} -> watched(workspace_id, sandbox_id)
-        {:error, {:already_registered, _pid}} -> :already_running
+      case register(workspace_id, sandbox_id) do
+        :ok -> watched(workspace_id, sandbox_id)
+        :busy -> :already_running
       end
     end)
   end

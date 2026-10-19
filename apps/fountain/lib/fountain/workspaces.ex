@@ -866,13 +866,10 @@ defmodule Fountain.Workspaces do
           %Sandbox{status: s} = sandbox when s in ["pending", "starting"] ->
             if Fountain.Machines.Machine.busy?(sandbox), do: :building, else: {:stranded, sandbox}
 
-          # `provisioning` over an ended machine is a retry (#3013) whose
-          # task has not made its new machine yet: it is building. One the
-          # server stopped is put back to `failed` at boot.
-          %Sandbox{} ->
-            :building
-
-          nil ->
+          # `provisioning` over an ended machine (a retry, #3013, whose task
+          # has not made its machine yet) may be rebuilt: the rebuild's own
+          # provision waits for the retry's task, which follows the rebuild.
+          _settled_or_none ->
             :settled
         end
     end
