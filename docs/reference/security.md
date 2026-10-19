@@ -101,6 +101,14 @@ route is added to its allowlist. Read
 - A full-scope key that you put in an environment or vault reaches the whole
   account, from any sandbox that gets it.
 - `sandbox_api_access: "none"` gives a sandbox no key at all.
+- **None of this separates conversations in one
+  [workspace](../concepts/workspaces.md).** They share one disk and one user,
+  so each can read the others' files, config homes, process environments and
+  keys, and plant hooks or instructions the others then follow. What one
+  sandbox key reaches there is in effect what all of theirs reach. A
+  conversation launched without a workspace keeps every guarantee above. A
+  sandbox key cannot create or use a workspace, so an agent cannot put itself
+  beside another conversation.
 
 ## What is recorded when something changes, and for how long
 

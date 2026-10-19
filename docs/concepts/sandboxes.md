@@ -11,10 +11,10 @@ reference.
 ## What a sandbox is
 
 A sandbox is the isolated machine that a [conversation](conversation.md)
-runs in. Every conversation gets a sandbox of its own, and no two
+runs in. By default every conversation gets a sandbox of its own, and no two
 conversations share one.
 
-You never create one on its own. Managoat provisions a sandbox when a
+You never create a sandbox directly. Managoat provisions one when a
 conversation starts. It parks the sandbox when the conversation goes quiet,
 wakes it on the next prompt, and destroys it when the conversation ends.
 `GET /api/sandboxes` lists them, and `managoat sandbox` does the same from the
@@ -23,6 +23,14 @@ CLI. Both are read-only.
 That is deliberate. A sandbox you could create on its own would be a resource
 you could leak. The machine that nobody remembered to stop is what makes agent
 infrastructure expensive.
+
+The one exception is a [workspace](workspaces.md): a machine you create by
+name, set up once from an environment, and run many conversations on, each in
+its own folder. Its machine outlives each conversation and ends when you
+delete the workspace, so you take on the cost of remembering it. Behind the
+scenes every sandbox belongs to a workspace; a conversation without one has an
+implicit workspace of its own, made and ended with it, which is everything
+this page describes.
 
 One conversation builds one sandbox. Managoat runs one server for each
 conversation, and a deploy stops the old instance before it starts the new
@@ -41,15 +49,19 @@ stops the build anyway, leaving the sandbox for the hourly cleanup pass.
 A conversation keeps its sandbox for its whole life. Its notes, clones and
 installed tools stay on the disk between turns, and the agent's session stays
 there too, so a parked conversation picks up where it left off. When the
-conversation ends, the sandbox is destroyed.
+conversation ends, the sandbox is destroyed. In a workspace it stays, for
+the workspace's other conversations.
 
-A child conversation that an agent starts gets a sandbox of its own, as any
-conversation does. Two conversations never share a disk.
+A child conversation that an agent starts gets a sandbox of its own, even
+when its parent runs in a workspace: a sandbox's key cannot name a workspace.
+Two conversations share a disk only when you launched both into one
+workspace.
 
 Older clients may still send `sandbox_mode`. `ephemeral` is accepted and
 changes nothing. `persistent` answers `422 persistent_sandbox_removed`, and a
 `sandbox_id` on `POST /api/conversations` answers
-`422 sandbox_attach_unsupported`. Persistent sandboxes, one machine that every
+`422 sandbox_attach_unsupported`; a `workspace_id` is how conversations share
+a machine now. Persistent sandboxes, one machine that every
 conversation of an agent shared, were removed in 2026-10. On upgrade, a
 sandbox that carried several live conversations keeps one: the
 conversation bound to the former team channel if there is one, otherwise the
@@ -254,6 +266,7 @@ Managoat deployment can see affected machines on the admin page
 - [The sandbox contract](../integrations/sandbox-contract.md), the executable
   version of this page.
 - [About conversations](conversation.md), whose lifecycle this one follows.
+- [About workspaces](workspaces.md), a machine several conversations share.
 - [Sandbox lifetime and cost](../guides/operate/sandbox-lifetime.md).
 - [Add a provider](../integrations/adding-a-sandbox-provider.md), if you want
   a third.

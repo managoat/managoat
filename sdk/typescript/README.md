@@ -325,6 +325,30 @@ filter streams. `history()` sends the filter you give it and never widens it.
 `eventPage(after, limit, { prompts: true })` takes the same flag. Run
 following and the SSE streams do not carry prompts.
 
+## One machine, several agents
+
+Every run gets a machine of its own unless you give it a workspace: a
+machine you keep, set up once from an environment, that any number of runs
+share, each in its own folder.
+
+```ts
+const env = await managoat.environments.get("app");
+const ws = await managoat.workspaces.create({ name: "app-box", environment_id: env.id });
+await managoat.workspaces.waitForReady(ws.id);   // throws WorkspaceFailedError on a failed setup
+
+await Promise.all([
+  managoat.run("Add a dark mode toggle", { agent: "web-dev", workspace: ws.id, cwd: "/home/sprite/app/web" }),
+  managoat.run("Add a theme endpoint", { agent: "api-dev", workspace: ws.id, cwd: "/home/sprite/app/api" }),
+]);
+
+await managoat.workspaces.gitStatus(ws.id, { path: "/home/sprite/app" });
+await managoat.workspaces.delete(ws.id);   // ends its conversations and its machine
+```
+
+Runs in one workspace run as one user on one disk, so they can read and
+change each other's files and tokens. Leave `workspace` out for isolation. A
+workspace's machine has no lifetime limit: delete the ones you are done with.
+
 ## Errors
 
 Branch on `code`, not status — `conversation_busy` is a 400, `provisioning`

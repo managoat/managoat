@@ -18,7 +18,7 @@ and the CLI's credentials. Each path it reports is inside the sandbox.
 ## Invocation
 
 ```bash
-managoat acp --agent <name-or-id> [--vault <name-or-id>] [--environment <name-or-id>] [--permission ask] [--log-level debug]
+managoat acp --agent <name-or-id> [--vault <name-or-id>] [--environment <name-or-id>] [--workspace <id-or-name>] [--cwd <dir>] [--permission ask] [--log-level debug]
 ```
 
 | Flag | Meaning |
@@ -26,6 +26,8 @@ managoat acp --agent <name-or-id> [--vault <name-or-id>] [--environment <name-or
 | `--agent` | **Required, in practice.** The Managoat agent that each session runs. ACP has no field for it, so you configure it for each process. Use one client entry for each agent you want to reach. |
 | `--vault` | A vault that attaches to each conversation this process opens. Vault values override the agent's environment, so a secret for one entry belongs here. An identity the agent posts under is the example. Two entries on the same agent with different vaults stay apart. |
 | `--environment` | Provisions each conversation from this environment, and not from the agent's own. One agent config then runs under several environments, with one entry for each. The vault still wins on a key collision. When the agent sets `allowed_environment_ids`, the environment must be on that list. |
+| `--workspace` | Opens each conversation on this [workspace](../concepts/workspaces.md)'s machine, beside whatever else runs there, instead of a sandbox of its own. The workspace fixes the environment and vault, so `--environment` and `--vault` may only name its own. With a `channelId`, a session resumes only a conversation in that workspace. Conversations in one workspace can read and change each other's files. |
+| `--cwd` | The directory inside the sandbox the agent runs in: `/home/sprite` or a folder under it (for a gemini agent, also under `/tmp`), created if missing. It is not your editor's project directory. With `--workspace`, it gives each entry its own folder on the shared machine. |
 | `--permission` | What happens before the agent runs a tool. `ask` sends the question to your client, as an approval prompt. `auto_deny` refuses. The default, `auto_allow`, runs the tool. To narrow it for one kind of tool, give `key=verdict` pairs, such as `execute=ask`. See [Permission prompts](#permission-prompts). |
 | `--log-level` | The verbosity on stderr. One of `debug`, `info`, which is the default, `warn` and `error`. |
 | `--profile` | Which saved CLI credentials to use. It is a global flag. |
@@ -150,12 +152,12 @@ other field in `_meta`.
 
 | Field | Meaning |
 |---|---|
-| `channelId` | Names the external channel that this session serves. With it, `session/new` **resumes** the conversation already bound to that channel, for this user, agent and vault. That is the same conversation, the same sandbox and the same runtime session, with a fresh ACP id on the client's side. A harness that forgets its sessions on restart therefore lands back where it was ([#774](https://github.com/managoat/managoat/issues/774)). A destroyed sandbox also stops the resume. The workspace does not survive it, so Managoat opens a new conversation on a new sandbox ([#779](https://github.com/managoat/managoat/issues/779)). Without it, each `session/new` is a new conversation. |
+| `channelId` | Names the external channel that this session serves. With it, `session/new` **resumes** the conversation already bound to that channel, for this user, agent and vault. That is the same conversation, the same sandbox and the same runtime session, with a fresh ACP id on the client's side. A harness that forgets its sessions on restart therefore lands back where it was ([#774](https://github.com/managoat/managoat/issues/774)). A destroyed sandbox also stops the resume. Its disk does not survive it, so Managoat opens a new conversation on a new sandbox ([#779](https://github.com/managoat/managoat/issues/779)). Without it, each `session/new` is a new conversation. |
 | `freshSession` | With `channelId`, it skips the resume this one time. It unbinds the current conversation, which continues and then retires like any other idle one. It opens a new conversation, and binds the channel to that. A chat harness's "start over" command turns into this ([#788](https://github.com/managoat/managoat/pull/788)). Managoat ignores it without `channelId`. |
 
 The same knobs exist on the API, as `channel_id` and `fresh` on
 `POST /api/conversations`. Read [Conversations](../api.md#conversations).
-Each session's conversation runs on a sandbox of its own.
+Each session's conversation runs on a sandbox of its own, unless the process was started with `--workspace`. With it, a `channelId` resumes only a conversation in that workspace.
 
 ## `_meta` extensions on `session/prompt`
 

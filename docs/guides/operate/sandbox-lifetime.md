@@ -11,7 +11,7 @@ They do different things, and that difference matters more than the numbers.
 | Setting | Default | |
 |---|---|---|
 | `SANDBOX_IDLE_TIMEOUT_MINUTES` | `60` | No turn activity for this long **suspends** the sandbox. It stays at the provider, scaled to zero. The next prompt wakes it, and the agent's memory is intact. |
-| `SANDBOX_MAX_LIFETIME_HOURS` | `0` (off) | A ceiling on one continuous run, from creation or from the last wake. Crossing it **destroys** the sandbox. Off by default, because a machine that runs all day is not a fault. |
+| `SANDBOX_MAX_LIFETIME_HOURS` | `0` (off) | A ceiling on one continuous run, from creation or from the last wake. Crossing it **destroys** a conversation's own sandbox, and **parks** a workspace's. Off by default, because a machine that runs all day is not a fault. |
 
 A `0` turns either bound off. A value that is not a non-negative integer
 refuses to boot. With the ceiling off, the idle timeout is the one automatic
@@ -22,7 +22,8 @@ Neither bound ends the conversation; it stays resumable either way. You can
 be aggressive with the idle bound, because a suspend loses nothing. You
 cannot be aggressive with the ceiling: the runtime session lives on the disk
 it destroys, so the next prompt provisions a fresh sandbox and the agent
-starts with no memory of the earlier turns.
+starts with no memory of the earlier turns. On a workspace's machine, which
+the ceiling parks, it costs only the turns it cuts.
 
 **A turn in flight holds the sandbox.** The idle timeout counts from the end
 of the last turn, so a turn that runs a long, quiet command is never suspended
@@ -51,8 +52,29 @@ park, so the idle timeout also bounds what an app that polls a sandbox's files
 can cost. Read
 [Reads and provider sleep](../../integrations/sandbox-contract.md#reads-and-provider-sleep).
 
+**A workspace's machine has no hard lifetime.** A
+[workspace](../../concepts/workspaces.md) is a machine several conversations
+share, and it ends only when the workspace is deleted or the provider loses
+it. Ending its conversations leaves it. Idle parks it as it parks any sandbox,
+measured from the last turn end of any of its conversations, and so does the
+ceiling: at `SANDBOX_MAX_LIFETIME_HOURS` every running turn on it is
+interrupted (its transcript kept, the turn ending `interrupted` with
+`reason: "machine_parked"`) and the machine is parked with its disk, then
+woken by the next prompt, which restarts the clock. A workspace created and
+never used costs its setup and then a parked machine.
+
+**Nothing caps how many workspaces there are.** Managoat has no per-account
+workspace limit and no retention bound on parked machines, by decision
+(ADR 0097): on a self-hosted instance the people creating workspaces are the
+operator's own, and the provider's bill is where the cost shows. The fleet
+ceiling counts only running machines, so parked workspace machines
+accumulate with the workspaces people keep. Watch the provider's storage, and
+ask people to delete workspaces they are done with
+(`managoat workspace delete`). `GET /api/workspaces` lists an account's own.
+
 **Managoat never ages a suspended sandbox out.** It stays at the provider
-until the conversation is terminated or the account is deleted.
+until the conversation is terminated, its workspace is deleted, or the account
+is deleted.
 `GET /api/sandboxes?status=suspended` lists the parked ones, and an admin can
 reap one with `POST /api/admin/sandboxes/:id/reap`. Read
 [Sandboxes](../../api.md#sandboxes).

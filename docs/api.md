@@ -78,6 +78,13 @@ The same rule covers API keys, OAuth clients, secret bindings, a
 conversation's egress log, inference credentials, account security, and a
 sandbox's files.
 
+It also covers [workspaces](#workspaces): every `/api/workspaces` route, and a
+`POST /api/conversations` that names a `workspace_id`, answer `403` with
+`required_scope: "full"`. A child conversation therefore always gets a
+sandbox of its own. In a workspace, though, every conversation can read the
+others' `MANAGOAT_TOKEN`, so what one key there reaches is in effect the
+union of their trees.
+
 A refused request gets `403` with `reason: "insufficient_scope"` and
 `required_scope: "full"`. Without this rule, a prompt-injected agent could
 rewrite an agent's instructions or an environment's setup script, and the
@@ -650,6 +657,55 @@ resolve a relative path from it, except on an explicit workspace's machine, whic
 conversations share and where a relative path resolves from `/home/sprite`. The CLI takes it as `--cwd` on `managoat run`
 and `managoat acp`.
 
+### Launch into a workspace
+
+A conversation gets a sandbox of its own unless the launch names a
+`workspace_id`, one of the caller's [workspaces](#workspaces). It then runs on
+the workspace's machine, beside the conversations already there, with a
+config home and an adapter process of its own. Name a `cwd` too, so that each
+agent works in its own folder.
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $MANAGOAT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id":"YOUR_AGENT_ID","workspace_id":"YOUR_WORKSPACE_ID","cwd":"/home/sprite/app/api","prompt":"Run the tests"}' \
+  "$MANAGOAT_URL/api/conversations"
+```
+
+The agent supplies the runtime, model, skills, MCP servers, system prompt and
+permission policy. The workspace supplies the environment, the vault and the
+sandbox provider, and the agent's `sandbox_provider` is not read. The
+conversation object reports `workspace_id`.
+
+| Refusal | When |
+|---|---|
+| `404 not_found` | The workspace is another account's, an implicit one, or being deleted. |
+| `422 workspace_fixes_environment` | The launch names an `environment_id` or `vault_id` other than the workspace's. Naming its own is accepted. |
+| `422 environment_not_allowed`, `422 vault_not_allowed` | The agent's `allowed_environment_ids` or `allowed_vault_ids` leaves out the workspace's. |
+| `422 invalid_sandbox_api_access` | `sandbox_api_access` is `none`, which needs a sandbox of the conversation's own. |
+| `422 machine_name_with_workspace` | The launch names a `machine_name`; the workspace names its machine. |
+| `403`, `reason: insufficient_scope`, `required_scope: full` | The caller is a sandbox's own key. A conversation started from inside a sandbox always gets a sandbox of its own. |
+
+`sandbox_id` on a launch is still `422 sandbox_attach_unsupported`.
+`workspace_id` is how two conversations share a machine. No fleet slot is
+reserved for the launch: the workspace's machine is already counted.
+
+What happens next depends on the machine. On a `ready` one the conversation's
+adapter starts at once. On a parked, provisioning, failed or lost machine
+nothing starts until the conversation's first prompt, which wakes a parked
+machine, waits for a setup in progress, runs a failed setup again, or builds a
+new machine after a loss. A launch with no prompt wakes nothing.
+
+With a `channel_id`, a launch that names a `workspace_id` resumes only a
+conversation in that workspace, and a launch without one never resumes a
+conversation in a workspace.
+
+**Conversations in one workspace can read and influence each other**: they
+run as one user on one disk. Leave out `workspace_id` when a conversation must
+be isolated. [About workspaces](concepts/workspaces.md#one-trust-boundary)
+says what that boundary means.
+
 ### Set reasoning effort and fast mode
 
 Runtimes that speak ACP offer session config options beyond the model. The two
@@ -728,8 +784,10 @@ authority. Managoat omits its sandbox callback credential before provision
 and on every wake or reattachment. The default, `owner`, retains existing
 behavior.
 
-This setting is immutable, like the conversation's sandbox, which is always
-its own. A channel resume with a different explicit setting fails.
+This setting is immutable, like the conversation's sandbox. A channel resume
+with a different explicit setting fails. `none` needs a sandbox of the
+conversation's own, so a launch with it and a `workspace_id` is
+`422 invalid_sandbox_api_access`.
 
 Discover support in `GET /api/catalog` under `sandbox_api_access`. The host
 can still send prompts and read events and files. The worker cannot use
@@ -746,6 +804,12 @@ The account event stream carries a conversation-change notification for
 each conversation, so a conversation list stays live on one stream. It does
 not replace a conversation's history, which is what a client reconciles
 from after a reconnect.
+
+It also carries a `workspace.status` event whenever one of the caller's
+[workspaces](#workspaces) changes status, with data
+`{workspace_id, name, status, error}`. The event has no id and is not
+replayed after a reconnect, and `?streams=` does not filter it. A client that
+reconnects reads the workspace again with `GET /api/workspaces/{id}`.
 [Follow every conversation on one stream](guides/http-api.md#follow-every-conversation-on-one-stream)
 walks through it.
 
@@ -753,11 +817,71 @@ The Events operations in the [generated reference](/api/docs) define stream
 selection, cursors, and framing. See [Build a chat app](build/index.md) for
 how a client combines the list, transcript, and live stream.
 
+## Workspaces
+
+A workspace is a sandbox the caller keeps: set up once from an environment
+and an optional vault, then any number of conversations launched into it with
+`workspace_id`, each in its own working directory. Its name, environment,
+vault and sandbox provider are fixed at create. Read
+[About workspaces](concepts/workspaces.md) for the lifecycle, and
+[Run several agents on one machine](guides/agents-in-one-workspace.md) for
+the task. Every workspace route needs a full-scope key; a sandbox's own key is
+`403 insufficient_scope`.
+
+| Route | Does |
+|---|---|
+| `POST /api/workspaces` | Create one: `name` and `environment_id`, optional `vault_id` and `sandbox_provider`. Answers `201` with `status: "provisioning"` and starts the setup at once. |
+| `GET /api/workspaces` | The caller's workspaces, newest first. `?implicit=true` adds the implicit ones, one per conversation launched without a workspace. |
+| `GET /api/workspaces/{id}` | One workspace, with its machine's state. |
+| `DELETE /api/workspaces/{id}` | Terminate every live conversation in it, keeping their transcripts, and destroy its machine. `204`. Not refused while conversations are running. |
+| `GET /api/workspaces/{id}/files`, `/file`, `/diff`, `/git-status` | Read the workspace's current machine. See [Files, git status and git diff](#files-git-status-and-git-diff). |
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $MANAGOAT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"app-box","environment_id":"YOUR_ENVIRONMENT_ID","vault_id":"YOUR_VAULT_ID"}' \
+  "$MANAGOAT_URL/api/workspaces"
+```
+
+A workspace carries two statuses, and they answer different questions:
+
+| Field | Values | Says |
+|---|---|---|
+| `status` | `provisioning`, `ready`, `failed` | Whether its machine's setup finished. `failed` comes with `error`, the failing step and the end of what it printed, redacted. A rebuild after a loss sets it back to `provisioning`. A park does not move it. |
+| `sandbox_status` | `pending`, `starting`, `ready`, `suspended`, or `null` | What its current machine is doing. `suspended` is parked, and the next prompt wakes it. `null` means it has no live machine, after a loss or a failed setup, and the next prompt builds one. |
+
+`sandbox_id` names the current machine, and is `null` when there is none. It
+changes when a lost machine is rebuilt, so keep the workspace's id, not the
+sandbox's. `implicit` is `true` for a conversation's own workspace, which has
+no name and ends with its conversation; `DELETE` answers `404` for one.
+
+Each change of `status` on a workspace you created is a `workspace.status`
+event on [the account event stream](#every-conversation-on-one-stream). It is
+live only, so read the workspace after a reconnect.
+
+| Refusal | When |
+|---|---|
+| `404 environment_not_found`, `404 vault_not_found` | `POST` names another account's environment or vault, or one that does not exist. |
+| `422 validation_failed` | No `name` or `environment_id`, a `name` longer than 200 characters, or a `sandbox_provider` the instance does not know. |
+| `422 sandbox_provider_disabled` | `sandbox_provider` names one this instance has not enabled. |
+| `503 fleet_full` | Every sandbox slot on the provider is in use. Honor `Retry-After`. |
+| `404 not_found` | Another account's workspace, on every route. |
+| `409 source_in_use_by_workspace` | `DELETE /api/environments/{id}` or `DELETE /api/vaults/{id}` on one a workspace was created from. Delete the workspace first. |
+
+A workspace's machine parks when idle and wakes on the next prompt, like any
+sandbox. At the `SANDBOX_MAX_LIFETIME_HOURS` ceiling it is parked rather than
+destroyed, after its running turns are interrupted. So it lives until the
+workspace is deleted or the provider loses it, and Managoat caps neither how
+many workspaces an account keeps nor how long a parked one stays. See
+[Sandbox lifetime and cost](guides/operate/sandbox-lifetime.md).
+
 ## Sandboxes
 
-A sandbox is the machine that hosts a conversation. Every conversation has
-one of its own, and the sandbox operations are read-only: list them, and get
-one with its conversation.
+A sandbox is the machine that hosts a conversation. A conversation has one of
+its own, unless it was launched into a [workspace](#workspaces), whose
+machine several conversations share. The sandbox operations are read-only:
+list them, and get one with its conversations.
 
 See [Sandboxes](concepts/sandboxes.md) and
 [Sandbox lifetime](guides/operate/sandbox-lifetime.md). The Sandboxes operations
@@ -794,6 +918,17 @@ A diff compares tracked content
 only. To see a file the agent made and never staged, use the git status
 operation. Its entry paths are relative to the repository root, not to the
 sandbox home.
+
+The same four reads are served by workspace, at
+`/api/workspaces/{id}/files`, `/file`, `/diff` and `/git-status`. They read the
+workspace's current machine, so they keep working across a rebuild that
+changes its `sandbox_id`. On a workspace's machine, by either route, a
+relative path resolves from `/home/sprite`, a path may lie under
+`/home/sprite` or the working directory of any live conversation in the
+workspace, and the output is redacted with the workspace's environment and
+vault and every live conversation's credentials. A workspace with no machine
+at all answers `404`; one whose machine is parked, being set up, failed or
+lost answers `409 sandbox_not_ready` with that `status`.
 
 The [generated reference](/api/docs) defines path confinement, byte limits,
 truncation, encoding, comparison options, and the untracked modes. Check

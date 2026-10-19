@@ -33,7 +33,7 @@ func newConversationCreateCommand() *cobra.Command {
 			}
 			var response json.RawMessage
 			if err := activeClient().Post("/conversations", body, &response); err != nil {
-				return err
+				return explainAPIError(err)
 			}
 			encoder := json.NewEncoder(cmd.OutOrStdout())
 			encoder.SetIndent("", "  ")

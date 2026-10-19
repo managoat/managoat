@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 to 5 built, the CLI and manual not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following; /api/workspaces, provisioned on create under a network of its own, and workspace_id on launch): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "All six steps built (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following; /api/workspaces, provisioned on create under a network of its own, and workspace_id on launch; the CLI, the SDK helpers and the manual): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -32,9 +32,10 @@ launch fields and refusals, the `409` on deleting an environment or vault a
 workspace names, and the SDK; the third (5c) is the file routes. All three
 are built, and amend [0039](0039-sandbox-files-over-the-api.md),
 [0045](0045-sandbox-api-access.md) and
-[0096](0096-sandbox-key-confined-to-its-conversation-tree.md). The rest
-(step 6's CLI and manual page) is not built; the Cost section sets out the
-work and its order. It amends
+[0096](0096-sandbox-key-confined-to-its-conversation-tree.md). Step 6, the
+CLI (`managoat workspace`, `--workspace` on `run` and `acp`), the SDK's
+handwritten helpers and the manual, is built too, so the whole sequence the
+Cost section sets out is done. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -794,3 +795,17 @@ A PR sequence, each releasable alone:
   through the workspace's routes, as it was through its own sandbox's; on a
   shared machine that is everyone's `/tmp`, inside the one trust boundary.
   0039 is amended.
+- 2026-10-18 — Step 6 built: `managoat workspace create|list|show|wait|delete`
+  (`create --wait` and `wait` poll the workspace until `ready` or `failed`
+  rather than following `workspace.status`, which is not replayed),
+  `--workspace` beside `--cwd` on `run` and `acp`, and the refusals rendered
+  with the flag that gets past them; the SDK's `managoat.workspaces` (create,
+  list, get, delete, `waitForReady`, and the four disk reads) and
+  `workspace`/`cwd` on `run`, unreleased; and the manual's
+  About workspaces page (`docs/concepts/workspaces.md`) and a how-to for several
+  agents on one machine. Calls made here: a workspace is documented as the
+  machine a run happens on, not a fifth primitive, because it configures
+  nothing of its own; and a turn the ceiling's park or a destroy cuts short
+  (`machine_parked`, `machine_destroyed`) now exits `managoat run` non-zero,
+  where an interrupted turn exited zero. The CLI has no sandbox file
+  commands, so it has no workspace ones either.

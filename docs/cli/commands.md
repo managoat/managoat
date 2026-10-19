@@ -52,6 +52,12 @@ path under /home/sprite (or /tmp for a gemini agent), created if missing.
 Without it the runtime's default stands. It is not your editor's project
 directory, which session/new sends and the sandbox cannot see.
 
+--workspace opens every session on one workspace's machine (managoat
+workspace) instead of a sandbox of its own, beside whatever else runs there.
+The workspace fixes the environment and vault, so --environment and --vault
+may only name its own. Pair it with --cwd to give each editor entry a folder.
+Conversations in one workspace can read and change each other's files.
+
 Nobody answering is an answer: an unanswered prompt is denied after the
 server's timeout, and so is one your editor dismisses or disconnects from. The
 turn continues either way.
@@ -74,6 +80,7 @@ Options:
       --log-level string     stderr log level: debug, info, warn, error (default "info")
       --permission string    what happens before the agent runs a tool: auto_allow, ask, auto_deny, or key=verdict pairs (for example "execute=ask")
       --vault string         vault name or id to attach to each session's conversation
+      --workspace string     workspace name or id every session's conversation runs on, instead of a sandbox of its own
 ```
 
 ## `managoat agent create`
@@ -511,6 +518,7 @@ Options:
       --environment string         environment name or id to provision from, instead of the agent's own
   -p, --prompt string              prompt text (required)
       --vault string               vault name or id
+      --workspace string           workspace name or id to run on, beside the conversations already there
 ```
 
 ## `managoat sandbox list`
@@ -620,6 +628,90 @@ Show a vault
 
 ```
 managoat vault show <id-or-name>
+```
+
+## `managoat workspace create`
+
+Create a workspace and start setting up its machine
+
+Create a workspace and start setting up its machine at once: the
+environment's packages, repositories and setup script, with the vault's
+secrets overriding the environment's. The environment, vault and provider are
+fixed for the workspace's life.
+
+Without --wait the command returns as soon as the workspace exists, with
+status provisioning. With --wait it follows the setup and exits non-zero if it
+fails. Conversations can be launched into a workspace before it is ready;
+their first prompt waits for it.
+
+```
+managoat workspace create <name> [flags]
+```
+
+Options:
+
+```
+      --environment string   environment name or id the machine is set up from (required)
+      --json                 print the workspace as JSON
+      --provider string      sandbox provider: sprites or e2b (default: the instance's)
+      --timeout duration     how long --wait waits (default 30m0s)
+      --vault string         vault name or id whose secrets override the environment's
+      --wait                 wait until the workspace is ready, and fail if its setup fails
+```
+
+## `managoat workspace delete`
+
+Delete a workspace: terminate its conversations and destroy its machine
+
+Delete a workspace. Every live conversation in it is terminated (their
+transcripts are kept) and its machine is destroyed, with everything on its
+disk. It is not refused while conversations are running.
+
+```
+managoat workspace delete <id-or-name>
+```
+
+## `managoat workspace list`
+
+List workspaces
+
+```
+managoat workspace list [flags]
+```
+
+Options:
+
+```
+      --implicit   also list implicit workspaces, one per conversation launched without --workspace
+      --json       output JSON
+```
+
+## `managoat workspace show`
+
+Show a workspace and its machine
+
+```
+managoat workspace show <id-or-name> [flags]
+```
+
+Options:
+
+```
+      --json   output JSON
+```
+
+## `managoat workspace wait`
+
+Wait until a workspace is ready, and fail if its setup fails
+
+```
+managoat workspace wait <id-or-name> [flags]
+```
+
+Options:
+
+```
+      --timeout duration   how long to wait (default 30m0s)
 ```
 
 ## Global flags

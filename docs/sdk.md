@@ -371,10 +371,57 @@ at most 64 bytes and a value is at most 256 bytes. The
 [API reference](api.md#labels) has the limits, the sandbox rule and the ACP
 extension an agent stamps its own run with.
 
+## Workspaces
+
+A workspace is a machine you keep: set up once from an environment and a
+vault, then any number of runs launched into it, each in its own folder.
+`run` takes `workspace`, a name or id, and `cwd`.
+
+```ts
+const env = await managoat.environments.get("app");
+const ws = await managoat.workspaces.create({ name: "app-box", environment_id: env.id });
+await managoat.workspaces.waitForReady(ws.id);   // WorkspaceFailedError if its setup fails
+
+const [web, api] = await Promise.all([
+  managoat.run("Add a dark mode toggle", { agent: "web-dev", workspace: ws.id, cwd: "/home/sprite/app/web" }),
+  managoat.run("Add a theme endpoint", { agent: "api-dev", workspace: ws.id, cwd: "/home/sprite/app/api" }),
+]);
+
+await managoat.workspaces.gitStatus(ws.id, { path: "/home/sprite/app" });   // files, file, diff too
+await managoat.workspaces.delete(ws.id);   // terminates its conversations, destroys the machine
+```
+
+`create` takes the API's own names (`environment_id`, `vault_id`,
+`sandbox_provider`) and comes back `provisioning`. `waitForReady` reads the
+workspace until it is `ready`, retrying a 5xx, and throws
+`WorkspaceFailedError`, carrying the workspace and its `error`, when the setup
+failed. `list({ implicit: true })` adds each conversation's own implicit
+workspace.
+
+A run in a workspace that names a different `environment` or `vault` is a
+`ValidationError` with code `workspace_fixes_environment`. A sandbox's own key
+cannot use workspaces: every call is a 403, so a run started from inside a
+sandbox always gets a machine of its own.
+
+!!! warning "Runs in one workspace can read and influence each other"
+
+    They run as one user on one disk, so each can read the others' files and
+    tokens. Leave `workspace` out for a run that must be isolated.
+
+A workspace's machine has no lifetime limit, and Managoat does not cap how
+many you keep. Delete the ones you are done with. Read
+[About workspaces](concepts/workspaces.md) and
+[Run several agents on one machine](guides/agents-in-one-workspace.md).
+
+`events()` also carries a `workspace.status` frame, `{workspace_id, name,
+status, error}`, when one of your workspaces changes status, as it carries the
+`conversations` change notice, `{reason}`. Neither is a log event: tell them
+apart by their fields. Neither is replayed after a reconnect.
+
 ## Sandboxes
 
-A sandbox is the machine a conversation runs on, and every conversation has
-one of its own. The client reads them.
+A sandbox is the machine a conversation runs on. A conversation has one of
+its own unless it runs in a workspace. The client reads them.
 
 ```ts
 await managoat.sandboxes({ status: ["ready", "suspended"] });  // the list, with the conversation on each

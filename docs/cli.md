@@ -200,13 +200,55 @@ Its stored `data` remains available through `GET /api/conversations/:id/events`.
 
 ## Sandboxes
 
-A sandbox is the computer a conversation runs on. Every conversation gets a
-sandbox of its own, and the sandbox ends with it.
+A sandbox is the computer a conversation runs on. A conversation gets a
+sandbox of its own, which ends with it, unless you run it in a
+[workspace](#workspaces).
 
 ```bash
 managoat sandbox list [--json] [--status ready,suspended]
 managoat sandbox show <id>
 ```
+
+## Workspaces
+
+A workspace is a sandbox you keep: set up once from an environment, then any
+number of conversations run on it, each in its own folder.
+[Run several agents on one machine](guides/agents-in-one-workspace.md) walks
+through it.
+
+```bash
+managoat workspace create <name> --environment <id-or-name> [--vault <id-or-name>] [--provider sprites|e2b] [--wait] [--json]
+managoat workspace list [--implicit] [--json]
+managoat workspace show <id-or-name> [--json]
+managoat workspace wait <id-or-name> [--timeout 30m]
+managoat workspace delete <id-or-name>
+
+managoat run <agent> --workspace <id-or-name> --cwd /home/sprite/app -p "..."
+```
+
+`create` answers as soon as the workspace exists, with status
+`provisioning`, and Managoat sets its machine up in the background.
+`--wait`, or `workspace wait` later, follows the setup until it is `ready`,
+and exits non-zero with the failing step if it is `failed`. The environment,
+vault and provider are fixed for the workspace's life.
+
+`--workspace` on `run` and `acp` puts the conversation on the workspace's
+machine instead of a sandbox of its own. The workspace supplies the
+environment and vault, so leave out `--environment` and `--vault`. Pair it
+with `--cwd` to give each agent its own folder.
+
+`list` leaves out implicit workspaces, the one each conversation run without
+`--workspace` gets; `--implicit` shows them too. `show` prints the machine's
+state: its status, or that it is parked and the next prompt wakes it, or
+that it has none live and the next prompt builds one.
+
+`delete` terminates every conversation in the workspace, keeping their
+transcripts, and destroys the machine with its disk. It does not ask for
+confirmation. A workspace's machine has no lifetime limit, so delete the ones
+you are done with.
+
+Conversations in one workspace can read and change each other's files and
+tokens. Run without `--workspace` when a conversation must be isolated.
 
 ## Run an agent
 
@@ -215,6 +257,8 @@ managoat run <agent-name-or-id> -p "Audit the auth module"
 managoat run <agent-name-or-id> -p "Run the test suite" --vault staging-creds
 managoat run <agent-name-or-id> -p "Run the test suite" --environment staging
 managoat run <agent-name-or-id> -p "Run the approved plan" --client-request-id plan-7-step-1
+managoat run <agent-name-or-id> -p "Fix the API tests" --cwd /home/sprite/app/api
+managoat run <agent-name-or-id> -p "Fix the API tests" --workspace app-box --cwd /home/sprite/app/api
 ```
 
 For the full conversation creation API, pass a JSON object with wire names and
@@ -243,7 +287,14 @@ state.
 
 `--vault` layers a vault's secrets over the agent's environment, and the vault
 wins on a collision. `--environment` provisions from that environment, and not
-from the agent's own.
+from the agent's own. `--cwd` is the directory inside the sandbox the agent
+runs in: `/home/sprite` or a folder under it (for a gemini agent, also under
+`/tmp`), created if missing. `--workspace` runs the conversation on a
+[workspace](#workspaces)'s machine, which fixes the environment and vault.
+
+A turn that its machine cuts short exits non-zero: the lifetime ceiling
+parking a workspace's machine (`machine_parked`), or its machine being
+destroyed (`machine_destroyed`), for example by `managoat workspace delete`.
 
 ### Long-running turns
 
@@ -277,7 +328,7 @@ managoat conv stream <conversation-id>
 ## Editor integration (ACP)
 
 ```bash
-managoat acp --agent <name-or-id> [--vault <name-or-id>] [--environment <name-or-id>] [--log-level debug]
+managoat acp --agent <name-or-id> [--vault <name-or-id>] [--environment <name-or-id>] [--workspace <id-or-name>] [--cwd <dir>] [--log-level debug]
 ```
 
 This speaks the [Agent Client Protocol](https://agentclientprotocol.com) on

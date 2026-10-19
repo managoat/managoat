@@ -95,7 +95,9 @@ session on the sandbox's disk, and a suspended sandbox keeps its disk.
 **Nothing stops a busy sandbox.** A conversation that keeps its sandbox busy
 keeps it up. There is no ceiling on a continuous run by default. A
 self-hoster can set one with `SANDBOX_MAX_LIFETIME_HOURS`. When set, to cross
-it destroys the sandbox, and the disk goes with it. The stored
+it destroys the sandbox, and the disk goes with it. A
+[workspace](workspaces.md)'s machine is the exception: the ceiling interrupts
+its running turns and parks it, keeping the disk. The stored
 transcript survives and the conversation stays resumable. The next turn
 starts a fresh runtime session, so the agent answers without the earlier
 turns.
@@ -128,6 +130,15 @@ Conversation starts, one for each Conversation, and reclaims it on the rules
 above. `GET /api/sandboxes` lists them.
 Read [About sandboxes](sandboxes.md) and the
 [Sandboxes section](../api.md#sandboxes) of the API reference.
+
+**Not always alone on its machine.** A Conversation launched with a
+`workspace_id` runs on a [workspace](workspaces.md)'s machine, beside the
+others there, in its own working directory and config home. The workspace,
+not the Conversation, then decides when the machine ends: ending the
+Conversation leaves it for the others, and the max-lifetime ceiling parks it
+instead of destroying it. Conversations in one workspace can read and
+influence each other, so leave `workspace_id` out when a run must be
+isolated.
 
 ## When to use something else
 

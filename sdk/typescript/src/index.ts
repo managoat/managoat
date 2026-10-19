@@ -9,7 +9,7 @@ export {
 export { Run, type RunOptions } from "./run.ts";
 export { Conversation, type HistoryOptions, type SendOptions } from "./conversation.ts";
 export { HttpClient, type FetchLike, type RequestOptions } from "./http.ts";
-export { Agents, Connections, Environments, Vaults } from "./resources.ts";
+export { Agents, Connections, Environments, Vaults, Workspaces, type WaitForReadyOptions } from "./resources.ts";
 export {
   resolveConfig,
   conversationUrl,
@@ -32,6 +32,7 @@ export {
   ConnectionError,
   TimeoutError,
   ResolutionError,
+  WorkspaceFailedError,
   type ManagoatErrorCode,
   type FountainErrorCode,
 } from "./errors.ts";
@@ -74,6 +75,9 @@ export type {
   Vault,
   VaultInput,
   VaultSecretMetadataPatch,
+  Workspace,
+  WorkspaceInput,
+  WorkspaceStatusEvent,
 } from "./types.ts";
 
 import { Managoat } from "./client.ts";

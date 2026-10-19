@@ -142,7 +142,7 @@ each attempt.
 
 ## What Managoat does not have
 
-There is no fifth primitive. Two things look like one and are not.
+There is no fifth primitive. Three things look like one and are not.
 
 A **long-lived agent** is not an object. It is a Conversation that you keep,
 by its id or by a `channel_id` of your own.
@@ -152,6 +152,16 @@ Conversation starts, one for each Conversation, and it ends with that
 Conversation. You can list sandboxes and read one.
 Read [About sandboxes](concepts/sandboxes.md) and the
 [Sandboxes section](api.md#sandboxes) of the API reference.
+
+A **workspace** is a machine you keep. You create it from an Environment and
+a Vault, and then launch any number of Conversations into it, each in its own
+folder. It is something you create and delete, but it configures nothing: its
+Environment and Vault are two of the four, and the Agents that run there are
+a third. It changes only where a run happens. Every Conversation launched
+without one gets a workspace of its own, which is the sandbox above.
+Conversations in one workspace can read and influence each other, so it is
+also a choice to give up isolation. Read
+[About workspaces](concepts/workspaces.md).
 
 ## Where to go next
 

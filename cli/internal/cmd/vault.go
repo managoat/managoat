@@ -146,7 +146,7 @@ func vaultDelete(target string) error {
 		if api.StatusCode(err) == 404 {
 			Fatal("not found")
 		}
-		Fatal(err.Error())
+		Fatal(explainAPIError(err).Error())
 	}
 	fmt.Printf("deleted %s\n", id)
 	return nil

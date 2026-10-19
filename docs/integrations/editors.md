@@ -117,6 +117,22 @@ Use it when one agent config must run under several baselines. The same
 is one, still wins on a key collision. An agent can also restrict which
 environments can stand in for its own, with `allowed_environment_ids`.
 
+### Several entries on one machine
+
+`--workspace <id-or-name>` opens each conversation the entry starts on a
+[workspace](../concepts/workspaces.md)'s machine, and `--cwd` picks its folder
+there. Point a claude entry and a codex entry at one workspace, each with its
+own `--cwd`, and both agents work on the same checkout:
+
+```json
+"args": ["acp", "--agent", "web-dev", "--workspace", "app-box", "--cwd", "/home/sprite/app/web"]
+```
+
+The workspace supplies the environment and vault, so leave `--environment`
+and `--vault` out. Conversations in one workspace can read and change each
+other's files and tokens; an entry that must stay isolated leaves
+`--workspace` out.
+
 ### Approve a tool before it runs
 
 By default the agent runs a tool without a question. `--permission ask` puts

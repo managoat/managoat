@@ -55,6 +55,25 @@ plan allows more. Read
 [A conversation is stuck or failed](conversation-stuck-or-failed.md) and
 [Admin](../api.md#admin).
 
+## A workspace that failed to set up
+
+A [workspace](../concepts/workspaces.md) runs its environment's packages,
+repositories and setup script once, when it is created, with no conversation.
+So there is no transcript to read: the workspace's own `status` is `failed`
+and its `error` names the failing step and the end of what it printed,
+redacted. `managoat workspace show <name>` prints it, and
+`managoat workspace create --wait` exits with it.
+
+Nothing retries that setup on its own. The next prompt into any conversation
+in the workspace runs it again, and fails with it if it fails again. To change
+what failed, fix the environment and create a new workspace: a workspace's
+environment is fixed for its life.
+
+A workspace whose machine the provider lost keeps its conversations. The next
+prompt into any of them builds a new machine from the environment, and every
+conversation in the workspace moves to it, without its runtime session or
+anything on the old disk.
+
 ## Related
 
 - [A conversation is stuck or failed](conversation-stuck-or-failed.md).
