@@ -59,18 +59,32 @@ defmodule Fountain.Workspaces.SetupOutput do
   With every value of the workspace's environment and vault, and whatever a
   live conversation on the machine registered (`Workspaces.redaction_values/1`),
   read when the setup begins and again as each step begins, plus the setup
-  broker session's token once it exists (`add_values/1`). When the values
+  broker session's token once it exists (`add_values/1`), each with its
+  JSON-escaped form (`Redaction.with_escaped/1`), as the transcript has them.
+  **Values accumulate and are never forgotten**: the steps run under the
+  process env read when the setup began, so a value the owner rotates or
+  deletes mid-setup is still the one a later step prints. When the values
   cannot be read (the tenant key will not load), a step's output is
-  withheld: one line says so, and nothing it printed is kept or sent.
+  withheld: one line says so, and nothing it printed is kept or sent. A line
+  of a multi-line value shorter than `Redaction.min_length/0` (a PEM's short
+  last line) is not matched on its own, as for the transcript and `error`.
+
+  Terminal control sequences (ANSI escapes, other C0 controls but the tab)
+  are taken out of each line after redaction, so a script's colours neither
+  reach a client's terminal nor inflate what is stored.
 
   ## Bounds
+
+  Delivery is `Fountain.Workspaces.SetupPacer`'s, a process of the setup's
+  own, so a line held back by an interval goes out when the interval is up
+  even while the step's command is quiet.
 
     * **Kept:** the last 64 KiB of each step, in whole lines, and 256 KiB
       in all, the earliest step's earliest lines going first; each step says
       how many lines and bytes it lost (`omitted_lines`, `omitted_bytes`).
     * **Written:** the row is rewritten as each step begins and ends, at the
-      end, and while output flows at most every 5 s. A setup's lines reach
-      `GET /api/workspaces/:id/setup-log` within that.
+      end, and otherwise at most every 5 s while there is something new. A
+      setup's lines reach `GET /api/workspaces/:id/setup-log` within that.
     * **Sent:** at most one `output` event per 500 ms per setup, each with
       at most 16 KiB of lines: lines past that within one window are
       dropped from the event, oldest first, and counted in its
@@ -83,7 +97,9 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   Every event carries the `sandbox_id` of the machine its setup builds, and
   the first of each setup is `machine` starting: a client drops what it
-  showed and starts again. Each setup's writes are conditional on the row
+  showed and starts again. (An attempt taken over on the same row after its
+  builder died keeps that row's `sandbox_id`; its `machine` start still marks
+  it.) Each setup's writes are conditional on the row
   still being its own (`SetupLog`), so a setup that has been replaced writes
   nothing more.
 
@@ -93,9 +109,11 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   require Logger
 
+  alias Fountain.Conversations.Redaction
   alias Fountain.Conversations.Sandbox
   alias Fountain.Workspaces
   alias Fountain.Workspaces.SetupLog
+  alias Fountain.Workspaces.SetupPacer
 
   @key {__MODULE__, :setup}
 
@@ -174,7 +192,7 @@ defmodule Fountain.Workspaces.SetupOutput do
             started_at: DateTime.utc_now()
           })
 
-        Process.put(@key, state)
+        Process.put(@key, %{state | pacer: start_pacer(sandbox)})
         step(:machine)
       end
     end)
@@ -183,14 +201,13 @@ defmodule Fountain.Workspaces.SetupOutput do
   def begin(%Sandbox{}), do: :ok
 
   defp new_state(%Sandbox{} = sandbox) do
-    now = System.monotonic_time(:millisecond)
-
     refresh_values(%{
       workspace_id: sandbox.workspace_id,
       user_id: sandbox.user_id,
       sandbox: sandbox,
       sandbox_id: sandbox.id,
-      values: [],
+      withheld?: false,
+      seen: [],
       extra: [],
       pattern: nil,
       longest: 0,
@@ -198,12 +215,22 @@ defmodule Fountain.Workspaces.SetupOutput do
       pending: "",
       skipping?: false,
       total: 0,
-      ev: :queue.new(),
-      ev_bytes: 0,
-      ev_omitted: 0,
-      ev_at: now - event_interval_ms(),
-      db_at: now,
-      dirty?: false
+      fresh: {:queue.new(), 0, 0},
+      dirty?: false,
+      pacer: nil
+    })
+  end
+
+  defp start_pacer(%Sandbox{} = sandbox) do
+    SetupPacer.start(%{
+      owner: self(),
+      user_id: sandbox.user_id,
+      workspace_id: sandbox.workspace_id,
+      sandbox_id: sandbox.id,
+      event_interval_ms: event_interval_ms(),
+      event_bytes: @event_bytes,
+      flush_interval_ms: flush_interval_ms(),
+      render: &render/1
     })
   end
 
@@ -228,8 +255,8 @@ defmodule Fountain.Workspaces.SetupOutput do
         |> close_current("succeeded")
         |> refresh_values()
         |> open(name)
-        |> emit()
-        |> persist()
+        |> announce()
+        |> persist(now: true)
     end)
   end
 
@@ -243,7 +270,7 @@ defmodule Fountain.Workspaces.SetupOutput do
   def output(data) when is_binary(data) do
     update(fn
       %{steps: []} = s -> s
-      s -> s |> feed(data) |> maybe_emit() |> maybe_persist()
+      s -> s |> feed(data) |> deliver() |> persist()
     end)
   end
 
@@ -261,11 +288,11 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   @doc """
   A command of the running step has ended: what it left without a newline is
-  its last line (the next command's output starts a line of its own), and
-  what is held for the stream is sent now.
+  its last line, and the next command's output starts a line of its own. It
+  is paced like any other line.
   """
   @spec flush() :: :ok
-  def flush, do: update(fn s -> s |> end_line() |> emit_held() |> maybe_persist() end)
+  def flush, do: update(fn s -> s |> end_line() |> deliver() |> persist() end)
 
   @doc """
   The build's pipeline has answered: the running step ends `succeeded` or
@@ -278,12 +305,8 @@ defmodule Fountain.Workspaces.SetupOutput do
     update(fn s ->
       s = close_current(s, status)
 
-      SetupLog.put(s.workspace_id, s.sandbox_id,
-        status: status,
-        step: current_name(s),
-        steps: render(s),
-        finished_at: DateTime.utc_now()
-      )
+      :ok =
+        SetupPacer.finish(s.pacer, snapshot(s), status: status, finished_at: DateTime.utc_now())
 
       nil
     end)
@@ -321,10 +344,10 @@ defmodule Fountain.Workspaces.SetupOutput do
   defp close_current(%{steps: []} = s, _status), do: s
 
   defp close_current(%{steps: [%{status: "running"} | _]} = s, status) do
-    s = end_line(s)
+    s = s |> end_line() |> deliver()
     [current | earlier] = s.steps
     closed = %{current | status: status, finished_at: DateTime.utc_now()}
-    emit(%{s | steps: [closed | earlier], dirty?: true})
+    announce(%{s | steps: [closed | earlier], dirty?: true})
   end
 
   defp close_current(s, _status), do: s
@@ -361,7 +384,7 @@ defmodule Fountain.Workspaces.SetupOutput do
   # A line past `@max_pending` with no newline yet: its head is written now,
   # cut short of any value that lies across the cut, since the value's end is
   # not here to be matched.
-  defp overflow(%{values: :withheld} = s, _text), do: keep(s, :withheld)
+  defp overflow(%{withheld?: true} = s, _text), do: keep(s, :withheld)
 
   defp overflow(s, text) do
     if s.longest >= byte_size(text) - @max_line do
@@ -385,48 +408,55 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   # ── redaction ───────────────────────────────────────────────────────────
 
-  defp redact(%{values: :withheld}, _line), do: :withheld
+  defp redact(%{withheld?: true}, _line), do: :withheld
 
   defp redact(s, line) do
     redacted =
       case s.pattern do
-        nil ->
-          line
-
-        pattern ->
-          :binary.replace(line, pattern, Fountain.Conversations.Redaction.placeholder(), [:global])
+        nil -> line
+        pattern -> :binary.replace(line, pattern, Redaction.placeholder(), [:global])
       end
 
     {:line, display(redacted)}
   end
 
+  # ANSI escape sequences (CSI and OSC, and a lone escape), then every other
+  # C0 control but the tab, and DEL.
+  @ansi ~r/\e\[[0-?]*[ -\/]*[@-~]|\e\][^\a\e]*(?:\a|\e\\)?|\e[@-_]?/
+  @controls ~r/[\x00-\x08\x0b-\x1f\x7f]/
+
   # What a terminal would show of the line, as text: after its last carriage
-  # return, without NULs, valid UTF-8, at most `@max_line` bytes. Redacted
-  # before any of this, so no cut here can split a value.
+  # return, without control sequences, valid UTF-8, at most `@max_line`
+  # bytes. Redacted before any of this, so nothing here can split a value.
   defp display(line) do
     shown =
       line
       |> :binary.split("\r", [:global])
       |> Enum.reverse()
       |> Enum.find("", &(&1 != ""))
-      |> String.replace(<<0>>, "")
+      |> String.replace_invalid()
+      |> String.replace(@ansi, "")
+      |> String.replace(@controls, "")
 
     if byte_size(shown) > @max_line,
       do: String.replace_invalid(binary_part(shown, 0, @max_line)) <> " …",
-      else: String.replace_invalid(shown)
+      else: shown
   end
 
+  # The values as they are now, added to every value seen since the setup
+  # began: the steps run under the env read when it began, so a value
+  # rotated or deleted since is still one a step can print.
   defp refresh_values(s) do
     case Workspaces.redaction_values(s.sandbox) do
-      {:ok, values} -> compile(%{s | values: values})
-      :error -> %{s | values: :withheld, pattern: nil, longest: 0}
+      {:ok, values} -> compile(%{s | seen: Enum.uniq(s.seen ++ values)})
+      :error -> %{s | withheld?: true, pattern: nil, longest: 0}
     end
   end
 
-  defp compile(%{values: :withheld} = s), do: s
+  defp compile(%{withheld?: true} = s), do: s
 
   defp compile(s) do
-    case Enum.uniq(s.values ++ s.extra) do
+    case Redaction.with_escaped(Enum.uniq(s.seen ++ s.extra)) do
       [] ->
         %{s | pattern: nil, longest: 0}
 
@@ -454,7 +484,12 @@ defmodule Fountain.Workspaces.SetupOutput do
     current = %{current | lines: :queue.in(line, current.lines), bytes: current.bytes + size}
     {current, dropped} = trim_step(current, 0)
 
-    %{s | steps: [current | earlier], total: s.total + size - dropped, dirty?: true}
+    %{
+      s
+      | steps: [current | earlier],
+        total: s.total + size - dropped,
+        dirty?: true
+    }
     |> trim_total()
     |> hold(line, size)
   end
@@ -512,74 +547,58 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   # ── sending ─────────────────────────────────────────────────────────────
 
-  # Held for the next event, at most `@event_bytes`: past it the oldest held
-  # line is dropped from the event and counted.
-  defp hold(s, line, size),
-    do: trim_held(%{s | ev: :queue.in(line, s.ev), ev_bytes: s.ev_bytes + size})
-
-  defp trim_held(%{ev_bytes: bytes} = s) when bytes <= @event_bytes, do: s
-
-  defp trim_held(s) do
-    {{:value, line}, ev} = :queue.out(s.ev)
-
-    trim_held(%{
-      s
-      | ev: ev,
-        ev_bytes: s.ev_bytes - byte_size(line) - 1,
-        ev_omitted: s.ev_omitted + 1
-    })
+  # The lines kept since the last delivery, for the pacer: at most
+  # `@event_bytes`, the most an event carries, so one huge chunk is never one
+  # huge message; past it the oldest is dropped and counted.
+  defp hold(s, line, size) do
+    {fresh, bytes, omitted} = s.fresh
+    trim_fresh(%{s | fresh: {:queue.in(line, fresh), bytes + size, omitted}})
   end
 
-  defp maybe_emit(s) do
-    if not :queue.is_empty(s.ev) and
-         System.monotonic_time(:millisecond) - s.ev_at >= event_interval_ms(),
-       do: emit(s),
-       else: s
+  defp trim_fresh(%{fresh: {_, bytes, _}} = s) when bytes <= @event_bytes, do: s
+
+  defp trim_fresh(%{fresh: {fresh, bytes, omitted}} = s) do
+    {{:value, line}, fresh} = :queue.out(fresh)
+    trim_fresh(%{s | fresh: {fresh, bytes - byte_size(line) - 1, omitted + 1}})
   end
 
-  defp emit_held(s), do: if(:queue.is_empty(s.ev) and s.ev_omitted == 0, do: s, else: emit(s))
+  # Hand what was kept since the last delivery to the pacer, which sends it.
+  defp deliver(%{fresh: {fresh, _bytes, omitted}, steps: [current | _]} = s) do
+    if not :queue.is_empty(fresh) or omitted > 0,
+      do: SetupPacer.lines(s.pacer, current.step, :queue.to_list(fresh), omitted)
 
-  # One `workspace.setup` event: the running (or just ended) step, its status,
-  # and the lines held since the last event.
-  defp emit(%{steps: [current | _]} = s) do
-    Workspaces.publish_setup(s.user_id, %{
-      workspace_id: s.workspace_id,
-      sandbox_id: s.sandbox_id,
-      step: current.step,
-      status: current.status,
-      lines: :queue.to_list(s.ev),
-      omitted_lines: s.ev_omitted,
-      at: DateTime.utc_now()
-    })
-
-    %{
-      s
-      | ev: :queue.new(),
-        ev_bytes: 0,
-        ev_omitted: 0,
-        ev_at: System.monotonic_time(:millisecond)
-    }
+    %{s | fresh: no_fresh()}
   end
 
-  defp emit(s), do: s
+  defp deliver(s), do: s
+
+  # The running (or just ended) step's event: its start or its end.
+  defp announce(%{steps: [current | _]} = s) do
+    :ok = SetupPacer.boundary(s.pacer, current.step, current.status)
+    s
+  end
+
+  defp no_fresh, do: {:queue.new(), 0, 0}
 
   # ── writing ─────────────────────────────────────────────────────────────
 
-  defp maybe_persist(%{dirty?: false} = s), do: s
+  # The setup as it now stands, for the pacer to write: within its interval,
+  # or before this returns (`now: true`).
+  defp persist(s, opts \\ [])
+  defp persist(%{dirty?: false} = s, []), do: s
 
-  defp maybe_persist(s) do
-    if System.monotonic_time(:millisecond) - s.db_at >= flush_interval_ms(),
-      do: persist(s),
-      else: s
+  defp persist(s, opts) do
+    :ok = SetupPacer.persist(s.pacer, snapshot(s), opts)
+    %{s | dirty?: false}
   end
 
-  defp persist(s) do
-    :ok = SetupLog.put(s.workspace_id, s.sandbox_id, step: current_name(s), steps: render(s))
-    %{s | dirty?: false, db_at: System.monotonic_time(:millisecond)}
-  end
+  defp snapshot(s), do: %{step: current_name(s), steps: s.steps}
 
-  defp render(s) do
-    s.steps
+  # A snapshot as the row's columns; run by the pacer when it writes.
+  defp render(%{step: step, steps: steps}), do: [step: step, steps: render_steps(steps)]
+
+  defp render_steps(steps) do
+    steps
     |> Enum.reverse()
     |> Enum.map(fn step ->
       %{

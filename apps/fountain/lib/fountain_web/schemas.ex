@@ -367,9 +367,10 @@ defmodule FountainWeb.Schemas do
           "of one of the caller's explicit workspaces, as it runs. One is sent as each step " <>
           "starts (status running, no lines) and ends (succeeded or failed, with the lines " <>
           "held for it), and output in between at most every 500 ms, with at most 16 KiB " <>
-          "of lines each. Lines are whole, redacted like the transcript, and cut at 4 KiB. " <>
-          "Each setup's first frame is its machine step starting; sandbox_id says which " <>
-          "setup a frame is from. Sent live only, with no event id; " <>
+          "of lines each. Lines are whole, redacted like the transcript, without terminal " <>
+          "control codes, and cut at 4 KiB. " <>
+          "Each setup's first frame is its machine step starting; sandbox_id names the " <>
+          "machine it builds. Sent live only, with no event id; " <>
           "GET /api/workspaces/{id}/setup-log has the setup's kept output.",
       type: :object,
       properties: %{
@@ -377,7 +378,9 @@ defmodule FountainWeb.Schemas do
         sandbox_id: %Schema{
           type: :string,
           format: :uuid,
-          description: "The machine this setup builds: a new one for each setup."
+          description:
+            "The machine this setup builds, usually a new one for each setup. Each " <>
+              "setup's first frame is its machine step starting."
         },
         step: FountainWeb.Schemas.WorkspaceSetupStepName.step(),
         status: %Schema{type: :string, enum: Fountain.Workspaces.SetupLog.statuses()},

@@ -1128,8 +1128,13 @@ A PR sequence, each releasable alone:
   two chunks is matched whole, and each line of a multi-line value is
   matched too, as for the `error`; the redaction values are the
   environment's, the vault's and the live conversations' (re-read as each
-  step begins) plus the setup session's token, and output is withheld when
-  they cannot be read. The log is a row per workspace
+  step begins and accumulated, never forgotten, since the steps run under the
+  env the setup began with and a value rotated or deleted mid-setup is still
+  printable), each with its JSON-escaped form, plus the setup session's
+  token, and output is withheld when they cannot be read. Delivery (events
+  and row writes) is a paced process of the setup's own
+  (`Fountain.Workspaces.SetupPacer`), so a line held by an interval goes out
+  when it is up even while the step's command is quiet. The log is a row per workspace
   (`workspace_setup_logs`), not a file on the machine, so it outlives the
   machine; each setup replaces the previous one's, since the question is
   what built (or failed to build) the machine there is now, and one row keeps

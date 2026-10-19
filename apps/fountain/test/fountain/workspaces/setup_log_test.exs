@@ -163,6 +163,57 @@ defmodule Fountain.Workspaces.SetupLogTest do
       assert step(log(workspace), "setup_script")["output"] == "[REDACTED]\n"
     end
 
+    test "a value rotated mid-setup is still redacted: the steps run under the old one", ctx do
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:packages)
+        insert_vault_secret(ctx.vault, %{"key" => "API_SECRET", "value" => "rotated-value-98765"})
+        SetupOutput.step(:setup_script)
+        SetupOutput.output("old #{@secret} new rotated-value-98765\n")
+      end)
+
+      assert step(log(workspace), "setup_script")["output"] == "old [REDACTED] new [REDACTED]\n"
+    end
+
+    test "a value deleted mid-setup is still redacted", ctx do
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:packages)
+        Repo.delete_all(Fountain.Vaults.VaultSecret)
+        SetupOutput.step(:setup_script)
+        SetupOutput.output("echo: #{@secret}\n")
+      end)
+
+      assert step(log(workspace), "setup_script")["output"] == "echo: [REDACTED]\n"
+    end
+
+    test "a value's JSON-escaped form is redacted too", ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "QUOTED", "value" => ~s(pa"ss\\word-12345)})
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:setup_script)
+        SetupOutput.output(~s({"password": "pa\\"ss\\\\word-12345"}\n))
+      end)
+
+      output = step(log(workspace), "setup_script")["output"]
+      refute output =~ "word-12345"
+      assert output == ~s({"password": "[REDACTED]"}\n)
+    end
+
+    test "terminal control sequences are taken out", ctx do
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:packages)
+        SetupOutput.output("\e[1;32mok\e[0m\tdone\a\e]0;title\a\n")
+      end)
+
+      assert step(log(workspace), "packages")["output"] == "ok\tdone\n"
+    end
+
     test "with no tenant key the output is withheld, with a line saying so", ctx do
       {workspace, sandbox} = create!(ctx)
       stub(Fountain.Crypto, :load_tenant_key, fn _ -> {:error, :unavailable} end)
@@ -319,6 +370,57 @@ defmodule Fountain.Workspaces.SetupLogTest do
       assert length(lines) + omitted == 1_000
       assert List.last(lines) == line
     end
+
+    test "a command's end does not send its lines past the interval", ctx do
+      put_env(:setup_event_interval_ms, 60_000)
+      {_workspace, sandbox} = create!(ctx)
+      :ok = Workspaces.subscribe(ctx.user.id)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:packages)
+
+        for i <- 1..50 do
+          SetupOutput.output("command #{i}\n")
+          SetupOutput.flush()
+        end
+      end)
+
+      # The two step starts, the machine's end and the packages' end: the 50
+      # commands' lines all wait for the end, inside the interval.
+      assert [_, _, _, %{step: "packages", status: "succeeded", lines: lines}] = events()
+      assert length(lines) == 50
+    end
+
+    test "a line held by the intervals goes out once they are up, while the command is quiet",
+         ctx do
+      put_env(:setup_event_interval_ms, 200)
+      put_env(:setup_log_flush_ms, 200)
+      {workspace, sandbox} = create!(ctx)
+      :ok = Workspaces.subscribe(ctx.user.id)
+
+      :ok = SetupOutput.begin(sandbox)
+      :ok = SetupOutput.step(:packages)
+      :ok = SetupOutput.output("first\n")
+      # Both inside the intervals the step's start began: held.
+      :ok = SetupOutput.output("Downloading model…\n")
+
+      # No more output: the pacer sends and writes it when the intervals are up.
+      assert_receive {:workspace_setup, %{lines: ["first", "Downloading model…"]}}, 2_000
+
+      assert eventually(fn ->
+               step(log(workspace), "packages")["output"] =~ "Downloading model"
+             end)
+
+      :ok = SetupOutput.finish(:succeeded)
+    end
+  end
+
+  defp eventually(fun, tries \\ 50) do
+    cond do
+      fun.() -> true
+      tries == 0 -> false
+      true -> Process.sleep(20) && eventually(fun, tries - 1)
+    end
   end
 
   describe "the log" do
@@ -376,10 +478,22 @@ defmodule Fountain.Workspaces.SetupLogTest do
 
     test "a setup its deadline killed is settled failed with its machine", ctx do
       {workspace, sandbox} = create!(ctx)
-      :ok = SetupOutput.begin(sandbox)
-      :ok = SetupOutput.step(:setup_script)
-      # The task is killed here: nothing more comes from it.
-      Process.delete({SetupOutput, :setup})
+      test = self()
+
+      # The setup runs in a process of its own, killed mid-step.
+      setup =
+        spawn(fn ->
+          :ok = SetupOutput.begin(sandbox)
+          :ok = SetupOutput.step(:setup_script)
+          :ok = SetupOutput.output("half way\n")
+          send(test, :running)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :running
+      ref = Process.monitor(setup)
+      Process.exit(setup, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
 
       capture_log(fn ->
         Fountain.Machines.Machine.fail_provision(sandbox.id,

@@ -211,7 +211,15 @@ defmodule Fountain.Conversations.Redaction do
   # The form a value takes inside a line the ACP peer encoded with Jason. Only
   # a value that escapes adds one, and a value that is not UTF-8 cannot be in
   # a JSON string at all.
-  defp with_escaped(values) do
+  @doc """
+  `values` with each one's JSON-escaped form beside it, where that differs
+  (a value holding a quote, a backslash or a control character), longest
+  first: what output that prints a value inside JSON has to be matched with.
+  `patterns/1` is a conversation's; a workspace's setup log uses this for its
+  own values (`Fountain.Workspaces.SetupOutput`).
+  """
+  @spec with_escaped([String.t()]) :: [String.t()]
+  def with_escaped(values) do
     escaped =
       for value <- values,
           String.valid?(value),

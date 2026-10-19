@@ -923,17 +923,23 @@ While it runs, each step is a series of `workspace.setup` events on
 
 - One event as a step starts (`status: "running"`, no lines) and one as it
   ends (`succeeded` or `failed`, with any lines still held). A setup's first
-  event is its `machine` step starting; `sandbox_id`, the machine it builds,
-  is new for each setup, so a client clears what it showed when it changes.
+  event is its `machine` step starting, so a client clears what it showed
+  when that arrives. `sandbox_id` is the machine the setup builds; a new
+  setup usually builds a new one.
 - Output comes as **whole lines**, at most one event every 500 ms with at
   most 16 KiB of lines. Lines printed faster than that are left out of the
   event, oldest first, and counted in `omitted_lines`; they are still in the
-  log below. A line is cut at 4 KiB, and a progress bar shows its last state.
+  log below. A line held back by that interval is sent when it is up, even
+  if the script prints nothing more. A line is cut at 4 KiB, a progress bar
+  shows its last state, and terminal colour and control codes are taken out.
 - Lines are **redacted** like a transcript: every value of the environment
-  and vault, each line of a value that spans lines, and the setup's own
-  broker token are replaced with `[REDACTED]`. A value split across two
-  chunks of output is still redacted, because a line is redacted only once
-  it is whole. If Managoat cannot read the secrets, the step's output is
+  and vault (and its JSON-escaped form), each line of a value that spans
+  lines, and the setup's own broker token are replaced with `[REDACTED]`. A
+  value split across two chunks of output is still redacted, because a line
+  is redacted only once it is whole. A secret changed or deleted while the
+  setup runs is still redacted, since the setup's commands run with the value
+  they started with. A line of a multi-line value shorter than 8 bytes, such
+  as the last line of a PEM key, is not. If Managoat cannot read the secrets, the step's output is
   withheld and one line says so.
 - The events are live only, like `workspace.status`. A client that connects
   late reads `setup_step` on `GET /api/workspaces/{id}` and the log.
