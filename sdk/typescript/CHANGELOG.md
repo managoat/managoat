@@ -31,7 +31,7 @@ Release dates are the UTC day npm published the version.
 
 ---
 
-## [12.5.0] - 2026-10-19
+## [Unreleased]
 
 The next release is a major one. `managoat.events()` changes type, from
 `LogEvent` to `AccountEvent`, and its `workspace.status` and `conversations`
@@ -41,16 +41,8 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
 
 ### Added
 
-- `managoat.workspaces` (ADR 0097): `create`, `list` (`{ implicit: true }`
-  adds implicit ones), `get`, `delete`, `waitForReady` (throws
-  `WorkspaceFailedError` on a failed setup), and the four disk reads by
-  workspace, `files`, `file`, `gitStatus` and `diff`. Needs a server with
-  `/api/workspaces` (Managoat v0.37.0 or later).
-- `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
-- The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
-  workspace refusal codes on `ManagoatErrorCode`, `sandbox_provider_disabled`
-  among them. `insufficient_scope`, the code of every refusal for a key's
-  scope, joins them.
+- `sandbox_provider_disabled` and `insufficient_scope`, the code of every
+  refusal for a key's scope, on `ManagoatErrorCode`.
 - The `AccountEvent`, `AccountLogEvent` and `ConversationsChangedEvent` types.
 
 ### Changed
@@ -65,6 +57,21 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
 - A refusal for a key's scope is a `ManagoatError` with `code`
   `insufficient_scope` against a server that sends that code in `error`.
   Earlier servers put a sentence there, which became the `code`.
+
+---
+
+## [12.5.0] - 2026-10-19
+
+### Added
+
+- `managoat.workspaces` (ADR 0097): `create`, `list` (`{ implicit: true }`
+  adds implicit ones), `get`, `delete`, `waitForReady` (throws
+  `WorkspaceFailedError` on a failed setup), and the four disk reads by
+  workspace, `files`, `file`, `gitStatus` and `diff`. Needs a server with
+  `/api/workspaces` (Managoat v0.37.0 or later).
+- `run()` takes `workspace` (a name or id, sent as `workspace_id`) and `cwd`.
+- The `Workspace`, `WorkspaceInput` and `WorkspaceStatusEvent` types, and the
+  workspace refusal codes on `ManagoatErrorCode`.
 
 ---
 
