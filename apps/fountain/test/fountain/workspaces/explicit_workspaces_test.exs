@@ -78,6 +78,13 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       :ok
     end)
 
+    # The test broker is plain HTTP, where the relay is a no-op; its owner is
+    # what this records.
+    stub(Fountain.Broker.TransportRelay, :ensure, fn _handle, owner ->
+      send(test, {:relay, owner})
+      :ok
+    end)
+
     stub(Managoat.Sandbox, :exec, fn
       _handle, "bash", ["-c", _wrapper, "fountain-setup", script], opts ->
         send(test, {:setup_script, script, Keyword.get(opts, :env)})
@@ -244,11 +251,26 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
         assert {:ok, :provisioned, :set_up} = Provisioner.run(workspace.id, sandbox.id)
       end)
 
-      # The trust store and the floor first, then the env file, then the script.
-      assert_received :ca_install
+      # The trust store, the relay and the floor first, then the env file,
+      # then the script: in that order in the mailbox.
+      {:messages, messages} = Process.info(self(), :messages)
+
+      order =
+        Enum.flat_map(messages, fn
+          :ca_install -> [:ca]
+          {:relay, _owner} -> [:relay]
+          {:floor, _} -> [:floor]
+          {:write_file, "/home/sprite/.env"} -> [:env_file]
+          {:setup_script, _, _} -> [:script]
+          _ -> []
+        end)
+
+      assert order == [:ca, :relay, :floor, :env_file, :script]
+
+      assert_received {:relay, owner}
+      assert owner == workspace.id
       assert_received {:floor, [host]}
       assert host == Fountain.Broker.proxy_host()
-      assert_received {:write_file, "/home/sprite/.env"}
       assert_received {:setup_script, "make setup", env}
 
       env = Map.new(env)
@@ -315,6 +337,55 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert workspace_sessions(workspace.id) == []
     end
 
+    test "dates the machine's clock from the moment it is ready", ctx do
+      record_provider(self())
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+      old = DateTime.add(DateTime.utc_now(), -3600, :second) |> DateTime.truncate(:second)
+
+      {1, _} =
+        Repo.update_all(from(s in Sandbox, where: s.id == ^sandbox.id), set: [inserted_at: old])
+
+      capture_log(fn ->
+        {:ok, :provisioned, :set_up} = Provisioner.run(workspace.id, sandbox.id)
+      end)
+
+      ready = Repo.reload!(sandbox)
+      assert DateTime.diff(DateTime.utc_now(), ready.last_resumed_at) < 60
+      assert Fountain.Conversations.Lifecycle.clock_start(ready) == ready.last_resumed_at
+    end
+
+    test "past its deadline the machine is failed, the task stopped and the session released",
+         ctx do
+      test = self()
+      record_provider(test)
+      previous = Application.get_env(:fountain, :provision_deadline_ms)
+      Application.put_env(:fountain, :provision_deadline_ms, 500)
+      on_exit(fn -> restore_env(:provision_deadline_ms, previous) end)
+
+      stub(Provisioning, :run_setup_script, fn _handle, _env, _sprite_env, nil ->
+        send(test, :setting_up)
+        Process.sleep(:infinity)
+      end)
+
+      {:ok, workspace} = Workspaces.create_workspace(ctx.user.id, attrs(ctx))
+      sandbox = sandbox_of(workspace)
+      assert_receive :setting_up, 5_000
+
+      capture_log(fn ->
+        wait_until(fn -> Repo.reload!(sandbox).status == "failed" end)
+        wait_until(fn -> not Provisioner.running?(workspace.id) end)
+      end)
+
+      wait_until(fn -> workspace_sessions(workspace.id) == [] end)
+
+      assert %Workspace{
+               status: "failed",
+               error: "the provision did not finish within its deadline"
+             } =
+               Repo.reload!(workspace)
+    end
+
     test "start/2 runs it in the background, once per workspace", ctx do
       record_provider(self())
       {:ok, workspace} = Workspaces.create_workspace(ctx.user.id, attrs(ctx))
@@ -340,6 +411,49 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert error =~ "using [REDACTED] for apt"
       refute error =~ "s3cret-value-123"
       refute error =~ "et-value-123"
+    end
+
+    test "takes out each line of a value that spans lines", ctx do
+      key = "-----BEGIN KEY-----\nAAAAsecretline1AAAA\nBBBBsecretline2BBBB\n-----END KEY-----"
+      insert_vault_secret(ctx.vault, %{"key" => "DEPLOY_KEY", "value" => key})
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+
+      # The tail begins inside the value: its first line is the cut one.
+      tail = "secretline1AAAA\nBBBBsecretline2BBBB\n-----END KEY-----\nfailed"
+      error = Workspaces.describe_failure(sandbox, {:packages, 1, tail})
+
+      refute error =~ "secretline2"
+      refute error =~ "secretline1"
+      assert error =~ "failed"
+    end
+
+    test "says nothing it cannot redact when the tenant's key cannot be read", ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "API_SECRET", "value" => "s3cret-value-123"})
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+      stub(Fountain.Crypto, :load_tenant_key, fn _ -> {:error, :unavailable} end)
+
+      assert Workspaces.describe_failure(sandbox, {:packages, 1, "x\ns3cret-value-123"}) ==
+               "the sandbox could not be provisioned"
+    end
+
+    test "keeps a step's output out of the sandbox row and the audit trail", ctx do
+      record_provider(self())
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+
+      stub(Provisioning, :install_packages, fn _handle, _env, _sprite_env, nil ->
+        {:error, {:packages, 100, "first\nE: printed secret-ish output\n"}}
+      end)
+
+      capture_log(fn -> Provisioner.run(workspace.id, sandbox.id) end)
+
+      assert Repo.reload!(sandbox).transition_reason == "{:packages, 100}"
+
+      assert [event] = Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.provision_failed")
+      assert event.metadata["reason"] == "{:packages, 100}"
+      assert Repo.reload!(workspace).error =~ "printed secret-ish output"
     end
 
     test "the setup takes its own session token out of a failure before it is recorded", ctx do
@@ -572,7 +686,31 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert Repo.reload!(sandbox).status == "terminated"
       refute Repo.get(Workspace, workspace.id)
     end
+
+    test "stops a provision still running and destroys the machine it was building", ctx do
+      test = self()
+      record_provider(test)
+
+      stub(Provisioning, :run_setup_script, fn _handle, _env, _sprite_env, nil ->
+        send(test, :setting_up)
+        Process.sleep(:infinity)
+      end)
+
+      {:ok, workspace} = Workspaces.create_workspace(ctx.user.id, attrs(ctx))
+      sandbox = sandbox_of(workspace)
+      assert_receive :setting_up, 5_000
+
+      capture_log(fn -> {:ok, _} = Fountain.Accounts.Deletion.delete_user(ctx.user) end)
+
+      refute Provisioner.running?(workspace.id)
+      assert Repo.reload!(sandbox).status == "terminated"
+      refute Repo.get(Workspace, workspace.id)
+      assert workspace_sessions(workspace.id) == []
+    end
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:fountain, key)
+  defp restore_env(key, value), do: Application.put_env(:fountain, key, value)
 
   defp wait_until(fun, attempts \\ 100) do
     cond do

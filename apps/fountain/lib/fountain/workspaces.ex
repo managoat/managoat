@@ -128,9 +128,10 @@ defmodule Fountain.Workspaces do
   The workspace and its first sandbox are written in one commit, the
   sandbox inside the provider's fleet reservation, so a full fleet is the
   create's own `{:error, :fleet_full}` and leaves nothing behind. Under the
-  tenant's source lock, as environment and vault deletion take it: a
-  workspace naming one cannot be created while it is being deleted, and its
-  delete is refused while the workspace exists (`names_source?/3`).
+  tenant's source lock, as environment and vault deletion take it, so a
+  workspace naming one cannot be created while it is being deleted. Refusing
+  that delete while the workspace exists (`names_source?/3`) is ADR 0097
+  step 5b's; until then the foreign key nilifies it, as for an implicit one.
 
   Answers `{:ok, workspace}` with `status: "provisioning"`, once the
   provision is started (`Fountain.Workspaces.Provisioner`). Audits
@@ -139,6 +140,14 @@ defmodule Fountain.Workspaces do
   @spec create_workspace(Ecto.UUID.t(), map(), keyword()) ::
           {:ok, Workspace.t()} | {:error, term()}
   def create_workspace(user_id, attrs, opts \\ []) when is_binary(user_id) and is_map(attrs) do
+    # Its own commit, then an audit event and a task that reads it: neither
+    # may run inside a caller's transaction.
+    if Repo.in_transaction?(),
+      do: {:error, :provider_transaction_open},
+      else: do_create_workspace(user_id, attrs, opts)
+  end
+
+  defp do_create_workspace(user_id, attrs, opts) do
     with {:ok, provider} <- resolve_provider(attrs["sandbox_provider"]),
          {:ok, machine_name} <-
            Fountain.Conversations.mint_machine_name(provider, user_id, nil),
@@ -540,8 +549,9 @@ defmodule Fountain.Workspaces do
 
   @doc """
   Whether an explicit workspace of `user_id`'s names the environment or vault
-  `source_id`: the reason its delete is refused (ADR 0097, Data). Read inside
-  the delete's transaction, under the tenant lock `create_workspace/3` takes.
+  `source_id`: the reason its delete is to be refused (ADR 0097, Data). For
+  the delete's transaction to read under the tenant lock `create_workspace/3`
+  takes; nothing calls it before step 5b.
   """
   @spec names_source?(:environment | :vault, Ecto.UUID.t(), Ecto.UUID.t()) :: boolean()
   def names_source?(kind, source_id, user_id) when kind in [:environment, :vault] do
@@ -623,6 +633,7 @@ defmodule Fountain.Workspaces do
   def settle_provision(%Sandbox{}, _reason), do: :ok
 
   @error_limit 2_000
+  @unredactable "the sandbox could not be provisioned"
 
   @doc """
   The `error` a failed workspace carries: what `reason` says went wrong, in
@@ -639,14 +650,37 @@ defmodule Fountain.Workspaces do
   """
   @spec describe_failure(Sandbox.t(), term()) :: String.t()
   def describe_failure(%Sandbox{} = sandbox, reason) do
-    sandbox
-    |> Fountain.SandboxFiles.redaction_values()
-    |> redact(failure_words(reason))
-    |> String.slice(0, @error_limit)
+    case failure_values(sandbox) do
+      {:ok, values} -> values |> redact(failure_words(reason)) |> String.slice(0, @error_limit)
+      :error -> @unredactable
+    end
   rescue
     # Nothing to redact with is nothing safe to say.
-    _ -> "the sandbox could not be provisioned"
+    _ -> @unredactable
   end
+
+  # The values to take out, and each line of a value that spans lines (a PEM
+  # key, a JSON credential): a quoted tail may begin part-way through one, and
+  # its later lines would match no whole value. Refused when the tenant's key
+  # cannot be loaded, since then the values cannot be read either.
+  defp failure_values(%Sandbox{user_id: user_id} = sandbox) when is_binary(user_id) do
+    case Fountain.Crypto.load_tenant_key(user_id) do
+      {:ok, _dek} ->
+        values = Fountain.SandboxFiles.redaction_values(sandbox)
+
+        lines =
+          values
+          |> Enum.flat_map(&String.split(&1, ["\r\n", "\n"]))
+          |> Enum.filter(&(byte_size(&1) >= Fountain.Conversations.Redaction.min_length()))
+
+        {:ok, (values ++ lines) |> Enum.uniq() |> Enum.sort_by(&byte_size/1, :desc)}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp failure_values(%Sandbox{}), do: :error
 
   defp redact([], text), do: text
 

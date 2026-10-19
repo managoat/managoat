@@ -62,6 +62,26 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
     assert Task.await(task) == :ok
   end
 
+  test "the relay is the conversation's on its own machine and the workspace's on a shared one",
+       ctx do
+    test_pid = self()
+    stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
+
+    stub(Egress, :install_ca, fn _, _, _, owner ->
+      send(test_pid, {:relay_owner, owner})
+      :ok
+    end)
+
+    assert :ok = Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+    assert_received {:relay_owner, owner}
+    assert owner == ctx.conv.id
+
+    sandbox = explicit_workspace!(Repo.get!(Fountain.Conversations.Sandbox, ctx.conv.sandbox_id))
+    assert :ok = Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+    assert_received {:relay_owner, owner}
+    assert owner == sandbox.workspace_id
+  end
+
   test "the wake's skills get the conversation's env, after the CA", ctx do
     test_pid = self()
     stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)

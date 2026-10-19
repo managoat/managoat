@@ -156,7 +156,11 @@ defmodule Fountain.Workspaces.Network do
   @spec establish(t(), Managoat.Sandbox.Handle.t()) ::
           {:ok, t(), [{String.t(), String.t()}], [{String.t(), String.t()}]} | {:error, term()}
   def establish(%__MODULE__{} = net, handle) do
-    with :ok <- Provisioning.check_broker_support(handle.provider, nil),
+    # The brokered values as they are now: the machine has been created
+    # since `inputs/1` read them, and a secret written in between found no
+    # session for `refresh_live/3` to rewrite.
+    with {:ok, net} <- reread(net),
+         :ok <- Provisioning.check_broker_support(handle.provider, nil),
          {:ok, session} <-
            Broker.prepare_workspace(net.workspace_id, net.brokered, net.bindings,
              network: net.network,
@@ -164,7 +168,14 @@ defmodule Fountain.Workspaces.Network do
            ) do
       net = %{net | session: session}
 
-      case trust_and_floor(handle, net) do
+      try do
+        trust_and_floor(handle, net)
+      rescue
+        exception ->
+          release(net)
+          reraise exception, __STACKTRACE__
+      end
+      |> case do
         :ok ->
           {:ok, net, Broker.ca_env(Broker.system_ca_files()), Broker.proxy_env(session)}
 
@@ -172,6 +183,21 @@ defmodule Fountain.Workspaces.Network do
           release(net)
           error
       end
+    end
+  end
+
+  # A workspace its owner no longer holds (being deleted) is set up no
+  # further. One whose rows cannot be read again keeps what was read.
+  defp reread(%__MODULE__{workspace_id: workspace_id, user_id: user_id} = net) do
+    case Repo.one(from(w in Workspace, where: w.id == ^workspace_id and w.user_id == ^user_id)) do
+      nil ->
+        {:error, :workspace_gone}
+
+      %Workspace{} = workspace ->
+        case inputs(workspace) do
+          {:ok, %{network: fresh}} -> {:ok, fresh}
+          _unreadable -> {:ok, net}
+        end
     end
   end
 

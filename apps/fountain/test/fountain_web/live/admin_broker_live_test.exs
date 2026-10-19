@@ -240,6 +240,25 @@ defmodule FountainWeb.AdminBrokerLiveTest do
       assert html =~ "Nothing failed in this window."
     end
 
+    test "a workspace's setup session, which has no conversation, is listed as the workspace's",
+         %{conn: conn} do
+      admin = insert_admin()
+      tenant = insert_active_user()
+      workspace = insert_workspace(user_id: tenant.id, implicit: false, name: "work")
+
+      {:ok, _} =
+        Fountain.Broker.Native.Sessions.create_workspace(%{
+          workspace_id: workspace.id,
+          user_id: tenant.id,
+          rules: [],
+          meta: %{},
+          ttl_seconds: 600
+        })
+
+      {:ok, _lv, html} = conn |> login_user(admin) |> live(~p"/admin/broker")
+      assert html =~ "workspace " <> String.slice(workspace.id, 0, 8)
+    end
+
     test "the live-session table says when it is short of the true total", %{conn: conn} do
       admin = insert_admin()
       tenant = insert_active_user()

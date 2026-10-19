@@ -743,5 +743,10 @@ A PR sequence, each releasable alone:
   deletes the row once it has ended; one whose destroy is pending is swept
   later, ownerless. Account deletion stops the account's running provisions
   before it destroys their machines. The reaper's idle park of a ready
-  workspace with no conversations needed no change; its idle clock starts at
-  the sandbox's creation, so a slow setup's time counts toward the bound.
+  workspace with no conversations needed no change but its clock: the setup
+  dates its machine's `last_resumed_at` at the ready finalize, so the idle
+  bound (and the ceiling) run from the moment it is ready, not from its
+  creation. Failure text is kept out of the unredacted records: the sandbox's
+  `transition_reason`, the `sandbox.provision_failed` audit and the log line
+  carry a failing step and its exit code, not the output it quoted, on every
+  provision.

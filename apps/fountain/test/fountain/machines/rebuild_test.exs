@@ -279,7 +279,7 @@ defmodule Fountain.Machines.RebuildTest do
       }
 
       # The network is `Fountain.Workspaces.Network`'s to settle, and
-      # `workspace_provision_test.exs` drives it; here it is settled at once.
+      # `workspaces/explicit_workspaces_test.exs` drives it; here it is settled at once.
       network = %Fountain.Workspaces.Network{
         workspace_id: pending.workspace_id,
         user_id: ctx.user.id

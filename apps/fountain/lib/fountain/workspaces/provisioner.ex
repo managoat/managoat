@@ -35,10 +35,6 @@ defmodule Fountain.Workspaces.Provisioner do
 
   @registry Fountain.WorkspaceSetupRegistry
 
-  # How long the deadline's retire waits for the task's lease before it takes
-  # it anyway: the watchdog's own number.
-  @retire_wait_ms 5_000
-
   @doc """
   Start the provision of `workspace`'s machine behind `sandbox_id` in the
   background. Answers once the task is started; what it does is reported
@@ -91,6 +87,9 @@ defmodule Fountain.Workspaces.Provisioner do
       run(workspace_id, sandbox_id)
     after
       send(watchdog, :done)
+      # Whatever happened, the setup's session goes with it: the pipeline
+      # releases it too, but not when something raised before its steps ran.
+      Network.release(workspace_id)
     end
   end
 
@@ -111,7 +110,11 @@ defmodule Fountain.Workspaces.Provisioner do
 
       Machine.set_up(sandbox_id, setup,
         network: inputs.network,
-        actor: "system:workspace_setup"
+        actor: "system:workspace_setup",
+        # The machine's clock (the idle bound, the ceiling) starts when it is
+        # ready, not when its setup began (ADR 0097: a ready workspace with no
+        # conversations "is idle from the moment it is ready").
+        ready_attrs: fn -> [last_resumed_at: DateTime.utc_now() |> DateTime.truncate(:second)] end
       )
     else
       nil ->
@@ -150,7 +153,9 @@ defmodule Fountain.Workspaces.Provisioner do
       Machine.fail_provision(sandbox_id,
         actor: "system:workspace_setup",
         reason: :provision_deadline_exceeded,
-        busy_wait_ms: @retire_wait_ms,
+        # The watchdog's own wait, for its reason: the retire takes the lease
+        # from the task (`supersede:`), and the task has had its whole deadline.
+        busy_wait_ms: ProvisionWatchdog.retire_wait_ms(),
         supersede: task
       )
 

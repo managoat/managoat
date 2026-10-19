@@ -266,8 +266,10 @@ defmodule Fountain.Machines.Provision do
       `conversation_server_provision_retirement_test.exs` pins.
     * `:ready_attrs` — extra columns to write in the same statement that makes
       the row `ready`, written by compare-and-set so a superseded attempt
-      leaves none behind. Its one caller wrote `applied_skills` here until
-      the skills record moved to the conversation (ADR 0097 step 1).
+      leaves none behind, or a function returning them, called at the
+      finalize. Its one caller is an explicit workspace's setup, which dates
+      its machine's clock (`last_resumed_at`) from the moment it is ready
+      (ADR 0097 step 5: "idle from the moment it is ready").
     * `:conversation_id` — recorded in the audit metadata.
     * `:request_ip` — attribution, passed to the audit event.
     * `:busy_wait_ms` — the bound above. Tests shorten it; no call site does.
@@ -1103,8 +1105,12 @@ defmodule Fountain.Machines.Provision do
   # with the epoch in front of it.
   defp finalize(%Sandbox{} = sandbox, epoch, %{handle: handle, result: result}, opts) do
     attrs =
-      opts
-      |> Keyword.get(:ready_attrs, [])
+      case Keyword.get(opts, :ready_attrs, []) do
+        # Read at the finalize, for a value that is the moment the machine is
+        # ready (a workspace's setup dates its machine's clock from it).
+        fun when is_function(fun, 0) -> fun.()
+        list -> list
+      end
       |> Keyword.merge(status: "ready", transition: nil, transition_reason: nil)
 
     case Lease.cas_update(sandbox.id, epoch, attrs, refuse_fenced: true) do
@@ -1163,7 +1169,7 @@ defmodule Fountain.Machines.Provision do
     if reason in @foreign_owner do
       {:error, reason, result}
     else
-      Logger.error("machine #{sandbox.id}: provision step failed: #{inspect(reason)}")
+      Logger.error("machine #{sandbox.id}: provision step failed: #{reason_text(reason)}")
       _ = write_failed(sandbox, epoch, reason, opts)
       {:error, reason, result}
     end
@@ -1219,8 +1225,26 @@ defmodule Fountain.Machines.Provision do
   #
   # Truncated because a formatted `%Ecto.Changeset{}` or a provider body is
   # thousands of characters and this column is read by an operator, not parsed.
+  #
+  # **The reasons that quote what a step printed, or a URL a clone token can
+  # be written into, are recorded without it** (review of ADR 0097 step 5a):
+  # the column, the audit metadata and the log line are not redacted, and the
+  # output is the agent's environment's to print. The step and its exit code
+  # say what an operator needs; a workspace's redacted `error` and a
+  # conversation's transcript carry the output.
   defp reason_text(reason) when is_atom(reason), do: to_string(reason)
-  defp reason_text(reason), do: reason |> inspect() |> String.slice(0, 200)
+  defp reason_text(reason), do: reason |> without_output() |> inspect() |> String.slice(0, 200)
+
+  defp without_output({:packages, code, _tail}), do: {:packages, code}
+  defp without_output({:clone, _url, code}), do: {:clone, code}
+  defp without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
+  defp without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url
+  defp without_output({:clone_invalid_spec, _repo}), do: :clone_invalid_spec
+
+  defp without_output({:broker, :ca_install_exit, code, _out}),
+    do: {:broker, :ca_install_exit, code}
+
+  defp without_output(reason), do: reason
 
   # ── confirm ───────────────────────────────────────────────────────────────
 

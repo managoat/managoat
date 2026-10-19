@@ -33,11 +33,15 @@ defmodule Fountain.Broker.Native.Diagnostics do
     blocked = ms(Map.get(measurements, :client_write_in_flight))
 
     if pending > 0 and (idle >= @stall_ms or blocked >= @stall_ms) do
-      conv = get_in(meta, [:meta, "conversation_id"])
+      owner =
+        case get_in(meta, [:meta, "workspace_id"]) do
+          workspace when is_binary(workspace) -> "workspace #{workspace}"
+          _ -> "conv #{get_in(meta, [:meta, "conversation_id"]) || "?"}"
+        end
 
       # No URL, path, headers, body, raw error or wholesale session metadata.
       Logger.warning(
-        "broker: stalled transfer conv #{conv || "?"} connection #{meta.connection_id} " <>
+        "broker: stalled transfer #{owner} connection #{meta.connection_id} " <>
           "host #{meta.host}:#{meta.port} pending #{pending} upstream_idle_ms #{idle} " <>
           "client_write_blocked_ms #{blocked} upstream_bytes #{Map.get(measurements, :upstream_bytes, 0)}"
       )
