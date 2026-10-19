@@ -235,7 +235,7 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
     |> json_response(200)
 
     assert_received {:exec_args, ["/work/app/src" | rest]}
-    assert Enum.sort(rest) == Enum.sort(roots() ++ ["/work/app", "sandbox:/work/app"])
+    assert Enum.sort(rest) == Enum.sort(roots() ++ ["/work/app", "mount:/work/app"])
 
     reject(&Managoat.Sandbox.exec/4)
 

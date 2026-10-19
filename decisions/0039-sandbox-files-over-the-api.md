@@ -186,9 +186,9 @@ its files are all of theirs (decision 11).
     every live conversation on it; redaction already covers every
     conversation on the machine. On every machine, the repository mounts of
     its environment that `ConfigHome.eligible_mounts/1` keeps are roots too
-    (#2999), and every root but the home counts only where it physically is
-    its own name, or under the physical home (or `/tmp`, for one named
-    there). The `/api/sandboxes/:id` routes stay, and
+    (#2999), as far as the machine has a checkout there; every root but the
+    home counts only where it physically is its own name, or under the
+    physical home (or `/tmp`, for one named there). The `/api/sandboxes/:id` routes stay, and
     on such a machine read it the same way.
 
 ## Consequences

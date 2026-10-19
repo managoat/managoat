@@ -22,7 +22,7 @@ defmodule Fountain.SandboxFilesScriptTest do
   # caller reads — and keeps a deliberate `fatal:` out of the suite's output.
   defp run(kind, args, env \\ [], logical_roots \\ nil) do
     {flags, roots} = Enum.split(args, %{list: 1, read: 2, status: 3, diff: 4}[kind])
-    pairs = Enum.zip_with(roots, logical_roots || roots, &[&1, "sandbox:" <> &2])
+    pairs = Enum.zip_with(roots, logical_roots || roots, &[&1, tag(&2)])
     args = flags ++ List.flatten(pairs)
 
     System.cmd(
@@ -37,6 +37,11 @@ defmodule Fountain.SandboxFilesScriptTest do
   defp git_env do
     [{"GIT_CONFIG_GLOBAL", "/dev/null"}, {"GIT_CONFIG_SYSTEM", "/dev/null"}]
   end
+
+  # A logical root spelled `mount:/…` is passed as a repository mount, the
+  # way `path_roots/1` tags one; any other gets the plain `sandbox:` tag.
+  defp tag("mount:" <> _ = logical), do: logical
+  defp tag(logical), do: "sandbox:" <> logical
 
   defp physical!(dir) do
     {out, 0} = System.cmd("sh", ["-c", "cd -- \"$1\" && pwd -P", "sh", dir])
@@ -161,13 +166,15 @@ defmodule Fountain.SandboxFilesScriptTest do
       # hands the script a mount that is its own name.
       mount = Path.join(physical!(c.outside), "mount")
       File.mkdir_p!(Path.join(mount, "src"))
+      File.mkdir_p!(Path.join(mount, ".git"))
       File.write!(Path.join(mount, "src/app.txt"), "inside")
-      logical = ["/home/sprite", "/work/app"]
+      logical = ["/home/sprite", "mount:/work/app"]
 
       assert {"6\naW5zaWRl\n", 0} =
                run(:read, ["100", Path.join(mount, "src/app.txt"), c.root, mount], [], logical)
 
-      assert {"directory\t\tsrc\0", 0} = run(:list, [mount, c.root, mount], [], logical)
+      assert {"directory\t\t.git\0directory\t\tsrc\0", 0} =
+               run(:list, [mount, c.root, mount], [], logical)
 
       # Not past it: a sibling of the mount is outside every root.
       assert {"", 9} =
@@ -184,11 +191,12 @@ defmodule Fountain.SandboxFilesScriptTest do
       # The mount swapped for a link to somewhere else (another process on
       # the machine can make one): the read does not follow it there.
       real = Path.join(c.outside, "elsewhere")
-      File.mkdir_p!(real)
+      # A checkout, so only the link is what refuses it.
+      File.mkdir_p!(Path.join(real, ".git"))
       File.write!(Path.join(real, "secret.txt"), "outside")
       link = Path.join(c.outside, "mount")
       File.ln_s!(real, link)
-      logical = ["/home/sprite", "/work/app"]
+      logical = ["/home/sprite", "mount:/work/app"]
 
       assert {"", 9} =
                run(:read, ["100", Path.join(link, "secret.txt"), c.root, link], [], logical)
@@ -203,20 +211,32 @@ defmodule Fountain.SandboxFilesScriptTest do
       assert {"", 9} =
                run(:read, ["100", Path.join(via_parent, "secret.txt"), c.root, via_parent], [], [
                  "/home/sprite",
-                 "/work/elsewhere"
+                 "mount:/work/elsewhere"
                ])
+    end
+
+    test "a repository mount that is no checkout is no root; a working directory there is", c do
+      # The environment is read at each request: a mount added after the
+      # machine was set up names a directory nothing cloned to (`/opt`).
+      dir = Path.join(physical!(c.outside), "opt")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "a.txt"), "inside")
+      file = Path.join(dir, "a.txt")
+
+      assert {"", 9} = run(:read, ["100", file, c.root, dir], [], ["/home/sprite", "mount:/opt"])
+      assert {_encoded, 0} = run(:read, ["100", file, c.root, dir], [], ["/home/sprite", "/opt"])
     end
 
     test "with a home that does not resolve, a repository mount admits nothing either", c do
       mount = Path.join(physical!(c.outside), "mount")
-      File.mkdir_p!(mount)
+      File.mkdir_p!(Path.join(mount, ".git"))
       File.write!(Path.join(mount, "a.txt"), "inside")
       missing = Path.join(c.root, "no-such-home")
 
       assert {"", 9} =
                run(:read, ["100", Path.join(mount, "a.txt"), missing, mount], [], [
                  "/home/sprite",
-                 "/work/app"
+                 "mount:/work/app"
                ])
     end
 

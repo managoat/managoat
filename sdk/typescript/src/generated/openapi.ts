@@ -2341,7 +2341,7 @@ export interface components {
             channel_id?: string | null;
             /** @description Your own name for the first prompt. Ignored when the request carries no `prompt`. An immediate `channel_id` resume does not deliver the prompt; send the value with it on the prompts route.Managoat stores it on the turn the prompt opens and sends it on that turn's `started` stage event, beside the `turn_id`, so a client can bind its work item to the exact turn without inferring it from turn order. Use the event to find a candidate turn and the turn itself to confirm it: the event's copy has been through event redaction, and the turn's is what you sent. It is a correlation and not an idempotency key: a second prompt with the same value opens a second turn that carries it too. Make it unique within the conversation. */
             client_request_id?: string | null;
-            /** @description The working directory the agent runs in, inside the sandbox: an absolute path under /home/sprite (or under /tmp for a gemini agent), or under the mount_path of a repository of the environment the launch runs with (the workspace's, with workspace_id), outside /home/sprite/.managoat. A mount_path that is /, the home or one of its ancestors, inside /home/sprite/.managoat, or in a system tree (/etc, /proc, /usr, /var and the like) widens nothing. Created if missing, and fixed for the conversation's life. Omitted or null runs the runtime's default (/home/sprite for claude, codex and acp, /tmp/gemini-workspace for gemini). Anything else is refused with 422 validation_failed and errors.cwd. On a channel_id resume it must name the directory the resumed conversation runs in, or be omitted. */
+            /** @description The working directory the agent runs in, inside the sandbox: an absolute path under /home/sprite (or under /tmp for a gemini agent), or under the mount_path of a repository of the environment the launch runs with (the workspace's, with workspace_id), outside /home/sprite/.managoat. A mount_path that is /, the home or one of its ancestors, inside /home/sprite/.managoat, under another home in /home, or in a system tree (/etc, /proc, /usr, /var and the like) widens nothing. Created if missing, and fixed for the conversation's life. Omitted or null runs the runtime's default (/home/sprite for claude, codex and acp, /tmp/gemini-workspace for gemini). Anything else is refused with 422 validation_failed and errors.cwd. On a channel_id resume it must name the directory the resumed conversation runs in, or be omitted. */
             cwd?: string | null;
             /**
              * Format: uuid
@@ -2953,7 +2953,7 @@ export interface components {
         };
         /** Repository */
         Repository: {
-            /** @description Absolute path in the sandbox the repository is cloned to. A conversation launched with this environment may name it, or a directory under it, as its cwd, and the sandbox and workspace file reads may read under it, unless it is /, the home or an ancestor of it, inside /home/sprite/.managoat, or in a system tree (/etc, /proc, /usr, /var and the like). */
+            /** @description Absolute path in the sandbox the repository is cloned to. A conversation launched with this environment may name it, or a directory under it, as its cwd, and the sandbox and workspace file reads may read under it, unless it is /, the home or an ancestor of it, inside /home/sprite/.managoat, under another home in /home, or in a system tree (/etc, /proc, /usr, /var and the like). The file reads count it only where the sandbox has a checkout there. */
             mount_path: string;
             /** @description Optional branch or tag to clone (`git clone -b`). Without it the default branch is cloned. */
             ref?: string;
@@ -9172,7 +9172,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.diff": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, under another home in `/home`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
                 /** @description Diff the index (`--cached`). */
                 staged?: boolean;
@@ -9275,7 +9275,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.show": {
         parameters: {
             query: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, under another home in `/home`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path: string;
                 /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
                 max_bytes?: number;
@@ -9374,7 +9374,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.index": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, under another home in `/home`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
             };
             header?: never;
@@ -9471,7 +9471,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.git_status": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite`, that directory and the repository mounts of the sandbox's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, under another home in `/home`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
                 /** @description What to do about untracked paths: collapse an untracked directory to one entry (`normal`), list every file under it (`all`), or leave them out (`no`). */
                 untracked?: "normal" | "all" | "no";
@@ -11104,7 +11104,7 @@ export interface operations {
     "FountainWeb.WorkspaceFilesController.diff": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. */
                 path?: string;
                 /** @description Diff the index. */
                 staged?: boolean;
@@ -11207,7 +11207,7 @@ export interface operations {
     "FountainWeb.WorkspaceFilesController.show": {
         parameters: {
             query: {
-                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. */
                 path: string;
                 /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
                 max_bytes?: number;
@@ -11306,7 +11306,7 @@ export interface operations {
     "FountainWeb.WorkspaceFilesController.index": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. */
                 path?: string;
             };
             header?: never;
@@ -11403,7 +11403,7 @@ export interface operations {
     "FountainWeb.WorkspaceFilesController.git_status": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite`, the working directory of every live conversation in the workspace, and the repository mounts of the workspace's environment (each `mount_path`, unless it is `/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine has a checkout there): anything else is `422 path_outside_sandbox`. */
                 path?: string;
                 /** @description Collapse an untracked directory to one entry (`normal`), list every file under it (`all`), or leave them out (`no`). */
                 untracked?: "normal" | "all" | "no";

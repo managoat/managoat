@@ -57,7 +57,9 @@ defmodule Fountain.Conversations.ConfigHome do
   # root, whatever an environment names: the kernel's views, devices, the
   # system's configuration and binaries, root's home and runtime state. An
   # environment may still clone there; it only does not widen the rule.
-  @system_trees ~w(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /root /run /sbin /snap /sys /usr /var)
+  # `/.sprite` is the Sprites runtime's own; another user's home under `/home`
+  # is refused by `eligible_mount?/1` beside these.
+  @system_trees ~w(/.sprite /bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /nix /proc /root /run /sbin /snap /sys /usr /var)
 
   @doc "The config home a conversation launched now gets: its own, by id."
   @spec for_launch(String.t()) :: String.t()
@@ -103,7 +105,8 @@ defmodule Fountain.Conversations.ConfigHome do
   Each is normalised (`.` and `..` resolved, no trailing slash), and kept
   only when it is absolute, free of control characters, not `/`, neither in
   nor around `/home/sprite/.managoat` (so never the home or an ancestor of
-  it), and not in a system tree (`/etc`, `/proc`, `/usr`, `/var` and the
+  it), not under another user's home in `/home`, and not in a system tree
+  (`/etc`, `/proc`, `/usr`, `/var` and the
   like). A mount refused here is still cloned; it is only no root.
   """
   @spec eligible_mounts([String.t()] | nil) :: [String.t()]
@@ -122,7 +125,8 @@ defmodule Fountain.Conversations.ConfigHome do
 
   defp eligible_mount?(mount) do
     not under?(mount, managoat_dir()) and not under?(managoat_dir(), mount) and
-      not Enum.any?(@system_trees, &under?(mount, &1))
+      not Enum.any?(@system_trees, &under?(mount, &1)) and
+      (under?(mount, @image_home) or not under?(mount, "/home"))
   end
 
   @doc """
@@ -250,16 +254,55 @@ defmodule Fountain.Conversations.ConfigHome do
   end
 
   defp make_directories(handle, conv) do
-    script = "mkdir -p -- #{quote_shell(home(conv))} #{quote_shell(cwd(conv))}"
+    args = [home(conv), cwd(conv), managoat_dir()]
 
     case Managoat.Sandbox.Retry.with_backoff(
-           fn -> Managoat.Sandbox.exec(handle, "bash", ["-c", script], timeout: 15_000) end,
+           fn ->
+             Managoat.Sandbox.exec(
+               handle,
+               "bash",
+               ["-c", directories_script(), "fountain-dirs" | args],
+               timeout: 15_000
+             )
+           end,
            label: "conversation directories"
          ) do
       {:ok, _out, 0} -> :ok
+      {:ok, _out, 7} -> {:error, {:conversation_directories, :cwd_inside_config_homes}}
       {:ok, _out, code} -> {:error, {:conversation_directories, {:exit, code}}}
       {:error, reason} -> {:error, {:conversation_directories, reason}}
     end
+  end
+
+  @doc false
+  # The script `ensure/2` runs, for the suite. `validate_cwd/3` refuses a cwd
+  # inside the config homes by name only; a repository mount (or an ancestor
+  # of it) that something on the machine replaced with a symlink into them
+  # would put this conversation's agent in another's config home. So the
+  # nearest existing ancestor of the cwd is resolved physically before
+  # anything is created there, and the cwd itself after, and either inside
+  # the physical config-homes directory is exit 7. Paths are positional
+  # parameters, never interpolated.
+  @spec directories_script() :: String.t()
+  def directories_script do
+    ~S"""
+    home=$1
+    cwd=$2
+    managoat=$3
+    inside() {
+      p=$(cd -- "$1" 2>/dev/null && pwd -P && printf '.') || exit 1
+      p=${p%$'\n.'}
+      case $p in "$m"|"$m"/*) exit 7 ;; esac
+    }
+    mkdir -p -- "$managoat" "$home" || exit 1
+    m=$(cd -- "$managoat" && pwd -P && printf '.') || exit 1
+    m=${m%$'\n.'}
+    d=$cwd
+    while [ ! -e "$d" ] && [ "$d" != / ]; do d=$(dirname -- "$d"); done
+    inside "$d"
+    mkdir -p -- "$cwd" || exit 1
+    inside "$cwd"
+    """
   end
 
   @doc """

@@ -180,17 +180,29 @@ defmodule Fountain.SandboxFiles do
   Either way, also each repository mount of the environment the machine was
   provisioned from (the workspace's), as far as
   `Fountain.Conversations.ConfigHome.eligible_mounts/1` keeps it (#2999).
+  The environment is read at each request, so the scripts admit a mount only
+  where it is a checkout on the machine (it has a `.git`): a mount added
+  after the machine was set up names nothing that was cloned.
   The home is always first: the scripts treat the first root as the home.
   """
   @spec roots(Sandbox.t()) :: [String.t()]
-  def roots(%Sandbox{} = sandbox) do
+  def roots(%Sandbox{} = sandbox), do: sandbox |> tagged_roots() |> Enum.map(&elem(&1, 0))
+
+  # Each root with how the scripts are told of it: a repository mount is
+  # tagged so the script admits it only where it is a checkout. A mount that
+  # is also a working directory or the home counts as that, untagged.
+  defp tagged_roots(%Sandbox{} = sandbox) do
     working =
       case Fountain.Workspaces.machine_kind(sandbox) do
         :explicit -> live_cwds(sandbox)
         :implicit -> [cwd(sandbox)]
       end
 
-    Enum.uniq([@home | working] ++ mount_roots(sandbox))
+    Enum.uniq_by(
+      Enum.map([@home | working], &{&1, "sandbox:"}) ++
+        Enum.map(mount_roots(sandbox), &{&1, "mount:"}),
+      &elem(&1, 0)
+    )
   end
 
   # ownership: the caller fetched `sandbox` tenant-scoped, and the
@@ -573,8 +585,9 @@ defmodule Fountain.SandboxFiles do
 
   # Pair each mapped host root with its sandbox spelling. The tag keeps
   # run/3 from mapping that spelling too; both remain literal argv values.
+  # A repository mount's tag is `mount:` (see `physical_root_script/0`).
   defp path_roots(sandbox),
-    do: Enum.flat_map(roots(sandbox), &[&1, "sandbox:" <> &1])
+    do: Enum.flat_map(tagged_roots(sandbox), fn {root, tag} -> [root, tag <> root] end)
 
   defp map_path(handle, "/" <> _ = path), do: Managoat.Sandbox.host_path(handle, path)
   defp map_path(_handle, other), do: other
@@ -678,7 +691,10 @@ defmodule Fountain.SandboxFiles do
     first=1
     while [ "$#" -ge 2 ]; do
       named=$1
-      logical=${2#sandbox:}
+      case $2 in
+        mount:*) mount=1; logical=${2#mount:} ;;
+        *) mount=; logical=${2#sandbox:} ;;
+      esac
       shift 2
       if r=$(cd -- "$named" 2>/dev/null && pwd -P && printf '.'); then
         r=${r%$'\n.'}
@@ -702,6 +718,11 @@ defmodule Fountain.SandboxFiles do
       elif [ -z "$r" ] || [ -z "$home" ]; then
         # With no home, no other root counts either: the home that did not
         # resolve may be the one a working directory was checked against.
+        continue
+      elif [ -n "$mount" ] && [ ! -e "$r/.git" ]; then
+        # A repository mount is a root only once it is a checkout: the
+        # environment is read as it is now, and a mount added to it after
+        # the machine was set up names a directory nothing cloned to.
         continue
       elif [ "$r" != "$named" ]; then
         case $logical in

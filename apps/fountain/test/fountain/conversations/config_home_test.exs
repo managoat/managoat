@@ -116,6 +116,10 @@ defmodule Fountain.Conversations.ConfigHomeTest do
             "/var/www",
             "/root/app",
             "/run/x",
+            "/home/spriteish",
+            "/home/other/app",
+            "/.sprite/bin",
+            "/nix/store",
             "/work/../etc",
             "/home/sprite/../../etc",
             "relative/app",
@@ -130,8 +134,8 @@ defmodule Fountain.Conversations.ConfigHomeTest do
     end
 
     test "a prefix of a system tree's name is not that tree" do
-      assert ConfigHome.eligible_mounts(["/etcetera", "/variant", "/home/spriteish"]) ==
-               ["/etcetera", "/variant", "/home/spriteish"]
+      assert ConfigHome.eligible_mounts(["/etcetera", "/variant", "/opt/app", "/tmp/repo"]) ==
+               ["/etcetera", "/variant", "/opt/app", "/tmp/repo"]
     end
   end
 
@@ -195,9 +199,17 @@ defmodule Fountain.Conversations.ConfigHomeTest do
   end
 
   describe "ensure/2" do
-    test "creates the launch's cwd and the config home in one exec" do
-      expect(Managoat.Sandbox, :exec, fn @handle, "bash", ["-c", script], _opts ->
-        assert script == "mkdir -p -- '#{@home}' '/home/sprite/it'\\''s'"
+    test "creates the launch's cwd and the config home in one exec, paths as arguments" do
+      expect(Managoat.Sandbox, :exec, fn @handle, "bash", ["-c", script | args], _opts ->
+        assert script == ConfigHome.directories_script()
+
+        assert args == [
+                 "fountain-dirs",
+                 @home,
+                 "/home/sprite/it's",
+                 "/home/sprite/.managoat"
+               ]
+
         {:ok, "", 0}
       end)
 
@@ -205,9 +217,63 @@ defmodule Fountain.Conversations.ConfigHomeTest do
                ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/home/sprite/it's"}))
     end
 
+    test "a cwd that physically lies in the config homes is refused, as exit 7" do
+      expect(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "", 7} end)
+
+      assert {:error, {:conversation_directories, :cwd_inside_config_homes}} =
+               ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
+    end
+
     test "costs nothing for the runtime's default cwd" do
       reject(&Managoat.Sandbox.exec/4)
       assert :ok = ConfigHome.ensure(@handle, conv(%{config_home: @home}))
+    end
+  end
+
+  # The script itself, by a real bash (#2999): a repository mount someone
+  # replaced with a symlink into the config homes does not put the agent in
+  # another conversation's config home.
+  describe "directories_script/0" do
+    setup do
+      dir = Fountain.TmpDir.mkdir!("config-home-dirs")
+      managoat = Path.join(dir, "home/.managoat")
+      %{dir: dir, managoat: managoat, home: Path.join(managoat, "c/#{@id}")}
+    end
+
+    defp dirs(c, cwd) do
+      {_out, code} =
+        System.cmd("bash", [
+          "-c",
+          ConfigHome.directories_script(),
+          "fountain-dirs",
+          c.home,
+          cwd,
+          c.managoat
+        ])
+
+      code
+    end
+
+    test "creates both directories", c do
+      cwd = Path.join(c.dir, "work/app/sub")
+      assert dirs(c, cwd) == 0
+      assert File.dir?(cwd)
+      assert File.dir?(c.home)
+    end
+
+    test "a cwd through a symlink into the config homes is exit 7, and creates nothing there",
+         c do
+      other = Path.join(c.managoat, "c/other")
+      File.mkdir_p!(other)
+      File.ln_s!(Path.join(c.managoat, "c"), Path.join(c.dir, "work"))
+
+      # The directory exists already.
+      assert dirs(c, Path.join(c.dir, "work/other")) == 7
+      # Or would be created under the link.
+      assert dirs(c, Path.join(c.dir, "work/other/new")) == 7
+      refute File.exists?(Path.join(other, "new"))
+      assert dirs(c, Path.join(c.dir, "work/fresh/deeper")) == 7
+      refute File.exists?(Path.join(c.managoat, "c/fresh"))
     end
   end
 

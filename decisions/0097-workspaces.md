@@ -853,9 +853,15 @@ A PR sequence, each releasable alone:
   resolves: the agent's, the one it names, or the workspace's. Only an
   eligible mount counts: normalised, not `/`, neither inside nor around
   `/home/sprite/.managoat` (so never the home or an ancestor), and outside
-  the system trees (`/bin`, `/boot`, `/dev`, `/etc`, `/lib*`, `/proc`,
-  `/root`, `/run`, `/sbin`, `/snap`, `/sys`, `/usr`, `/var`). The same mounts,
-  read from the machine's environment, are file-read roots on every machine.
+  another home in `/home` and the system trees (`/.sprite`, `/bin`, `/boot`,
+  `/dev`, `/etc`, `/lib*`, `/nix`, `/proc`, `/root`, `/run`, `/sbin`, `/snap`,
+  `/sys`, `/usr`, `/var`). The same mounts are file-read roots on every
+  machine. They are read from the machine's environment at each request, so
+  a mount counts as a read root only where the machine has a checkout (a
+  `.git`): a mount added after setup names nothing cloned. The directories
+  script refuses (exit 7) a `cwd` whose nearest existing ancestor, or which
+  itself, physically lies in the config homes, since the name check cannot
+  see a mount someone replaced with a symlink into them.
   The shell check now admits a root other than the home where it physically
   is its own name, or physically under the home, or under `/tmp` for one
   named there; with no resolvable home it admits nothing, `/tmp` roots

@@ -39,7 +39,8 @@ defmodule FountainWeb.WorkspaceFilesController do
         "the working directory of every live conversation in the workspace, and the " <>
         "repository mounts of the workspace's environment (each `mount_path`, unless it is " <>
         "`/`, the home or an ancestor of it, inside `/home/sprite/.managoat`, or in a " <>
-        "system tree such as `/etc`, `/proc`, `/usr` or `/var`): anything else is " <>
+        "system tree such as `/etc`, `/proc`, `/usr` or `/var`, and only where the machine " <>
+        "has a checkout there): anything else is " <>
         "`422 path_outside_sandbox`."
   ]
 
