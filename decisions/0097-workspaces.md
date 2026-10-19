@@ -977,3 +977,13 @@ A PR sequence, each releasable alone:
     its machine now reports it too.
   - A turn on a machine lost again inside the ten-minute window fails with
     `reason: "machine_lost"`, retryable, with the spawn's words as `detail`.
+- 2026-10-19 — A wake into a workspace whose provider has since been disabled
+  gets the workspace's advice (#3004), as `POST /api/workspaces` does since
+  #3003: set the provider's credentials, or create a workspace on another
+  provider. It used to get the agent-override advice, which a workspace does
+  not read. A parked machine is still kept for the provider's return, and a
+  lost one is not rebuilt on the disabled provider: the wake refuses it
+  before the succession, so nothing moves and the conversation stays as it
+  was. A background wake's `wake` `failed` stage now carries the advice as
+  `advice` (not `message`, which the SDK's `run()` would show in place of the
+  reason code).

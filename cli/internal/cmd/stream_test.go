@@ -286,3 +286,10 @@ func TestWakeFailureEndsUnrunPrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestWakeFailureShowsItsAdvice(t *testing.T) {
+	terminal, err := handleStageEvent(map[string]any{"stage": "wake", "state": "failed", "data": `{"reason":"sandbox_provider_disabled","retryable":false,"advice":"this workspace runs on it"}`})
+	if !terminal || err == nil || !strings.Contains(err.Error(), "sandbox_provider_disabled") || !strings.HasSuffix(err.Error(), "— this workspace runs on it") {
+		t.Fatalf("terminal=%v err=%v", terminal, err)
+	}
+}

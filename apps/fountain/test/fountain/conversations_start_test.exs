@@ -49,7 +49,8 @@ defmodule Fountain.ConversationsStartTest do
 
       conv = insert_conversation(user_id: user.id, agent: agent, sandbox: sandbox, status: "idle")
 
-      assert {:error, {:sandbox_provider_disabled, :e2b}} =
+      # The conversation's own parked sandbox, not the agent's override (#3004).
+      assert {:error, {:sandbox_provider_disabled, :e2b, :sandbox}} =
                Wake.wake_conversation(conv.id)
 
       assert Repo.reload(sandbox).status == "suspended"

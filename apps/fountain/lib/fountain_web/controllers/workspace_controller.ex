@@ -112,10 +112,7 @@ defmodule FountainWeb.WorkspaceController do
         |> put_status(:unprocessable_entity)
         |> json(%{
           error: "sandbox_provider_disabled",
-          message:
-            "sandbox provider #{provider} is not configured on this instance — set its " <>
-              "credentials, or create the workspace with another sandbox_provider, or " <>
-              "without one for the instance default"
+          message: Fountain.SandboxProviders.disabled_message(provider, :workspace_create)
         })
 
       error ->
