@@ -994,6 +994,36 @@ defmodule Fountain.Conversations.ConversationServerTest do
       assert_received {:destroyed, "test-sprite"}
     end
 
+    test "a step's failure quoting its output reaches the provision stage without it", %{
+      conv: conv
+    } do
+      # A cut tail may begin part-way through a value that redaction would no
+      # longer recognise, so the stage metadata carries the step and its code
+      # only; the transcript has the output (#3009 review).
+      stub_happy_sprite()
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :install_packages, fn _s, _e, _se, _c ->
+        {:error, {:setup_exit, 1, "cret-tail-fragment-0987\nmore output"}}
+      end)
+
+      {_pid, ref, _} = start_server(conv)
+      assert_stopped(ref)
+
+      failed =
+        conv.id
+        |> Conversations._unsafe_list_log_events()
+        |> Enum.filter(&(&1.kind == "stage" and &1.stage == "provision" and &1.state == "failed"))
+
+      assert [_ | _] = failed
+
+      for event <- failed do
+        refute inspect(event) =~ "cret-tail-fragment"
+        refute inspect(event) =~ "more output"
+      end
+
+      assert Enum.any?(failed, &(inspect(&1) =~ "{:setup_exit, 1}"))
+    end
+
     test "a runtime that fails to prepare marks the sandbox failed", %{
       conv: conv,
       sandbox: sandbox

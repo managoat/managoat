@@ -263,13 +263,16 @@ defmodule Fountain.Conversations.FreshProvision do
   # would not create it. The row is the protocol's to fail where it claimed
   # one, and this server's where it never got that far.
   defp provision_could_not_start(state, conv, sandbox, reason) do
-    Logger.error("provision could not start: #{inspect(reason)}")
+    Logger.error(
+      "provision could not start: #{inspect(Fountain.Machines.Provision.without_output(reason))}"
+    )
+
     ConversationServer.fail_machine(sandbox.id, :provision_could_not_start, conv.id)
     announce_failed_provision(state, conv, reason)
   end
 
   defp announce_failed_provision(state, _conv, reason) do
-    ActorStatus.fail(state, %{reason: inspect(reason)})
+    ActorStatus.fail(state, %{reason: inspect(Fountain.Machines.Provision.without_output(reason))})
 
     {:stop, :normal, state}
   end

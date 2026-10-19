@@ -129,7 +129,8 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   @withheld "[Managoat: this step's output is withheld: the secrets to redact it with " <>
               "could not be read]"
-  @long_withheld "[Managoat: a line too long to redact safely was dropped]"
+  @long_withheld "[Managoat: a line was dropped: it ran past 64 KiB with no newline, " <>
+                   "and its end was not here to redact it against]"
 
   @typedoc "A setup step's name."
   @type step ::
@@ -181,6 +182,10 @@ defmodule Fountain.Workspaces.SetupOutput do
     safely(fn ->
       if Workspaces.machine_kind(sandbox) == :explicit do
         state = new_state(sandbox)
+        # With the sandbox, what names this setup's row: an attempt taken
+        # over on the same row (its builder died) keeps the row's sandbox_id,
+        # and the dead one's last writes must not land on the new one's.
+        started_at = DateTime.utc_now()
 
         :ok =
           SetupLog.begin(%{
@@ -189,10 +194,10 @@ defmodule Fountain.Workspaces.SetupOutput do
             sandbox_id: sandbox.id,
             step: nil,
             steps: [],
-            started_at: DateTime.utc_now()
+            started_at: started_at
           })
 
-        Process.put(@key, %{state | pacer: start_pacer(sandbox)})
+        Process.put(@key, %{state | pacer: start_pacer(sandbox, started_at)})
         step(:machine)
       end
     end)
@@ -221,12 +226,13 @@ defmodule Fountain.Workspaces.SetupOutput do
     })
   end
 
-  defp start_pacer(%Sandbox{} = sandbox) do
+  defp start_pacer(%Sandbox{} = sandbox, started_at) do
     SetupPacer.start(%{
       owner: self(),
       user_id: sandbox.user_id,
       workspace_id: sandbox.workspace_id,
       sandbox_id: sandbox.id,
+      started_at: started_at,
       event_interval_ms: event_interval_ms(),
       event_bytes: @event_bytes,
       flush_interval_ms: flush_interval_ms(),
@@ -445,6 +451,16 @@ defmodule Fountain.Workspaces.SetupOutput do
     |> Enum.find("", &(&1 != ""))
     |> strip()
   end
+
+  @doc """
+  `text`, line by line, as a terminal shows it: each line after its last
+  carriage return, valid UTF-8, without control sequences. What a step's
+  quoted tail goes through before it is redacted into a workspace's `error`,
+  as a setup log's lines do.
+  """
+  @spec clean_lines(binary()) :: String.t()
+  def clean_lines(text) when is_binary(text),
+    do: text |> :binary.split("\n", [:global]) |> Enum.map_join("\n", &clean/1)
 
   defp strip(text) do
     text

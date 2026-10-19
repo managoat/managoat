@@ -564,6 +564,44 @@ defmodule Fountain.Workspaces.SetupLogTest do
       assert step(log, "setup_script")["finished_at"]
     end
 
+    test "a dead attempt's last write never lands on the attempt that took its row over",
+         ctx do
+      put_env(:setup_log_flush_ms, 60_000)
+      {workspace, sandbox} = create!(ctx)
+      test = self()
+
+      # The first attempt holds a line, unwritten, when it dies.
+      old =
+        spawn(fn ->
+          :ok = SetupOutput.begin(sandbox)
+          :ok = SetupOutput.step(:packages)
+          :ok = SetupOutput.output("old attempt\n")
+          send(test, :running)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :running
+
+      # A second attempt takes the same row over (its builder restarted).
+      :ok = SetupOutput.begin(sandbox)
+      :ok = SetupOutput.step(:setup_script)
+
+      ref = Process.monitor(old)
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+      # Time for the old pacer to try its write.
+      Process.sleep(100)
+
+      :ok = SetupOutput.output("new attempt\n")
+      :ok = SetupOutput.finish(:succeeded)
+
+      log = log(workspace)
+      assert %SetupLog{status: "succeeded"} = log
+      assert Enum.map(log.steps, & &1["step"]) == ["machine", "setup_script"]
+      assert step(log, "setup_script")["output"] == "new attempt\n"
+      refute Enum.any?(log.steps, &(&1["output"] =~ "old attempt"))
+    end
+
     test "a collector dropped by a fault stops its pacer", ctx do
       {_workspace, sandbox} = create!(ctx)
       :ok = SetupOutput.begin(sandbox)

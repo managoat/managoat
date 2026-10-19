@@ -48,6 +48,7 @@ defmodule Fountain.Workspaces.SetupPacer do
         user_id: opts.user_id,
         workspace_id: opts.workspace_id,
         sandbox_id: opts.sandbox_id,
+        attempt: {opts.sandbox_id, opts.started_at},
         event_interval: opts.event_interval_ms,
         event_bytes: opts.event_bytes,
         flush_interval: opts.flush_interval_ms,
@@ -182,7 +183,7 @@ defmodule Fountain.Workspaces.SetupPacer do
     # Its process is gone, so the setup failed. Written even when its deadline
     # has already closed the row (which it does before the kill), so the
     # lines it held, the ones a hung setup's reader wants, are not lost.
-    if s.pending, do: SetupLog.abandoned(s.workspace_id, s.sandbox_id, s.render.(s.pending))
+    if s.pending, do: SetupLog.abandoned(s.workspace_id, s.attempt, s.render.(s.pending))
 
     :stop
   end
@@ -291,7 +292,7 @@ defmodule Fountain.Workspaces.SetupPacer do
         snapshot -> s.render.(snapshot) ++ final
       end
 
-    :ok = SetupLog.put(s.workspace_id, s.sandbox_id, set)
+    :ok = SetupLog.put(s.workspace_id, s.attempt, set)
     %{s | pending: nil, db_at: now()}
   end
 

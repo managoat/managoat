@@ -1552,17 +1552,25 @@ defmodule Fountain.Machines.Provision do
   defp reason_text(reason) when is_atom(reason), do: to_string(reason)
   defp reason_text(reason), do: reason |> without_output() |> inspect() |> String.slice(0, 200)
 
-  defp without_output({:packages, code, _tail}), do: {:packages, code}
-  defp without_output({:setup_exit, code, _tail}), do: {:setup_exit, code}
-  defp without_output({:clone, _url, code}), do: {:clone, code}
-  defp without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
-  defp without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url
-  defp without_output({:clone_invalid_spec, _repo}), do: :clone_invalid_spec
+  @doc """
+  `reason` without what a step printed or a URL a clone token can be written
+  into: what a record that is not redacted line by line carries (the row,
+  the audit, a log line, a conversation's `provision` stage metadata). The
+  output itself is in the transcript, or a workspace's redacted `error`.
+  """
+  @spec without_output(term()) :: term()
 
-  defp without_output({:broker, :ca_install_exit, code, _out}),
+  def without_output({:packages, code, _tail}), do: {:packages, code}
+  def without_output({:setup_exit, code, _tail}), do: {:setup_exit, code}
+  def without_output({:clone, _url, code}), do: {:clone, code}
+  def without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
+  def without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url
+  def without_output({:clone_invalid_spec, _repo}), do: :clone_invalid_spec
+
+  def without_output({:broker, :ca_install_exit, code, _out}),
     do: {:broker, :ca_install_exit, code}
 
-  defp without_output(reason), do: reason
+  def without_output(reason), do: reason
 
   # ── confirm ───────────────────────────────────────────────────────────────
 

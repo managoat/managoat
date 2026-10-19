@@ -486,6 +486,18 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert event.metadata["reason"] == "{:setup_exit, 1}"
     end
 
+    test "a failed setup's quoted output is cleaned before it is redacted", ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "API_SECRET", "value" => "s3cret-value-123"})
+      record_provider(self(), 1, "token \e[31ms3cret-\e[0mvalue-123\n50%\rdone\n")
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+
+      capture_log(fn -> Provisioner.run(workspace.id, sandbox.id) end)
+
+      assert Repo.reload!(workspace).error ==
+               "the environment's setup script exited 1:\ntoken [REDACTED]\ndone"
+    end
+
     test "a long failed setup keeps its words and the end of its output", ctx do
       output = Enum.map_join(1..400, &"line #{&1}\n") <> "the last line\n"
       record_provider(self(), 2, output)

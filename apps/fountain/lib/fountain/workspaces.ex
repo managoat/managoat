@@ -1255,7 +1255,9 @@ defmodule Fountain.Workspaces do
         tail
       end
 
-    case String.trim_trailing(text) do
+    # Cleaned before it is redacted, never after, so a value split by a
+    # colour code or a NUL is matched (as a setup log's lines are).
+    case text |> Fountain.Workspaces.SetupOutput.clean_lines() |> String.trim_trailing() do
       "" -> ""
       text -> ":\n" <> text
     end

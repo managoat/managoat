@@ -42,6 +42,12 @@ defmodule Fountain.Workspaces.SetupLog do
   @typedoc "A setup's log as stored."
   @type t :: %__MODULE__{}
 
+  @typedoc """
+  One setup: the machine it builds and when it began. Two setups of the same
+  row (one taken over after its builder died) differ by their start.
+  """
+  @type attempt :: {Ecto.UUID.t(), DateTime.t()}
+
   schema "workspace_setup_logs" do
     field :user_id, :binary_id
     field :sandbox_id, :binary_id
@@ -116,14 +122,16 @@ defmodule Fountain.Workspaces.SetupLog do
 
   @doc false
   # The running setup's row, as it now stands: written only while the row is
-  # still this setup's and still `running`.
-  @spec put(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok
-  def put(workspace_id, sandbox_id, set) do
+  # still this setup's (its sandbox and its start: an attempt taken over on
+  # the same row keeps the sandbox) and still `running`.
+  @spec put(Ecto.UUID.t(), attempt(), keyword()) :: :ok
+  def put(workspace_id, {sandbox_id, started_at}, set) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     from(l in __MODULE__,
       where:
-        l.workspace_id == ^workspace_id and l.sandbox_id == ^sandbox_id and l.status == "running"
+        l.workspace_id == ^workspace_id and l.sandbox_id == ^sandbox_id and
+          l.started_at == ^started_at and l.status == "running"
     )
     |> Repo.update_all(set: Keyword.put(set, :updated_at, now))
 
@@ -142,8 +150,8 @@ defmodule Fountain.Workspaces.SetupLog do
   # its pacer, with its running step and itself `failed`. Written whether or
   # not the row was closed already (a deadline closes it before the kill),
   # but only while the row is still this setup's and not one that succeeded.
-  @spec abandoned(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok
-  def abandoned(workspace_id, sandbox_id, set) do
+  @spec abandoned(Ecto.UUID.t(), attempt(), keyword()) :: :ok
+  def abandoned(workspace_id, {sandbox_id, started_at}, set) do
     now = DateTime.utc_now()
 
     steps =
@@ -163,7 +171,7 @@ defmodule Fountain.Workspaces.SetupLog do
     from(l in __MODULE__,
       where:
         l.workspace_id == ^workspace_id and l.sandbox_id == ^sandbox_id and
-          l.status != "succeeded",
+          l.started_at == ^started_at and l.status != "succeeded",
       update: [
         set: [
           status: "failed",
