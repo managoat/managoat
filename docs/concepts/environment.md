@@ -105,6 +105,12 @@ secrets. [Configure the runtimes from the setup](workspaces.md#configure-the-run
 has the rules: which files Managoat's win over, which are merged, and what is
 not copied.
 
+The script runs in a bash login shell, so the sandbox's profile has already set
+`PATH` and the image's own variables, such as `NVM_DIR` on Sprites. What the
+profile prints on stderr while it loads, its own errors included, is not part
+of the setup log. The `packages` and repository steps run their commands the
+same way.
+
 The setup step ends when the script exits. A process the script starts in the
 background, such as a dev server, keeps running, but what it prints after the
 script exits is not in the setup log. Redirect its output to a file if you
