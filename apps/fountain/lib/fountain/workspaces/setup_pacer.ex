@@ -93,6 +93,16 @@ defmodule Fountain.Workspaces.SetupPacer do
     :ok
   end
 
+  @doc """
+  Stop the pacer at once, writing nothing more: its collector was dropped
+  (a fault in it, or a later setup in the same process).
+  """
+  @spec stop(pid()) :: :ok
+  def stop(pacer) do
+    Process.exit(pacer, :kill)
+    :ok
+  end
+
   @doc "The setup's end: its last state is written, and the pacer stops."
   @spec finish(pid(), term(), keyword()) :: :ok
   def finish(pacer, snapshot, final), do: call(pacer, {:finish, snapshot, final})
@@ -159,13 +169,21 @@ defmodule Fountain.Workspaces.SetupPacer do
     :stop
   end
 
-  defp on(:emit_due, s), do: {:cont, emit_held(%{s | ev_timer?: false})}
+  # Checked again: a step's start or end may have sent an event since the
+  # timer was set.
+  defp on(:emit_due, s), do: {:cont, maybe_emit(%{s | ev_timer?: false})}
   defp on(:write_due, s), do: {:cont, write(%{s | db_timer?: false}, [])}
 
   # The setup's process ended without finishing (killed): what it held is
   # written, and nothing more comes.
   defp on({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = s) do
-    _ = s |> emit_held() |> write([])
+    s = emit_held(s)
+
+    # Its process is gone, so the setup failed. Written even when its deadline
+    # has already closed the row (which it does before the kill), so the
+    # lines it held, the ones a hung setup's reader wants, are not lost.
+    if s.pending, do: SetupLog.abandoned(s.workspace_id, s.sandbox_id, s.render.(s.pending))
+
     :stop
   end
 

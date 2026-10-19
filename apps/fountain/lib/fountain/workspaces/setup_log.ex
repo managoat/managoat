@@ -137,49 +137,93 @@ defmodule Fountain.Workspaces.SetupLog do
       :ok
   end
 
+  @doc false
+  # A setup whose process died without finishing: its last state, written by
+  # its pacer, with its running step and itself `failed`. Written whether or
+  # not the row was closed already (a deadline closes it before the kill),
+  # but only while the row is still this setup's and not one that succeeded.
+  @spec abandoned(Ecto.UUID.t(), Ecto.UUID.t(), keyword()) :: :ok
+  def abandoned(workspace_id, sandbox_id, set) do
+    now = DateTime.utc_now()
+
+    steps =
+      set
+      |> Keyword.get(:steps, [])
+      |> Enum.map(fn
+        %{"status" => "running"} = step ->
+          %{step | "status" => "failed", "finished_at" => DateTime.to_iso8601(now)}
+
+        step ->
+          step
+      end)
+
+    step = Keyword.get(set, :step)
+    updated_at = DateTime.truncate(now, :second)
+
+    from(l in __MODULE__,
+      where:
+        l.workspace_id == ^workspace_id and l.sandbox_id == ^sandbox_id and
+          l.status != "succeeded",
+      update: [
+        set: [
+          status: "failed",
+          step: ^step,
+          steps: ^steps,
+          finished_at: fragment("coalesce(?, ?)", l.finished_at, ^now),
+          updated_at: ^updated_at
+        ]
+      ]
+    )
+    |> Repo.update_all([])
+
+    :ok
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning(
+        "workspace #{workspace_id}: setup log not written: #{Exception.message(error)}"
+      )
+
+      :ok
+  end
+
   @doc """
   Settle a setup that is still `running` once its machine has settled from
   outside it (`Fountain.Workspaces.settle_provision/2`): a deadline that
   killed it, or the reaper failing a row nobody is building. Its running
   step is marked `failed` too. A setup that settled itself, or a row that is
-  another setup's, is left alone.
+  another setup's, is left alone. One statement, so a write of the setup's
+  own landing at the same moment is never overwritten with older steps.
   """
   @spec close_running(Ecto.UUID.t(), Ecto.UUID.t(), String.t()) :: :ok
   def close_running(workspace_id, sandbox_id, status) when status in ["succeeded", "failed"] do
-    query =
-      from(l in __MODULE__,
-        where:
-          l.workspace_id == ^workspace_id and l.sandbox_id == ^sandbox_id and
-            l.status == "running"
-      )
+    now = DateTime.utc_now()
 
-    case Repo.one(query) do
-      %__MODULE__{steps: steps} ->
-        now = DateTime.utc_now()
+    Repo.query!(
+      """
+      UPDATE workspace_setup_logs
+         SET status = $3,
+             finished_at = $4,
+             updated_at = $5,
+             steps = ARRAY(
+               SELECT CASE WHEN e->>'status' = 'running'
+                           THEN e || jsonb_build_object('status', $7::text, 'finished_at', $6::text)
+                           ELSE e END
+                 FROM unnest(steps) WITH ORDINALITY AS t(e, i)
+                ORDER BY i)
+       WHERE workspace_id = $1 AND sandbox_id = $2 AND status = 'running'
+      """,
+      [
+        Ecto.UUID.dump!(workspace_id),
+        Ecto.UUID.dump!(sandbox_id),
+        status,
+        now,
+        DateTime.truncate(now, :second),
+        DateTime.to_iso8601(now),
+        status
+      ]
+    )
 
-        steps =
-          Enum.map(steps, fn
-            %{"status" => "running"} = step ->
-              %{step | "status" => status, "finished_at" => DateTime.to_iso8601(now)}
-
-            step ->
-              step
-          end)
-
-        Repo.update_all(query,
-          set: [
-            status: status,
-            steps: steps,
-            finished_at: now,
-            updated_at: DateTime.truncate(now, :second)
-          ]
-        )
-
-        :ok
-
-      nil ->
-        :ok
-    end
+    :ok
   rescue
     error in [Postgrex.Error, DBConnection.ConnectionError] ->
       Logger.warning(

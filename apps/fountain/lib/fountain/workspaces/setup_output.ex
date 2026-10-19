@@ -176,7 +176,7 @@ defmodule Fountain.Workspaces.SetupOutput do
       when is_binary(workspace_id) and is_binary(user_id) do
     # A collector this process left behind (a build that raised past its
     # `finish/1`) is not this setup's.
-    Process.delete(@key)
+    drop()
 
     safely(fn ->
       if Workspaces.machine_kind(sandbox) == :explicit do
@@ -387,10 +387,12 @@ defmodule Fountain.Workspaces.SetupOutput do
   defp overflow(%{withheld?: true} = s, _text), do: keep(s, :withheld)
 
   defp overflow(s, text) do
+    text = clean(text)
+
     if s.longest >= byte_size(text) - @max_line do
       keep(s, {:line, @long_withheld})
     else
-      keep(s, redact(s, binary_part(text, 0, cut_at(s, text, @max_line))))
+      keep(s, redact_clean(s, binary_part(text, 0, cut_at(s, text, @max_line))))
     end
   end
 
@@ -408,16 +410,24 @@ defmodule Fountain.Workspaces.SetupOutput do
 
   # ── redaction ───────────────────────────────────────────────────────────
 
+  # The order is the point: the line is cleaned (`clean/1`), then redacted,
+  # then cut. Cleaning deletes bytes from inside the line, so redacting first
+  # would let a value split by a colour code or a NUL, which matches nothing
+  # raw, come out whole once cleaned. The cut keeps a contiguous slice of the
+  # redacted text, which cannot rebuild anything.
   defp redact(%{withheld?: true}, _line), do: :withheld
+  defp redact(s, line), do: redact_clean(s, clean(line))
 
-  defp redact(s, line) do
+  defp redact_clean(s, text) do
     redacted =
       case s.pattern do
-        nil -> line
-        pattern -> :binary.replace(line, pattern, Redaction.placeholder(), [:global])
+        nil -> text
+        pattern -> :binary.replace(text, pattern, Redaction.placeholder(), [:global])
       end
 
-    {:line, display(redacted)}
+    if byte_size(redacted) > @max_line,
+      do: {:line, String.replace_invalid(binary_part(redacted, 0, @max_line)) <> " …"},
+      else: {:line, redacted}
   end
 
   # ANSI escape sequences (CSI and OSC, and a lone escape), then every other
@@ -426,29 +436,31 @@ defmodule Fountain.Workspaces.SetupOutput do
   @controls ~r/[\x00-\x08\x0b-\x1f\x7f]/
 
   # What a terminal would show of the line, as text: after its last carriage
-  # return, without control sequences, valid UTF-8, at most `@max_line`
-  # bytes. Redacted before any of this, so nothing here can split a value.
-  defp display(line) do
-    shown =
-      line
-      |> :binary.split("\r", [:global])
-      |> Enum.reverse()
-      |> Enum.find("", &(&1 != ""))
-      |> String.replace_invalid()
-      |> String.replace(@ansi, "")
-      |> String.replace(@controls, "")
+  # return (a progress bar's last state), valid UTF-8, without control
+  # sequences. A slice, then deletions: run before redaction, never after.
+  defp clean(line) do
+    line
+    |> :binary.split("\r", [:global])
+    |> Enum.reverse()
+    |> Enum.find("", &(&1 != ""))
+    |> strip()
+  end
 
-    if byte_size(shown) > @max_line,
-      do: String.replace_invalid(binary_part(shown, 0, @max_line)) <> " …",
-      else: shown
+  defp strip(text) do
+    text
+    |> String.replace_invalid()
+    |> String.replace(@ansi, "")
+    |> String.replace(@controls, "")
   end
 
   # The values as they are now, added to every value seen since the setup
   # began: the steps run under the env read when it began, so a value
-  # rotated or deleted since is still one a step can print.
+  # rotated or deleted since is still one a step can print. A failed read
+  # withholds output until one succeeds again; `seen` keeps every value from
+  # before it.
   defp refresh_values(s) do
     case Workspaces.redaction_values(s.sandbox) do
-      {:ok, values} -> compile(%{s | seen: Enum.uniq(s.seen ++ values)})
+      {:ok, values} -> compile(%{s | withheld?: false, seen: Enum.uniq(s.seen ++ values)})
       :error -> %{s | withheld?: true, pattern: nil, longest: 0}
     end
   end
@@ -456,7 +468,7 @@ defmodule Fountain.Workspaces.SetupOutput do
   defp compile(%{withheld?: true} = s), do: s
 
   defp compile(s) do
-    case Redaction.with_escaped(Enum.uniq(s.seen ++ s.extra)) do
+    case Redaction.with_escaped(matchable(Enum.uniq(s.seen ++ s.extra))) do
       [] ->
         %{s | pattern: nil, longest: 0}
 
@@ -469,6 +481,19 @@ defmodule Fountain.Workspaces.SetupOutput do
     end
   end
 
+  # Each value as it can appear in a cleaned line: each piece between its
+  # carriage returns, cleaned as output is. A value with no control in it is
+  # itself. Pieces shorter than `Redaction.min_length/0` are left out, as the
+  # lines of a multi-line value are.
+  defp matchable(values) do
+    values
+    |> Enum.flat_map(fn value ->
+      value |> :binary.split("\r", [:global]) |> Enum.map(&strip/1)
+    end)
+    |> Enum.filter(&(byte_size(&1) >= Redaction.min_length()))
+    |> Enum.uniq()
+  end
+
   # ── keeping ─────────────────────────────────────────────────────────────
 
   defp keep(%{steps: [current | _]} = s, :withheld) do
@@ -478,6 +503,8 @@ defmodule Fountain.Workspaces.SetupOutput do
   end
 
   defp keep(s, {:line, line}) do
+    # Its own binary, so a short kept line never pins the chunk it came from.
+    line = :binary.copy(line)
     size = byte_size(line) + 1
     [current | earlier] = s.steps
 
@@ -637,8 +664,18 @@ defmodule Fountain.Workspaces.SetupOutput do
     :ok
   rescue
     exception ->
-      Process.delete(@key)
+      drop()
       Logger.warning("setup output not collected any further: #{inspect(exception.__struct__)}")
       :ok
+  end
+
+  # Forget this process's collector, and stop its pacer with it: a pacer is
+  # only ever ended by its collector's `finish/1` or the collector's process
+  # ending, and a collector dropped here does neither.
+  defp drop do
+    case Process.delete(@key) do
+      %{pacer: pacer} when is_pid(pacer) -> SetupPacer.stop(pacer)
+      _none -> :ok
+    end
   end
 end

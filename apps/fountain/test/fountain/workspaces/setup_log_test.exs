@@ -203,6 +203,33 @@ defmodule Fountain.Workspaces.SetupLogTest do
       assert output == ~s({"password": "[REDACTED]"}\n)
     end
 
+    test "a value split by colour codes or a NUL is redacted once they are taken out", ctx do
+      {workspace, sandbox} = create!(ctx)
+      :ok = Workspaces.subscribe(ctx.user.id)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:setup_script)
+        SetupOutput.output("API_SECRET=\e[01;31m\e[Ks3cret-\e[m\e[Kvalue-123456\n")
+        SetupOutput.output("nul: s3cret-val\0ue-123456\n")
+      end)
+
+      output = step(log(workspace), "setup_script")["output"]
+      assert output == "API_SECRET=[REDACTED]\nnul: [REDACTED]\n"
+      refute events() |> Enum.flat_map(& &1.lines) |> Enum.join() =~ "value-123456"
+    end
+
+    test "a value holding a control character is matched as a cleaned line shows it", ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "TABBED", "value" => "abc\e[0mdefghijkl"})
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        SetupOutput.step(:setup_script)
+        SetupOutput.output("v=abc\e[0mdefghijkl\n")
+      end)
+
+      assert step(log(workspace), "setup_script")["output"] == "v=[REDACTED]\n"
+    end
+
     test "terminal control sequences are taken out", ctx do
       {workspace, sandbox} = create!(ctx)
 
@@ -212,6 +239,27 @@ defmodule Fountain.Workspaces.SetupLogTest do
       end)
 
       assert step(log(workspace), "packages")["output"] == "ok\tdone\n"
+    end
+
+    test "output withheld while the key cannot be read comes back once it can", ctx do
+      {workspace, sandbox} = create!(ctx)
+
+      collect(sandbox, fn ->
+        stub(Fountain.Crypto, :load_tenant_key, fn _ -> {:error, :unavailable} end)
+        SetupOutput.step(:packages)
+        SetupOutput.output("#{@secret}\n")
+
+        stub(Fountain.Crypto, :load_tenant_key, fn id ->
+          call_original(Fountain.Crypto, :load_tenant_key, [id])
+        end)
+
+        SetupOutput.step(:setup_script)
+        SetupOutput.output("back: #{@secret}\n")
+      end)
+
+      log = log(workspace)
+      assert step(log, "packages")["output"] =~ "withheld"
+      assert step(log, "setup_script")["output"] == "back: [REDACTED]\n"
     end
 
     test "with no tenant key the output is withheld, with a line saying so", ctx do
@@ -476,11 +524,13 @@ defmodule Fountain.Workspaces.SetupLogTest do
       refute Enum.any?(log.steps, &(&1["output"] =~ "stale"))
     end
 
-    test "a setup its deadline killed is settled failed with its machine", ctx do
+    test "a setup its deadline killed is settled failed, keeping the lines it held", ctx do
+      # Its last line is still held by the write interval when it is killed.
+      put_env(:setup_log_flush_ms, 60_000)
       {workspace, sandbox} = create!(ctx)
       test = self()
 
-      # The setup runs in a process of its own, killed mid-step.
+      # The setup runs in a process of its own.
       setup =
         spawn(fn ->
           :ok = SetupOutput.begin(sandbox)
@@ -491,10 +541,9 @@ defmodule Fountain.Workspaces.SetupLogTest do
         end)
 
       assert_receive :running
-      ref = Process.monitor(setup)
-      Process.exit(setup, :kill)
-      assert_receive {:DOWN, ^ref, :process, _, :killed}
 
+      # The deadline's order: the machine is failed (closing the log) first,
+      # then the setup is killed.
       capture_log(fn ->
         Fountain.Machines.Machine.fail_provision(sandbox.id,
           actor: "system:workspace_setup",
@@ -502,9 +551,45 @@ defmodule Fountain.Workspaces.SetupLogTest do
         )
       end)
 
-      assert %SetupLog{status: "failed", finished_at: %DateTime{}} = log = log(workspace)
+      assert %SetupLog{status: "failed", finished_at: %DateTime{}} = log(workspace)
+
+      ref = Process.monitor(setup)
+      Process.exit(setup, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+
+      assert eventually(fn -> step(log(workspace), "setup_script")["output"] == "half way\n" end)
+      log = log(workspace)
+      assert %SetupLog{status: "failed", finished_at: %DateTime{}} = log
       assert step(log, "setup_script")["status"] == "failed"
       assert step(log, "setup_script")["finished_at"]
+    end
+
+    test "a collector dropped by a fault stops its pacer", ctx do
+      {_workspace, sandbox} = create!(ctx)
+      :ok = SetupOutput.begin(sandbox)
+      %{pacer: pacer} = Process.get({SetupOutput, :setup})
+      ref = Process.monitor(pacer)
+
+      # A state nothing can work with.
+      Process.put({SetupOutput, :setup}, %{Process.get({SetupOutput, :setup}) | steps: :broken})
+      capture_log(fn -> :ok = SetupOutput.output("x\n") end)
+
+      refute SetupOutput.active?()
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+    end
+
+    test "a later setup in the same process stops the earlier one's pacer", ctx do
+      {workspace, sandbox} = create!(ctx)
+      :ok = SetupOutput.begin(sandbox)
+      %{pacer: pacer} = Process.get({SetupOutput, :setup})
+      ref = Process.monitor(pacer)
+
+      {:ok, _} = update_sandbox(sandbox, %{status: "failed"})
+      next = insert_sandbox(user_id: ctx.user.id, workspace_id: workspace.id, status: "pending")
+      :ok = SetupOutput.begin(next)
+
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+      :ok = SetupOutput.finish(:failed)
     end
 
     test "is not collected for an implicit workspace", ctx do
