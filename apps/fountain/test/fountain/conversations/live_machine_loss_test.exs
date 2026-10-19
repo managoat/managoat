@@ -58,7 +58,8 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
   # The servers this test started, by conversation, stopped before the
   # database owner goes.
   defp stop_servers do
-    for {_id, pid, _type, _mods} <- DynamicSupervisor.which_children(Fountain.ConversationSupervisor),
+    for {_id, pid, _type, _mods} <-
+          DynamicSupervisor.which_children(Fountain.ConversationSupervisor),
         is_pid(pid) do
       ref = Process.monitor(pid)
       DynamicSupervisor.terminate_child(Fountain.ConversationSupervisor, pid)
@@ -239,7 +240,9 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
 
       # One accurate note for the conversation that followed, not a
       # `replaced` one beside it.
-      assert [{"done", note}] = Enum.filter(stages(b.id, "sandbox"), &match?({_, %{"message" => _}}, &1))
+      assert [{"done", note}] =
+               Enum.filter(stages(b.id, "sandbox"), &match?({_, %{"message" => _}}, &1))
+
       assert note["reason"] == "rebuilt"
       assert note["message"] =~ "lost"
     end
