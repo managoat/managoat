@@ -150,17 +150,38 @@ defmodule Fountain.Conversations.Wake do
   #
   # A leaf of maybe_reuse_sandbox/1.
   def probe_reusable_sandbox(%{status: status, machine_name: name} = sandbox, sandbox_id) do
+    case machine_provider_usable(sandbox) do
+      :ok ->
+        probe_sandbox(Conversations.sandbox_provider_atom(sandbox), name, status, sandbox_id)
+
+      {:error, {_, provider, _}} = refusal ->
+        Logger.warning(
+          "sandbox #{sandbox_id} is on disabled provider #{provider}; refusing to wake or retire"
+        )
+
+        refusal
+    end
+  end
+
+  @doc """
+  `:ok` when the provider `sandbox` is on can be reached from this instance,
+  else `{:error, {:sandbox_provider_disabled, provider, :workspace | :sandbox}}`
+  by whose machine it is (#3004). No provider call.
+
+  The wake's probe asks it, and so does everything that would otherwise
+  reach the provider for a machine whose row says it is up without a wake
+  (#3004's last gap): a launch onto a `ready` workspace machine
+  (`WorkspaceLaunch`) and a server reattaching to one (`ConversationServer`,
+  which the boot sweep starts too). A disabled provider's adapter raises on
+  its missing credential, and a server that met that raise crash-looped
+  until it exhausted the restart budget every conversation shares.
+  """
+  @spec machine_provider_usable(Sandbox.t()) ::
+          :ok | {:error, {:sandbox_provider_disabled, atom(), :workspace | :sandbox}}
+  def machine_provider_usable(sandbox) do
     provider = Conversations.sandbox_provider_atom(sandbox)
 
-    if provider_usable?(provider) do
-      probe_sandbox(provider, name, status, sandbox_id)
-    else
-      Logger.warning(
-        "sandbox #{sandbox_id} is on disabled provider #{provider}; refusing to wake or retire"
-      )
-
-      {:error, provider_disabled(provider, sandbox)}
-    end
+    if provider_usable?(provider), do: :ok, else: {:error, provider_disabled(provider, sandbox)}
   end
 
   # The instance default keeps its lazy credential check (a credential-less

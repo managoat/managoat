@@ -550,9 +550,13 @@ defmodule Fountain.Conversations.ConversationServer do
           s when s in ["ready", "suspended"] ->
             # Provisioned in a previous BEAM lifetime: reattach, never recreate.
             # `suspended` here is a park that landed mid-wake (the reaper's, or
-            # a co-tenant's, ADR 0097), resumed through its owner first.
-            case Reattachment.awake(sandbox, conv.id) do
-              {:ok, sandbox} -> reattach(state, conv, sandbox, agent, env, secrets)
+            # a co-tenant's, ADR 0097), resumed through its owner first. A
+            # machine on a provider since disabled is refused before either
+            # reaches the provider (#3004).
+            with :ok <- Reattachment.provider_usable(sandbox, conv.id),
+                 {:ok, sandbox} <- Reattachment.awake(sandbox, conv.id) do
+              reattach(state, conv, sandbox, agent, env, secrets)
+            else
               {:error, _} -> {:stop, :normal, state}
             end
 

@@ -323,7 +323,21 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
   # first prompt, whose wake resumes, waits for or rebuilds the machine; a
   # prompt sent with the launch is handed to that wake. A launch with no
   # prompt does not resume a parked machine (ADR 0097: wake is lazy).
+  #
+  # A ready machine on a provider since disabled is left to the wake too
+  # (#3004): its server could not reach the machine, and the wake's refusal
+  # carries the workspace's advice, as it does for a parked one.
   defp start_server(conv, %Sandbox{status: "ready"} = sandbox, runtime_module, attrs, timing) do
+    case Fountain.Conversations.Wake.machine_provider_usable(sandbox) do
+      :ok -> attach(conv, sandbox, runtime_module, attrs, timing)
+      {:error, _} -> wake_for_prompt(conv, attrs)
+    end
+  end
+
+  defp start_server(conv, _sandbox, _runtime_module, attrs, _timing),
+    do: wake_for_prompt(conv, attrs)
+
+  defp attach(conv, sandbox, runtime_module, attrs, timing) do
     case Conversations.register_server(
            sandbox.id,
            Launch.child_spec(conv.id, sandbox.id, runtime_module)
@@ -351,9 +365,6 @@ defmodule Fountain.Conversations.WorkspaceLaunch do
         wake_for_prompt(conv, attrs)
     end
   end
-
-  defp start_server(conv, _sandbox, _runtime_module, attrs, _timing),
-    do: wake_for_prompt(conv, attrs)
 
   defp wake_for_prompt(conv, attrs) do
     if prompt?(attrs) do

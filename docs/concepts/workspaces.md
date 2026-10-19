@@ -69,11 +69,14 @@ workspace's environment and vault. The agent's `sandbox_provider` is not read:
 the workspace's provider wins.
 
 If the instance stops offering that provider, because its credentials were
-removed, a prompt that has to wake or rebuild the workspace's machine does
-not run. Nothing is woken, and nothing is rebuilt on another provider. The
-`wake` stage fails with `sandbox_provider_disabled`, and its `advice` says
-what to do: set the provider's credentials again, or create a workspace on
-another provider.
+removed, no prompt runs in the workspace, even when its machine was up:
+Managoat cannot reach the machine without the credentials. Nothing is woken,
+and nothing is rebuilt on another provider. The machine and its disk are
+kept for the provider's return. The `wake` stage fails with
+`sandbox_provider_disabled`, and its `advice` says what to do: set the
+provider's credentials again, or create a workspace on another provider. A
+conversation that was attached to the machine when the instance restarted
+gets the same refusal and `advice` on a `reattach` stage.
 
 Each conversation has three things of its own on the shared machine:
 
