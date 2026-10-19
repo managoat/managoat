@@ -160,7 +160,9 @@ defmodule FountainWeb.WorkspaceController do
         "is true, which ends those turns as " <>
         "interrupted (transcripts kept). A rebuild while the workspace is provisioning is " <>
         "409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a " <>
-        "conversation's own sandbox. The vault is not touched.",
+        "conversation's own sandbox. A workspace whose sandbox provider has been disabled " <>
+        "since it was made is 422 sandbox_provider_disabled, before anything moves. The " <>
+        "vault is not touched.",
     parameters: [id: [in: :path, type: :string, required: true]],
     request_body:
       {"Rebuild options", "application/json", Schemas.WorkspaceRebuildRequest, required: false},
@@ -170,6 +172,9 @@ defmodule FountainWeb.WorkspaceController do
       conflict:
         {"A running turn (turns_running), or a rebuild in progress (rebuild_in_progress)",
          "application/json", Schemas.Error},
+      unprocessable_entity:
+        {"The workspace's sandbox provider has been disabled since it was made " <>
+           "(sandbox_provider_disabled); nothing was changed", "application/json", Schemas.Error},
       service_unavailable:
         {"Every sandbox slot in use (fleet_full), or the machine busy with another " <>
            "operation (sandbox_unavailable)", "application/json", Schemas.Error}

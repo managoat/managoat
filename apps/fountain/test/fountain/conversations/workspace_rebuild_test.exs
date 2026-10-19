@@ -90,7 +90,9 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
     end
 
     test "after a rebuild asked for (#2986), the conversation's next server attaches to the new machine",
-         _ctx do
+         ctx do
+      # A rebuild checks the workspace's provider (sprites) is configured.
+      Fountain.DataCase.configure_sprites(ctx)
       user = insert_verified_user()
       agent = insert_agent(user_id: user.id)
       old = insert_sandbox(user_id: user.id, status: "ready") |> explicit_workspace!()

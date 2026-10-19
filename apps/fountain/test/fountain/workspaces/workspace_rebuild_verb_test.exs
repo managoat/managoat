@@ -23,6 +23,10 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
 
   setup :set_mimic_global
 
+  # The workspace's provider (the instance default, sprites) is configured,
+  # as it is wherever a workspace was made on it.
+  setup {Fountain.DataCase, :configure_sprites}
+
   setup do
     user = insert_verified_user()
     env = insert_env(user_id: user.id, setup_script: "make setup")
@@ -331,6 +335,77 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
 
     assert {:error, :fleet_full} = rebuild(%{ctx | workspace: Repo.reload!(ctx.workspace)})
     assert Repo.reload!(conv).sandbox_id == ctx.old.id
+  end
+
+  # `e2b` has no credentials in the test configuration, so it reads as
+  # disabled: the provider was configured when the workspace was made and has
+  # been disabled since.
+  defp on_disabled_provider(workspace) do
+    refute Fountain.SandboxProviders.enabled?(:e2b)
+
+    {1, _} =
+      Repo.update_all(from(w in Workspace, where: w.id == ^workspace.id), set: [provider: "e2b"])
+
+    Repo.reload!(workspace)
+  end
+
+  test "a provider disabled since the workspace was made refuses it, and nothing moves", ctx do
+    conv = conversation(ctx)
+    workspace = on_disabled_provider(ctx.workspace)
+
+    assert {:error, {:sandbox_provider_disabled, :e2b, :workspace}} =
+             rebuild(%{ctx | workspace: workspace}, interrupt: true)
+
+    refute_received {:destroyed, _}
+    refute_received {:provision_started, _, _}
+
+    assert Repo.reload!(ctx.old).status == "ready"
+    conv = Repo.reload!(conv)
+    assert conv.sandbox_id == ctx.old.id
+    assert conv.runtime_session_id == "old-session"
+    assert Repo.reload!(workspace).status == "ready"
+
+    assert Repo.aggregate(from(s in Sandbox, where: s.workspace_id == ^workspace.id), :count) ==
+             1
+
+    assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt") == []
+    assert Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.destroyed") == []
+  end
+
+  test "a provider disabled since refuses a running turn's interrupt too: no turn ends", ctx do
+    conv = conversation(ctx, "running")
+    turn = insert_turn(conv, status: "running")
+    workspace = on_disabled_provider(ctx.workspace)
+
+    assert {:error, {:sandbox_provider_disabled, :e2b, :workspace}} =
+             rebuild(%{ctx | workspace: workspace}, interrupt: true)
+
+    assert Repo.reload!(turn).status == "running"
+    assert Repo.reload!(conv).sandbox_id == ctx.old.id
+  end
+
+  test "a provider disabled since refuses a stranded build too, without starting it", ctx do
+    stub(Provisioner, :start, fn _workspace, _id -> {:error, :boom} end)
+    assert {:ok, _} = rebuild(ctx)
+    workspace = Repo.reload!(ctx.workspace)
+    assert workspace.status == "provisioning"
+    [_first] = Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt")
+
+    test = self()
+
+    stub(Provisioner, :start, fn w, id ->
+      send(test, {:resumed, w.id, id})
+      {:ok, self()}
+    end)
+
+    workspace = on_disabled_provider(workspace)
+
+    assert {:error, {:sandbox_provider_disabled, :e2b, :workspace}} =
+             rebuild(%{ctx | workspace: workspace})
+
+    refute_received {:resumed, _, _}
+    assert Repo.reload!(workspace).status == "provisioning"
+    assert [_first] = Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt")
   end
 
   test "an implicit workspace, or one being deleted, is not found", ctx do

@@ -987,3 +987,9 @@ A PR sequence, each releasable alone:
   was. A background wake's `wake` `failed` stage now carries the advice as
   `advice` (not `message`, which the SDK's `run()` would show in place of the
   reason code).
+- 2026-10-19 — A rebuild on request refuses a workspace whose provider has
+  been disabled since it was made, with `422 sandbox_provider_disabled` and
+  the workspace's advice (#3004), before anything moves. It used to check
+  only that the provider was known, so it could destroy the working machine
+  and then fail to build the next. A stranded build is refused the same way
+  rather than started.

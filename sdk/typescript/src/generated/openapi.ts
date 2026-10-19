@@ -1534,7 +1534,7 @@ export interface paths {
         put?: never;
         /**
          * Rebuild a workspace's machine
-         * @description Destroys the workspace's machine, with everything on its disk, and builds a new one from its environment as it is now, under the same workspace. Save any work first: GET /api/workspaces/{id}/diff reads it while the machine is ready. Every conversation in the workspace keeps its transcript and stays in the workspace, with its runtime session cleared: its agent starts fresh on its next prompt. Answers 202 with status provisioning; the status moves to ready or failed, each a workspace.status event. Refused with 409 turns_running while any conversation in it has a running turn or a prompt accepted and not yet started, unless interrupt is true, which ends those turns as interrupted (transcripts kept). A rebuild while the workspace is provisioning is 409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a conversation's own sandbox. The vault is not touched.
+         * @description Destroys the workspace's machine, with everything on its disk, and builds a new one from its environment as it is now, under the same workspace. Save any work first: GET /api/workspaces/{id}/diff reads it while the machine is ready. Every conversation in the workspace keeps its transcript and stays in the workspace, with its runtime session cleared: its agent starts fresh on its next prompt. Answers 202 with status provisioning; the status moves to ready or failed, each a workspace.status event. Refused with 409 turns_running while any conversation in it has a running turn or a prompt accepted and not yet started, unless interrupt is true, which ends those turns as interrupted (transcripts kept). A rebuild while the workspace is provisioning is 409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a conversation's own sandbox. A workspace whose sandbox provider has been disabled since it was made is 422 sandbox_provider_disabled, before anything moves. The vault is not touched.
          */
         post: operations["FountainWeb.WorkspaceController.rebuild"];
         delete?: never;
@@ -11224,6 +11224,15 @@ export interface operations {
             };
             /** @description A running turn (turns_running), or a rebuild in progress (rebuild_in_progress) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The workspace's sandbox provider has been disabled since it was made (sandbox_provider_disabled); nothing was changed */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
