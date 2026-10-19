@@ -60,14 +60,20 @@ defmodule Fountain.Conversations.Reattachment do
   server straight back into it (#3004). `provider_usable/2` refuses a
   disabled provider before this; this is for what it lets through, the
   instance default with no credential. The stage gets the exception's
-  module, the log its message.
+  module, the log the exception and its stacktrace, as `Park` and `Destroy`
+  log a raising adapter. Only a raise: an exit inside the adapter still
+  stops the server as it did.
   """
   @spec lookup(Managoat.Sandbox.Handle.t()) :: {:ok, map()} | {:error, term()}
   def lookup(handle) do
     Managoat.Sandbox.get(handle)
   rescue
     error ->
-      Logger.warning("sandbox lookup for #{handle.name} raised: #{Exception.message(error)}")
+      Logger.warning(
+        "sandbox lookup for #{handle.name} raised: " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
       {:error, {:lookup_raised, error.__struct__}}
   end
 

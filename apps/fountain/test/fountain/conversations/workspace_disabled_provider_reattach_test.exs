@@ -27,7 +27,13 @@ defmodule Fountain.Conversations.WorkspaceDisabledProviderReattachTest do
     refute Fountain.SandboxProviders.enabled?(:e2b)
 
     # No provider call may be made for these machines, whatever answers it.
-    stub(Managoat.Sandbox, :get, fn handle -> flunk("provider called for #{inspect(handle)}") end)
+    # Counted rather than flunked: the reattach's lookup rescues a raise,
+    # which would swallow a flunk in the server's process.
+    calls = :counters.new(1, [])
+
+    stub(Managoat.Sandbox, :get, fn _handle -> :counters.add(calls, 1, 1) && {:error, :called} end)
+
+    on_exit(fn -> assert :counters.get(calls, 1) == 0, "the provider was called" end)
 
     user = insert_active_user()
     agent = insert_agent(user_id: user.id, runtime: "claude")
