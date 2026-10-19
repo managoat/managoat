@@ -493,6 +493,11 @@ func handleStageEvent(data map[string]any) (bool, error) {
 	case stage == "wake" && state == "failed":
 		reason := innerDataString(data, "reason")
 		retryable := innerDataString(data, "retryable")
+		// A refusal the caller has to act on carries what to change, such as
+		// the provider a workspace runs on having been disabled (#3004).
+		if advice := innerDataString(data, "advice"); advice != "" {
+			return true, fmt.Errorf("prompt did not run: %s (retryable=%s); no prompt was replayed — %s", reason, retryable, advice)
+		}
 		return true, fmt.Errorf("prompt did not run: %s (retryable=%s); no prompt was replayed", reason, retryable)
 
 	case stage == "provision" && state == "failed":

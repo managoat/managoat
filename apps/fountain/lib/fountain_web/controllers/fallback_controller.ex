@@ -284,16 +284,16 @@ defmodule FountainWeb.FallbackController do
   # (its adapter is missing or its credentials were removed). 422 with the
   # provider named: an admin either configures the credentials or clears the
   # agent's override.
-  def call(conn, {:error, {:sandbox_provider_disabled, provider}}) do
-    conn
-    |> put_status(:unprocessable_entity)
-    |> json(%{
-      error: "sandbox_provider_disabled",
-      message:
-        "sandbox provider #{provider} is not configured on this instance — " <>
-          "set its credentials or clear the agent's sandbox_provider override"
-    })
-  end
+  def call(conn, {:error, {:sandbox_provider_disabled, provider}}),
+    do: provider_disabled(conn, provider, :agent)
+
+  # A wake whose machine is on a provider that has since been disabled: a
+  # workspace's (ADR 0097), which fixes its provider, or a conversation's own
+  # parked sandbox. Neither reads the agent's override, so the advice is not
+  # about it (#3004).
+  def call(conn, {:error, {:sandbox_provider_disabled, provider, whose}})
+      when whose in [:workspace, :sandbox],
+      do: provider_disabled(conn, provider, whose)
 
   # Every slot the deployment has on the machine's provider is in use, whoever
   # holds them (ADR 0042; per provider since #2667). 503 with a retry hint:
@@ -635,4 +635,13 @@ defmodule FountainWeb.FallbackController do
     do: "ref must name one commit, branch or tag; no flags and no ranges"
 
   defp sandbox_files_message(:invalid_path), do: "path must be valid UTF-8 without NUL bytes"
+
+  defp provider_disabled(conn, provider, whose) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      error: "sandbox_provider_disabled",
+      message: Fountain.SandboxProviders.disabled_message(provider, whose)
+    })
+  end
 end

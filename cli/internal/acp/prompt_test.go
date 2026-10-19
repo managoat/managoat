@@ -460,3 +460,11 @@ func TestWakeFailureReportsUnrunPrompt(t *testing.T) {
 		t.Fatalf("terminal=%v outcome=%+v", terminal, outcome)
 	}
 }
+
+func TestWakeFailureCarriesItsAdvice(t *testing.T) {
+	outcome, terminal := classifyStage(Event{Stage: "wake", State: "failed", Data: `{"reason":"sandbox_provider_disabled","retryable":false,"advice":"set its credentials"}`})
+	want := "prompt did not run: sandbox_provider_disabled (retryable=false); no prompt was replayed — set its credentials"
+	if !terminal || outcome.err != want {
+		t.Fatalf("terminal=%v outcome=%+v", terminal, outcome)
+	}
+}

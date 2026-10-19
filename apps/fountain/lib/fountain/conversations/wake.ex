@@ -143,19 +143,38 @@ defmodule Fountain.Conversations.Wake do
   # falling through to :create_new would retire the row and orphan (or lose)
   # the parked sandbox. Re-adding the credentials restores wakes.
   #
+  # The refusal says whose provider it is (#3004): the machine's, which an
+  # explicit workspace fixed at create and the agent's override no longer
+  # moves, so the advice is not the agent's `{:sandbox_provider_disabled,
+  # provider}`.
+  #
   # A leaf of maybe_reuse_sandbox/1.
   def probe_reusable_sandbox(%{status: status, machine_name: name} = sandbox, sandbox_id) do
     provider = Conversations.sandbox_provider_atom(sandbox)
 
-    if provider != Fountain.SandboxProviders.default_provider() and
-         not Fountain.SandboxProviders.enabled?(provider) do
+    if provider_usable?(provider) do
+      probe_sandbox(provider, name, status, sandbox_id)
+    else
       Logger.warning(
         "sandbox #{sandbox_id} is on disabled provider #{provider}; refusing to wake or retire"
       )
 
-      {:error, {:sandbox_provider_disabled, provider}}
-    else
-      probe_sandbox(provider, name, status, sandbox_id)
+      {:error, provider_disabled(provider, sandbox)}
+    end
+  end
+
+  # The instance default keeps its lazy credential check (a credential-less
+  # boot fails at provision time with the missing variable named), as
+  # `Conversations.resolve_sandbox_provider/1` leaves it.
+  defp provider_usable?(provider),
+    do:
+      provider == Fountain.SandboxProviders.default_provider() or
+        Fountain.SandboxProviders.enabled?(provider)
+
+  defp provider_disabled(provider, sandbox) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> {:sandbox_provider_disabled, provider, :workspace}
+      :implicit -> {:sandbox_provider_disabled, provider, :sandbox}
     end
   end
 
@@ -807,12 +826,20 @@ defmodule Fountain.Conversations.Wake do
   @spec report_unrun_prompt(binary(), term()) :: term()
   @spec report_unrun_prompt(binary(), term(), keyword()) :: term()
   def report_unrun_prompt(conv_id, reason, meta \\ []) do
-    Conversations.publish_stage(conv_id, "wake", "failed", %{
-      reason: failed_wake_reason(reason),
-      retryable: retryable_wake_failure?(reason),
-      client_request_id: meta[:client_request_id],
-      prompt_receipt_id: meta[:prompt_receipt_id]
-    })
+    Conversations.publish_stage(
+      conv_id,
+      "wake",
+      "failed",
+      with_advice(
+        %{
+          reason: failed_wake_reason(reason),
+          retryable: retryable_wake_failure?(reason),
+          client_request_id: meta[:client_request_id],
+          prompt_receipt_id: meta[:prompt_receipt_id]
+        },
+        reason
+      )
+    )
 
     end_withdrawn_turn(conv_id, reason, meta)
     Fountain.Conversations.PromptReceipt.resolve(conv_id, meta[:prompt_receipt_id])
@@ -869,7 +896,25 @@ defmodule Fountain.Conversations.Wake do
 
   defp failed_wake_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp failed_wake_reason({reason, _detail}) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp failed_wake_reason({:sandbox_provider_disabled, _provider, _whose}),
+    do: "sandbox_provider_disabled"
+
   defp failed_wake_reason(reason), do: inspect(reason)
+
+  # A refusal the caller has to act on gets, as `advice`, the sentence the
+  # API's own refusal carries as its `message`, since a background wake's only
+  # answer is this stage: a disabled provider names whose provider it is and
+  # what to change (#3004). Not `message`: the SDK's `run()` labels a failed
+  # stage with a `message` in place of its `reason`, and the code stays the
+  # label.
+  defp with_advice(data, {:sandbox_provider_disabled, provider}),
+    do: Map.put(data, :advice, Fountain.SandboxProviders.disabled_message(provider, :agent))
+
+  defp with_advice(data, {:sandbox_provider_disabled, provider, whose}),
+    do: Map.put(data, :advice, Fountain.SandboxProviders.disabled_message(provider, whose))
+
+  defp with_advice(data, _reason), do: data
 
   # The ones a retry of the same prompt can succeed on without the caller
   # changing anything: the provider or the fleet was busy.
@@ -954,6 +999,7 @@ defmodule Fountain.Conversations.Wake do
   # wake_conversation_for/3 above; the sandbox is its own.
   defp rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images) do
     with :ok <- check_saved_inference(conv, agent),
+         :ok <- rebuildable_provider(sandbox),
          :ok <- retire_lost(conv, sandbox),
          :ok <- room_for(sandbox),
          {:ok, marked} <- mark_waking(conv, sandbox) do
@@ -971,6 +1017,22 @@ defmodule Fountain.Conversations.Wake do
           other
       end
     end
+  end
+
+  # A rebuild builds on the workspace's own provider, which an explicit
+  # workspace fixed at create. One disabled since is refused here, before
+  # anything is retired or moved, with the workspace's advice (#3004), rather
+  # than by a create that fails after the succession and fails the
+  # conversation with it. An implicit workspace needs no check: it is kept
+  # only while it matches the agent's usable provider
+  # (`Rebuild.wake_target/2`), and otherwise the fresh path resolves the
+  # agent's provider and refuses with the agent's advice.
+  defp rebuildable_provider(%Sandbox{} = sandbox) do
+    provider = Conversations.sandbox_provider_atom(sandbox)
+
+    if provider_usable?(provider) or Fountain.Workspaces.machine_kind(sandbox) == :implicit,
+      do: :ok,
+      else: {:error, {:sandbox_provider_disabled, provider, :workspace}}
   end
 
   # The marker a server started on a terminal row reads as "a wake asked for

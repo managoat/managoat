@@ -39,6 +39,45 @@ defmodule Fountain.SandboxProviders do
     Map.has_key?(Sandbox.adapters(), provider) and credential_present?(provider)
   end
 
+  @doc """
+  What `sandbox_provider_disabled` tells its caller to do, by whose provider
+  it is, so the advice names the thing the caller can change:
+
+    * `:agent` — a new sandbox placed on the agent's `sandbox_provider`
+      override: set the provider's credentials, or clear the override.
+    * `:workspace_create` — `POST /api/workspaces` naming the provider: set
+      its credentials, or create the workspace on another provider or the
+      instance default.
+    * `:workspace` — a conversation waking in an explicit workspace, which
+      fixes its provider at create (ADR 0097): the agent's override is not
+      read there, so the advice is the workspace's, as at create.
+    * `:sandbox` — a conversation waking on its own parked sandbox, whose
+      disk is on the provider: only the provider's credentials wake it.
+  """
+  @spec disabled_message(Sandbox.provider(), :agent | :workspace_create | :workspace | :sandbox) ::
+          String.t()
+  def disabled_message(provider, :agent),
+    do:
+      "sandbox provider #{provider} is not configured on this instance — " <>
+        "set its credentials or clear the agent's sandbox_provider override"
+
+  def disabled_message(provider, :workspace_create),
+    do:
+      "sandbox provider #{provider} is not configured on this instance — set its " <>
+        "credentials, or create the workspace with another sandbox_provider, or " <>
+        "without one for the instance default"
+
+  def disabled_message(provider, :workspace),
+    do:
+      "sandbox provider #{provider} is not configured on this instance, and this " <>
+        "workspace runs on it — set its credentials, or create a workspace with " <>
+        "another sandbox_provider, or without one for the instance default"
+
+  def disabled_message(provider, :sandbox),
+    do:
+      "sandbox provider #{provider} is not configured on this instance, and this " <>
+        "conversation's sandbox is parked on it — set its credentials to wake it"
+
   @doc "Every provider currently usable on this instance."
   @spec enabled_providers() :: [Sandbox.provider()]
   def enabled_providers do
