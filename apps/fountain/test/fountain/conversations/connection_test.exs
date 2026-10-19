@@ -211,8 +211,8 @@ defmodule Fountain.Conversations.ConnectionTest do
     end
   end
 
-  describe "close/3" do
-    test "EOFs the adapter, stops it, and clears the connection", %{conv: conv} do
+  describe "close/1" do
+    test "EOFs the adapter, stops it, and clears the connection" do
       test = self()
       cmd = command()
 
@@ -222,7 +222,7 @@ defmodule Fountain.Conversations.ConnectionTest do
       conn = %Connection{command: cmd, command_ref: cmd.ref, quiet_timer: arm_a_timer()}
 
       assert %Connection{peer: nil, peer_mon: nil, command: nil, command_ref: nil} =
-               closed = Connection.close(conn, conv.id, handle())
+               closed = Connection.close(conn)
 
       assert closed.quiet_timer == nil
       assert_receive {:closed_stdin, ref}
@@ -230,18 +230,18 @@ defmodule Fountain.Conversations.ConnectionTest do
       assert_receive {:stopped, ^ref}
     end
 
-    test "is safe on a connection that has nothing open", %{conv: conv} do
-      assert Connection.close(%Connection{}, conv.id, nil) == %Connection{}
+    test "is safe on a connection that has nothing open" do
+      assert Connection.close(%Connection{}) == %Connection{}
     end
   end
 
-  describe "lost/5" do
+  describe "lost/4" do
     test "records the loss on the transcript and clears the connection", %{conv: conv} do
       cmd = command()
       conn = %Connection{peer: self(), peer_mon: :mon, command: cmd, command_ref: cmd.ref}
 
       assert %Connection{peer: nil, peer_mon: nil, command: nil, command_ref: nil} =
-               Connection.lost(conn, conv.id, nil, "adapter_exited", %{exit_code: 3})
+               Connection.lost(conn, conv.id, "adapter_exited", %{exit_code: 3})
 
       assert [{"done", meta}] = stages(conv.id, "sandbox")
       assert meta["event"] == "connection_lost"

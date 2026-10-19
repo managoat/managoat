@@ -148,7 +148,8 @@ Each conversation on a workspace runs its own adapter process with its own
 runtime config directory, under `~/.managoat/c/<conversation_id>/`:
 `CLAUDE_CONFIG_DIR` for claude, `CODEX_HOME` for codex, and
 `GEMINI_CLI_HOME` for gemini, which drops gemini's `HOME=/tmp`. gemini-cli
-0.59.0, the version `Managoat.Runtimes.Gemini` pins, resolves its home
+0.59.0, the version `Managoat.Runtimes.Gemini` pinned then (0.64.0 since,
+unchanged here), resolves its home
 through `homedir()`, which returns `GEMINI_CLI_HOME` when it is set
 ([`packages/core/src/utils/paths.ts`](https://github.com/google-gemini/gemini-cli/blob/v0.59.0/packages/core/src/utils/paths.ts#L17-L28)),
 and builds every user-level path (`settings.json`, `skills`, `tmp`, the

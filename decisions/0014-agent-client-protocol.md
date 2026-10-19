@@ -87,18 +87,14 @@ and symlinked into `~/.local/bin`, because the global npm `bin/` is not on the
 sandbox's `PATH`. ACP v1 is what every implementation advertises and what the
 peer speaks.
 
-Gemini's own session store erases a session in the act of loading it
-(google-gemini/gemini-cli#28775): the load builds a fresh recorder on the same
-id, which writes a file that replaces the session's messages. Writing into
-another product's private store was first refused for that reason, then taken
-deliberately (#955, #964) once the collision was understood precisely:
-`Managoat.Runtimes.Gemini.SessionStore` consolidates the chats directory at the
-end of every turn. It is carried as a registered quirk
-(`:gemini_session_store_consolidation` in `Managoat.Runtimes.Quirks`), which
-names the defect, the versions measured, how to re-probe on a bump and what to
-delete when upstream lands; a test fails if the function disappears without
-its entry (#975). The objection was to a workaround outliving its defect
-invisibly, and this one cannot.
+Gemini needs gemini-cli 0.63.0 or later. Before it, gemini's own session
+store erased a session in the act of loading it
+(google-gemini/gemini-cli#28775): the load built a fresh recorder on the same
+id, which wrote a `$set` that replaced the session's messages. Managoat
+carried a consolidation of that store after every turn as a registered quirk
+(#955, #964, #975) until upstream resolved the session before building the
+config (google-gemini/gemini-cli#29463). The pin Managoat installs where an
+image has no CLI is 0.64.0, and both images ship a fixed release.
 
 ### The connection lives as long as the sandbox's wake
 
@@ -354,6 +350,7 @@ procedure.
 - 2026-10-17 — The same codex reuse on E2B, so a cold codex provision no longer pulls its 163 MB platform package through the broker (#2886). Claude on E2B keeps the bundled CLI.
 - 2026-10-17 — Adapters install only from their verified bundles ([0092](0092-verified-acp-transport-bundles.md)): the image CLI runs on every provider, and an image without one at the floor fails to provision.
 - 2026-10-17 — The unused `build_command/5` callback removed from `Managoat.Runtimes` (#2959).
+- 2026-10-19 — Gemini's session-store consolidation retired: gemini-cli 0.63.0 fixed the load that erased a session, re-probed live on Sprites (0.63.0) and E2B (0.64.0) with 0.59.0 as the failing control; the installed pin moves to 0.64.0 (#2097).
 
 ## 2026-10-16: reuse the Sprites image's Claude executable
 

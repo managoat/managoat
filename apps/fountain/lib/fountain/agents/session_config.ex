@@ -54,7 +54,7 @@ defmodule Fountain.Agents.SessionConfig do
   @id_pattern ~r/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/
 
   # The pinned adapters' permission, approval and sandbox mode ids. Gemini
-  # 0.59.0 advertises no config options at all.
+  # (0.59.0 through 0.64.0) advertises no config options at all.
   @harness_mode_ids ~w(mode collaboration_mode)
 
   @type t :: %{optional(String.t()) => String.t() | boolean()}

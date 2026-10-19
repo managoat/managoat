@@ -180,13 +180,11 @@ defmodule Managoat.Runtimes.ProvisioningTest do
                Gemini.write_config(@handle, %{mcp_servers: %{"a" => %{}}}, @home)
     end
 
-    test "prepare_sandbox/4 installs the session-store workaround, then git-inits the workspace" do
+    test "prepare_sandbox/4 git-inits the workspace and writes nothing else" do
       test = self()
 
-      expect(Sandbox, :write_file, fn @handle, path, _body ->
-        send(test, {:wrote, path})
-        :ok
-      end)
+      # The session-store consolidation script went with gemini-cli#28775.
+      reject(Sandbox, :write_file, 3)
 
       expect(Sandbox, :exec, fn @handle, "bash", ["-lc", script], opts ->
         send(test, {:exec, script, opts[:env]})
@@ -196,18 +194,15 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       env = [{"GEMINI_CLI_HOME", @home}]
       assert :ok = Gemini.prepare_sandbox(@handle, nil, env, @home)
 
-      assert_receive {:wrote, "/tmp/gemini-session-consolidate.js"}
       assert_receive {:exec, script, ^env}
       assert script =~ "/tmp/gemini-workspace/.git"
       assert script =~ "git init -q"
       # The CLI is installed, pinned, only where the image did not bring it.
       assert script =~ "if ! command -v gemini >/dev/null; then"
-      assert script =~ "npm install -g --no-progress --silent @google/gemini-cli@0.59.0"
+      assert script =~ "npm install -g --no-progress --silent @google/gemini-cli@0.64.0"
     end
 
     test "a failed workspace init is a tagged error" do
-      stub(Sandbox, :write_file, fn _h, _p, _b -> :ok end)
-
       expect(Sandbox, :exec, fn _h, _c, _a, _o -> {:ok, "fatal", 128} end)
 
       assert {:error, {:gemini_workspace_init_exit, 128}} =

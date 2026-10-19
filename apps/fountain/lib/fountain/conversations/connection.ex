@@ -245,17 +245,15 @@ defmodule Fountain.Conversations.Connection do
   Close the ACP connection.
 
   EOF the adapter so it exits — a detachable session outlives its client, so
-  closing the socket alone leaves it and any background task running —
-  consolidate gemini's store before the next `session/load` can collide with
-  it, stop the peer, and clear the connection fields. Safe on a value with no
-  peer and no command; an autonomous turn still open is the caller's to
-  finish first, because ending a turn is the server's.
+  closing the socket alone leaves it and any background task running — stop
+  the peer, and clear the connection fields. Safe on a value with no peer and
+  no command; an autonomous turn still open is the caller's to finish first,
+  because ending a turn is the server's.
   """
-  @spec close(t(), String.t(), term()) :: t()
-  def close(%__MODULE__{} = conn, conversation_id, handle) do
+  @spec close(t()) :: t()
+  def close(%__MODULE__{} = conn) do
     conn = cancel_quiet(conn)
     if conn.command, do: Managoat.Sandbox.close_stdin(conn.command)
-    consolidate_gemini_session(handle, conversation_id)
     stop_peer(conn)
     if conn.command, do: Managoat.Sandbox.stop_command(conn.command)
 
@@ -266,8 +264,8 @@ defmodule Fountain.Conversations.Connection do
   The adapter went away between turns with no turn to fail (#817). Record it
   on the transcript and clear the connection; the next prompt spawns fresh.
   """
-  @spec lost(t(), String.t(), term(), String.t(), map()) :: t()
-  def lost(%__MODULE__{} = conn, conversation_id, handle, reason, meta) do
+  @spec lost(t(), String.t(), String.t(), map()) :: t()
+  def lost(%__MODULE__{} = conn, conversation_id, reason, meta) do
     Output.publish_stage(
       conversation_id,
       "sandbox",
@@ -276,7 +274,6 @@ defmodule Fountain.Conversations.Connection do
     )
 
     conn = cancel_quiet(conn)
-    consolidate_gemini_session(handle, conversation_id)
 
     cleared(conn)
   end
@@ -310,27 +307,6 @@ defmodule Fountain.Conversations.Connection do
 
   defp cleared(%__MODULE__{} = conn),
     do: %{conn | peer: nil, peer_mon: nil, command: nil, command_ref: nil}
-
-  # gemini erases a session in the act of loading it (#659), so its store is
-  # consolidated at the end of every turn — before the next turn's
-  # `session/load` can collide with it. Best-effort and gemini-only; delete
-  # with the workaround when gemini-cli#28775 lands.
-  defp consolidate_gemini_session(handle, conversation_id) when not is_nil(handle) do
-    # ownership: a server's own conversation, established at init.
-    conv = Conversations._unsafe_get_conversation!(conversation_id)
-
-    if conv.runtime == "gemini" do
-      Managoat.Runtimes.Gemini.SessionStore.consolidate(
-        handle,
-        conv.runtime_session_id,
-        Fountain.Conversations.ConfigHome.home(conv)
-      )
-    end
-
-    :ok
-  end
-
-  defp consolidate_gemini_session(_handle, _conversation_id), do: :ok
 
   # ── the autonomous turn (#817, #1301) ─────────────────────────────────────
 
