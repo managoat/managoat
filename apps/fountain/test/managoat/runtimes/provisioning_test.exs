@@ -719,9 +719,16 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       assert code != 0
       assert out =~ "step=extract: the adapter bundle did not extract"
       assert micros < 10_000_000
-      pid = pid_file |> File.read!() |> String.trim()
-      refute File.exists?("/proc/#{pid}")
-      refute "9" in String.split(File.read!(fds))
+
+      # The lookup may be stopped before it records anything: the extract
+      # fails at once. Whatever it recorded came from a process that is gone,
+      # and that never held the lock's descriptor.
+      case pid_file |> read_if_present() |> String.trim() do
+        "" -> :ok
+        pid -> refute File.exists?("/proc/#{pid}")
+      end
+
+      refute "9" in String.split(read_if_present(fds))
 
       lock = versioned_dir(home) <> ".lock"
       assert {_, 0} = System.cmd("flock", ["-n", lock, "true"])
@@ -991,6 +998,13 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       )
 
     {out, status, if(File.exists?(calls), do: File.read!(calls), else: "")}
+  end
+
+  defp read_if_present(path) do
+    case File.read(path) do
+      {:ok, contents} -> contents
+      {:error, :enoent} -> ""
+    end
   end
 
   # The script `ACP.install/3` runs for `runtime` on `provider`, as it hands it

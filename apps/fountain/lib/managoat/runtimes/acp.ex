@@ -675,9 +675,14 @@ defmodule Managoat.Runtimes.ACP do
     # Stop the background Node lookup, which would otherwise outlive a
     # failure. Only the run holding the install lock may remove its staging,
     # and only while nothing links to it.
+    #
+    # It is stopped with KILL, which cannot be caught. The lookup starts as a
+    # fork of this bash, still holding bash's own TERM handler: a TERM that
+    # lands there is caught and dropped, the lookup runs to its end, and
+    # `wait` waits for it (#3002).
     cleanup() {
       if [ -n "$node_pid" ]; then
-        kill "$node_pid" 2>/dev/null || true
+        kill -KILL "$node_pid" 2>/dev/null || true
         wait "$node_pid" 2>/dev/null || true
       fi
       [ -z "${MANAGOAT_ACP_BUNDLE_FILE:-}" ] || rm -f -- "$MANAGOAT_ACP_BUNDLE_FILE"
