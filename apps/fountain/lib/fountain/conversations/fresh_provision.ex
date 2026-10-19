@@ -229,6 +229,7 @@ defmodule Fountain.Conversations.FreshProvision do
       # live. The protocol carries its result now, so the shape of the answer
       # and the existence of a state to unwind are the same fact.
       {:ok, settled} when settled in [:already_terminal, :claimed_elsewhere] ->
+        report_queued_unrun(state)
         {:stop, :normal, state}
 
       # The same two, carrying what the pipeline reached — the row was retired,
@@ -238,6 +239,7 @@ defmodule Fountain.Conversations.FreshProvision do
       # rather than to the machine.
       {:ok, settled, %{state: reached}} when settled in [:already_terminal, :claimed_elsewhere] ->
         Egress.release_prepared({:ok, reached})
+        report_queued_unrun(state)
         {:stop, :normal, reached}
 
       # Another actor owns the row: a reassignment that committed, or a reset fence,
@@ -245,6 +247,7 @@ defmodule Fountain.Conversations.FreshProvision do
       # the conversation is a successor's, and this attempt unwinds its own.
       {:error, reason, %{state: reached}} when reason in @foreign_provision_owner ->
         Egress.release_prepared({:ok, reached})
+        report_queued_unrun(state)
         {:stop, :normal, reached}
 
       {:error, reason, %{state: reached}} ->
@@ -252,11 +255,30 @@ defmodule Fountain.Conversations.FreshProvision do
         announce_failed_provision(reached, conv, reason)
 
       {:error, :sandbox_reset_pending} ->
+        report_queued_unrun(state)
         {:stop, :normal, state}
 
       {:error, reason} ->
         provision_could_not_start(state, conv, sandbox, reason)
     end
+  end
+
+  # The stops above announce nothing about the machine, which is another
+  # owner's, but a prompt already queued for this server (a launch's first, a
+  # wake's) dies with its mailbox. It is reported as not run, with its receipt
+  # (#3001), and nothing is said when none is queued: retryable, since the
+  # next prompt wakes whatever machine the conversation now has, unless the
+  # conversation has ended.
+  defp report_queued_unrun(state) do
+    # ownership: the server's own conversation.
+    reason =
+      case Conversations._unsafe_get_conversation(state.conversation_id) do
+        %{status: status} when status in ["terminated", "failed"] -> :gone
+        nil -> :gone
+        _ -> :sandbox_unavailable
+      end
+
+    Fountain.Conversations.Wake.report_queued_unrun(state.conversation_id, reason, bare: false)
   end
 
   # The machine never existed: the pairing check refused it, or the provider

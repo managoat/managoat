@@ -358,7 +358,7 @@ defmodule Fountain.Machines.Provision do
   that is no longer `pending` or `starting` — somebody else settled it — and is
   not an error at any caller.
 
-  Options: `:actor` (required), `:reason` (an atom, required — it becomes
+  Options: `:actor` (required), `:reason` (required: an atom, or a failure's tuple — it becomes
   `transition_reason` and the audit metadata's `"reason"`), plus
   `:conversation_id`, `:request_ip` and `:busy_wait_ms`. `:supersede` takes
   the lease from that one holder even while it lives; `ProvisionWatchdog` passes
@@ -849,10 +849,10 @@ defmodule Fountain.Machines.Provision do
     end
   end
 
-  # A receipt outlives its prompt on a few stops that do not resolve it (a
-  # server stopped before it read a queued prompt: a full fleet on a lazy
-  # rebuild, a co-tenant's park, a failed wake mid-reattach), and the next
-  # boot's recovery is what clears it. So one counts as a prompt in flight
+  # A receipt outlives its prompt when the server it was cast to stopped
+  # before the cast arrived (ADR 0097's known limit; a stop reports every
+  # prompt already in its mailbox since #3001), and the next boot's recovery
+  # is what clears it. So one counts as a prompt in flight
   # only while something could still be carrying it (review of #2986): its
   # conversation's server is setting up, with the prompt queued behind that,
   # or the receipt is young enough for a wake still bringing that server up

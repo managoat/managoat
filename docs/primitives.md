@@ -56,7 +56,7 @@ is the heavy work, and Managoat does it for you.
   <text x="336" y="153" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600" fill="#d98d2b">2 · AT LAUNCH</text>
   <text x="336" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">One API call</text>
   <text x="640" y="153" font-family="ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600" fill="#d98d2b">3 · THE MACHINE</text>
-  <text x="640" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">A workspace’s sandbox, or its own</text>
+  <text x="640" y="176" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="14" font-weight="400" fill="#a6a6b2">Shared in a workspace, or a run’s own</text>
   <rect x="32" y="198" width="246" height="61" rx="10" fill="#2a2e38" stroke="#363b47"/>
   <text x="50" y="224" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="17" font-weight="600" fill="#f5f5f7">Agent</text>
   <text x="50" y="245" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" font-weight="400" fill="#a6a6b2">Model, runtime, skills</text>
