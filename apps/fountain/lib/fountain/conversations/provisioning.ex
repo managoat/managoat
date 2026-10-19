@@ -7,7 +7,7 @@ defmodule Fountain.Conversations.Provisioning do
   Order in `FreshProvision.run_provisioning_pipeline/6`, after the sandbox
   config (runtime config, instructions, env file, broker CA and sudoers) is
   on the disk:
-    1. `apply_broker_floor/2` (sandbox API call —
+    1. `apply_broker_floor/3` (sandbox API call —
        fast). First, so that nothing the tenant chose runs on the open
        network: apt and npm reach their mirrors through the proxy, which the
        CA and the sudoers `env_keep` already installed make possible.
@@ -318,26 +318,40 @@ defmodule Fountain.Conversations.Provisioning do
   domain it may reach, whatever the environment's `networking_type` says
   (ADR 0019 §2). On a provider without `:network_policy` this is skipped;
   `check_broker_support/2` has already refused a launch there.
+
+  `if_changed: true` leaves a floor the provider already reports in force
+  alone instead of writing it again (`Sandbox.ensure_network_policy/2`). An
+  attach to a running machine passes it: the machine had the floor written
+  when it was set up, and a Sprites write resets the guest's open flows, a
+  sibling conversation's model stream among them (fountain#2964). The span's
+  stop metadata says which happened (`floor: :written | :unchanged`).
   """
-  @spec apply_broker_floor(Handle.t(), String.t() | nil) :: :ok | {:error, term()}
-  def apply_broker_floor(handle, conv_id) do
+  @spec apply_broker_floor(Handle.t(), String.t() | nil, keyword()) :: :ok | {:error, term()}
+  def apply_broker_floor(handle, conv_id, opts \\ []) do
     :ok = SetupOutput.step(:broker)
     host = Fountain.Broker.proxy_host()
+    if_changed? = Keyword.get(opts, :if_changed, false)
+
+    write =
+      if if_changed?,
+        do: &Sandbox.ensure_network_policy/2,
+        else: &Sandbox.apply_network_policy/2
 
     if Sandbox.supports?(handle, :network_policy) do
       Fountain.Telemetry.span(
         [:network_policy],
-        %{conv_id: conv_id, hosts: 1},
+        %{conv_id: conv_id, hosts: 1, if_changed: if_changed?},
         fn ->
           publish_stage(conv_id, "network", "started", %{type: "broker", hosts: 1})
 
           case Retry.with_backoff(
-                 fn -> Sandbox.apply_network_policy(handle, %NetworkPolicy{allow: [host]}) end,
+                 fn -> write.(handle, %NetworkPolicy{allow: [host]}) end,
                  label: "broker network floor"
                ) do
-            :ok ->
+            ok when ok in [:ok, {:ok, :written}, {:ok, :unchanged}] ->
+              floor = if ok == {:ok, :unchanged}, do: :unchanged, else: :written
               publish_stage(conv_id, "network", "done", %{type: "broker"})
-              {:ok, %{outcome: :ok}}
+              {:ok, %{outcome: :ok, floor: floor}}
 
             {:error, reason} ->
               publish_stage(conv_id, "network", "failed", %{reason: inspect(reason)})

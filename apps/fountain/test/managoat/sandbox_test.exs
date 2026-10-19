@@ -153,6 +153,11 @@ defmodule Managoat.SandboxTest do
         policy = %NetworkPolicy{allow: ["hex.pm"]}
         assert :ok = Sandbox.apply_network_policy(handle, policy)
         assert Managoat.Sandbox.Fake.policy(name) == policy
+
+        # An adapter that cannot read its policy back is always written.
+        widened = %NetworkPolicy{allow: ["hex.pm", "pypi.org"]}
+        assert {:ok, :written} = Sandbox.ensure_network_policy(handle, widened)
+        assert Managoat.Sandbox.Fake.policy(name) == widened
         assert Sandbox.host_path(handle, "/home/sprite") == "/home/sprite"
 
         assert :ok = Sandbox.destroy(handle)
@@ -185,6 +190,7 @@ defmodule Managoat.SandboxTest do
         fn -> Sandbox.list_sessions(handle) end,
         fn -> Sandbox.attach(handle, "session") end,
         fn -> Sandbox.apply_network_policy(handle, policy) end,
+        fn -> Sandbox.ensure_network_policy(handle, policy) end,
         fn -> Sandbox.host_path(handle, "/tmp/x") end
       ]
 

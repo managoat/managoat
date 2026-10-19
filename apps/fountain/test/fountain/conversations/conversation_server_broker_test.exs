@@ -111,6 +111,55 @@ defmodule Fountain.Conversations.ConversationServerBrokerTest do
       assert Enum.map(stage_events(conv.id, "network"), & &1.state) == ["started", "done"]
     end
 
+    # A Sprites policy write resets the machine's open flows, a sibling
+    # conversation's model stream among them (fountain#2964).
+    test "a wake reads the floor back and leaves one already in force alone", %{conv: conv} do
+      configure_broker()
+      test = self()
+
+      stub(Managoat.Sandbox.Sprites, :network_policy_in_force?, fn _h, policy ->
+        send(test, {:wake_step, {:checked, policy}})
+        true
+      end)
+
+      reject(Managoat.Sandbox.Sprites, :apply_network_policy, 2)
+
+      stub(Fountain.Conversations.Provisioning, :write_env_file, fn _h, _env ->
+        send(test, {:wake_step, :env})
+        :ok
+      end)
+
+      {pid, _ref, :alive} = start_server(conv)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:wake_step, first_step}
+      assert first_step == {:checked, %Managoat.Sandbox.NetworkPolicy{allow: ["broker.test"]}}
+
+      assert_receive {:wake_step, :env}
+      assert Enum.map(stage_events(conv.id, "network"), & &1.state) == ["started", "done"]
+    end
+
+    test "a machine not reported running gets the floor written, whatever it reports", %{
+      conv: conv
+    } do
+      configure_broker()
+      test = self()
+
+      stub(Managoat.Sandbox.Sprites, :get, fn _h -> {:ok, %{status: :suspended, raw: %{}}} end)
+      reject(Managoat.Sandbox.Sprites, :network_policy_in_force?, 2)
+
+      stub(Managoat.Sandbox.Sprites, :apply_network_policy, fn _h, policy ->
+        send(test, {:wake_step, {:policy, policy}})
+        :ok
+      end)
+
+      {pid, _ref, :alive} = start_server(conv)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+
+      assert_receive {:wake_step,
+                      {:policy, %Managoat.Sandbox.NetworkPolicy{allow: ["broker.test"]}}}
+    end
+
     for reason <- [:not_found, :forbidden] do
       test "a policy refusal #{reason} stops the wake without retiring the disk", %{
         user: user,

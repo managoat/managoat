@@ -67,6 +67,10 @@ defmodule Fountain.ConversationServerCase do
     Mimic.stub(Managoat.Sandbox.Sprites, :write_file, fn _handle, _path, _data, _opts -> :ok end)
     Mimic.stub(Managoat.Sandbox.Sprites, :list_sessions, fn _handle -> {:ok, []} end)
     Mimic.stub(Managoat.Sandbox.Sprites, :apply_network_policy, fn _handle, _policy -> :ok end)
+    # An attach reads the floor back first; nothing is in force unless a test says so.
+    Mimic.stub(Managoat.Sandbox.Sprites, :network_policy_in_force?, fn _handle, _policy ->
+      false
+    end)
 
     # No pushed adapter bundle unless a test asks for one: the adapter then
     # installs after the floor, the path most tests here are about.

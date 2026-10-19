@@ -136,8 +136,20 @@ character in a target, CR or LF in a header) is refused with 403.
 ### 2. The network floor is `allow: [broker]`, and it is not optional
 
 Every sandbox gets `%NetworkPolicy{allow: [broker_host]}`
-(`Provisioning.apply_broker_floor/2`) on cold provision and on every
-reattach (a wake, or the first turn after a restart). It is a floor, not a default a tenant may widen: placeholders are
+(`Provisioning.apply_broker_floor/3`): written on cold provision, and
+asserted on every reattach (a wake, or the first turn after a restart). A
+reattach to a machine the provider reports running reads the policy back
+where the adapter can (`Sandbox.ensure_network_policy/2`; Sprites does) and
+writes it only when the provider does not report exactly the floor; a
+failed, slow or raising read counts as a mismatch, and any other machine is
+written as before. That skip trusts the provider's stored policy to be the
+one it enforces. The write is not free: a Sprites policy write resets the
+guest's open TCP flows when it takes effect, and a second write about a
+second after the first left 6 of 6 test sprites cutting 1–2.5 % of their
+flows for the 50 s they were watched (#2964). Since workspaces, the first
+attach after a setup follows the workspace's own write by about a second,
+and a later attach to a shared machine lands while other conversations
+stream. It is a floor, not a default a tenant may widen: placeholders are
 worthless to an attacker only if the attacker cannot reach an arbitrary host
 to try them against. `Provisioning.check_broker_support/2` refuses a provider
 without `:network_policy` with `{:broker, :backend_lacks_network_policy}`.
@@ -382,3 +394,4 @@ them.
   went with [0090](0090-portable-environment-layers.md), which was retired.
 - 2026-10-17 — Remote broker removed; the broker runs inside Managoat only, with a home-generated `BROKER_CA_SEED` ([0093](0093-the-broker-runs-inside-managoat.md)).
 - 2026-10-17 — Section 2 names the floor's two call sites; the "warm restore" path it also named no longer exists.
+- 2026-10-19 — Section 2: a reattach to a running machine leaves a floor the provider reports in force alone instead of rewriting it, because a Sprites policy write resets the sandbox's open flows (#2964).
