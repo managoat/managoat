@@ -228,8 +228,18 @@ defmodule Fountain.Conversations.ConfigHomeTest do
 
       ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/work/app"}))
       assert_received {:checkout, "checkout"}
-      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/tmp/x"}))
+      ConfigHome.ensure(@handle, conv(%{config_home: @home, cwd: "/home/sprite/x"}))
       assert_received {:checkout, ""}
+
+      # /tmp is gemini's own, and only gemini's: a claude or codex cwd there
+      # came through a mount.
+      ConfigHome.ensure(@handle, conv(%{runtime: "gemini", config_home: @home, cwd: "/tmp/x"}))
+      assert_received {:checkout, ""}
+
+      for runtime <- ~w(claude codex acp) do
+        ConfigHome.ensure(@handle, conv(%{runtime: runtime, config_home: @home, cwd: "/tmp/x"}))
+        assert_received {:checkout, "checkout"}
+      end
     end
 
     test "a cwd that physically lies in the config homes is exit 7; one in no checkout is 8" do

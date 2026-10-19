@@ -651,8 +651,8 @@ workspace's. So an environment that clones to `/work/app` can run an agent in
 ancestors, inside `/home/sprite/.managoat`, under another home in `/home`,
 or in a system tree (`/.sprite`, `/bin`, `/boot`, `/dev`, `/etc`, `/lib*`,
 `/nix`, `/proc`, `/root`, `/run`, `/sbin`, `/snap`, `/sys`, `/usr`, `/var`) is
-still cloned, but does not widen this rule. A `cwd` outside `/home/sprite` and
-`/tmp` must also lie in a checkout on the machine (the clone, or a directory
+still cloned, but does not widen this rule. A `cwd` outside `/home/sprite` (and,
+for gemini, `/tmp`) must also lie in a checkout on the machine (the clone, or a directory
 under it) when the conversation starts there; otherwise its first turn fails
 setup. This matters for a workspace, whose machine clones only at setup: a
 mount added to the environment afterwards is not there yet. The

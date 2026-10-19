@@ -248,6 +248,26 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
     end
   end
 
+  test "a working directory outside its runtime's own roots is held to a mount's rule", ctx do
+    # A claude conversation in /tmp (only gemini's own) came through a mount:
+    # the script admits it only inside a checkout. Gemini's own stays plain.
+    insert_conversation(
+      user_id: ctx.user.id,
+      agent: insert_agent(user_id: ctx.user.id, runtime: "claude"),
+      sandbox: ctx.sandbox,
+      workspace_id: ctx.workspace.id,
+      cwd: "/tmp/repo",
+      status: "idle"
+    )
+
+    exec_returns("")
+    ctx |> get_api("/api/workspaces/#{ctx.workspace.id}/files") |> json_response(200)
+    assert_received {:exec_args, [@home | rest]}
+    assert "mount:/tmp/repo" in rest
+    assert "sandbox:/tmp/gemini-workspace" in rest
+    assert "sandbox:/home/sprite/a" in rest
+  end
+
   test "another account's environment never lends its mounts", ctx do
     # A sandbox row naming an environment that is not its owner's (it cannot
     # happen through a launch; the read is scoped regardless).

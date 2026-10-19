@@ -861,8 +861,8 @@ A PR sequence, each releasable alone:
   `.git`): a mount added after setup names nothing cloned. The directories
   script refuses (exit 7) a `cwd` whose nearest existing ancestor, or which
   itself, physically lies in the config homes, since the name check cannot
-  see a mount someone replaced with a symlink into them. A `cwd` outside the
-  home and `/tmp` must lie in a checkout on the machine when it is created
+  see a mount someone replaced with a symlink into them. A `cwd` outside its
+  runtime's own roots (the home, and `/tmp` for gemini only) must lie in a checkout on the machine when it is created
   (exit 8 otherwise), and as a read root it is held to a mount's rule, since
   a workspace's machine clones only at setup and a mount added later names
   nothing cloned.

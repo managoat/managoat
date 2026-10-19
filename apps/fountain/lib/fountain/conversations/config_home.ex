@@ -253,11 +253,20 @@ defmodule Fountain.Conversations.ConfigHome do
     if Map.get(conv, :cwd) in [nil, ""], do: :ok, else: make_directories(handle, conv)
   end
 
+  @doc """
+  Whether `cwd` for `runtime` lies outside the runtime's own roots (the home,
+  and `/tmp` for gemini only), so it was admitted under a repository mount
+  and is held to a mount's rule: it counts only inside a checkout on the
+  machine, since the environment's mounts are read as they are now and a
+  workspace's machine clones only at setup.
+  """
+  @spec needs_checkout?(String.t(), String.t() | nil) :: boolean()
+  def needs_checkout?(cwd, runtime),
+    do: not Enum.any?(cwd_roots(runtime), &under?(cwd, &1))
+
   defp make_directories(handle, conv) do
     cwd = cwd(conv)
-    # A cwd outside the home and /tmp was admitted under a repository mount,
-    # read as the environment is now: it must lie in a checkout.
-    checkout = if under?(cwd, @image_home) or under?(cwd, "/tmp"), do: "", else: "checkout"
+    checkout = if needs_checkout?(cwd, runtime(conv)), do: "checkout", else: ""
     args = [home(conv), cwd, managoat_dir(), checkout]
 
     case Managoat.Sandbox.Retry.with_backoff(

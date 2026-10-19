@@ -194,22 +194,31 @@ defmodule Fountain.SandboxFiles do
   defp tagged_roots(%Sandbox{} = sandbox) do
     working =
       case Fountain.Workspaces.machine_kind(sandbox) do
-        :explicit -> live_cwds(sandbox)
-        :implicit -> [cwd(sandbox)]
+        :explicit -> live_working(sandbox)
+        :implicit -> [{cwd(sandbox), implicit_runtime(sandbox)}]
       end
 
     Enum.uniq_by(
-      [{@home, "sandbox:"} | Enum.map(working, &{&1, working_tag(&1)})] ++
+      [{@home, "sandbox:"} | Enum.map(working, &working_root/1)] ++
         Enum.map(mount_roots(sandbox), &{&1, "mount:"}),
       &elem(&1, 0)
     )
   end
 
-  # A working directory outside the home and /tmp was admitted at its launch
-  # under a repository mount, read as the environment was then, so it is held
-  # to a mount's rule: a root only inside a checkout.
-  defp working_tag(dir) do
-    if under?(dir, @home) or under?(dir, "/tmp"), do: "sandbox:", else: "mount:"
+  # A working directory outside its runtime's own roots (the home, and /tmp
+  # for gemini) was admitted at its launch under a repository mount, so it is
+  # held to a mount's rule: a root only inside a checkout.
+  defp working_root({dir, runtime}) do
+    if Fountain.Conversations.ConfigHome.needs_checkout?(dir, runtime),
+      do: {dir, "mount:"},
+      else: {dir, "sandbox:"}
+  end
+
+  defp implicit_runtime(%Sandbox{} = sandbox) do
+    case conversation_layout(sandbox) do
+      %{runtime: runtime} -> runtime
+      nil -> agent_runtime(sandbox)
+    end
   end
 
   # ownership: the caller fetched `sandbox` tenant-scoped, and the
@@ -225,13 +234,13 @@ defmodule Fountain.SandboxFiles do
 
   # ownership: the caller fetched `sandbox` tenant-scoped; its conversations
   # are the same tenant's.
-  defp live_cwds(%Sandbox{} = sandbox) do
+  defp live_working(%Sandbox{} = sandbox) do
     sandbox
     |> on_machine()
     |> where([c], not is_nil(c.runtime) and c.status not in ["terminated", "failed"])
     |> select([c], %{runtime: c.runtime, cwd: c.cwd})
     |> Repo.all()
-    |> Enum.map(&Fountain.Conversations.ConfigHome.cwd/1)
+    |> Enum.map(&{Fountain.Conversations.ConfigHome.cwd(&1), &1.runtime})
   end
 
   @doc """
