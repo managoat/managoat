@@ -79,7 +79,6 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
     end
   end
 
-  # The stage events of one stage as `{state, meta}` pairs, in order.
   # A HOME laid out like a sprite's (#3026): ~/.profile sources ~/.bashrc,
   # which runs `bind` unguarded, sets the image's language variable and
   # defines a function.
@@ -101,6 +100,7 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
     home
   end
 
+  # The stage events of one stage as `{state, meta}` pairs, in order.
   defp stages(conv_id, stage) do
     Fountain.Repo.all(
       from(e in Conversations.LogEvent,
@@ -688,6 +688,50 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
                )
 
       assert File.read!(err) == "it's err\n"
+    end
+
+    # Bash skips BASH_ENV in posix mode, which a tenant's env can turn on; the
+    # command's stderr must not go to /dev/null with it.
+    @tag :tmp_dir
+    test "keeps the command's stderr in posix mode", %{tmp_dir: home} do
+      sprite_home(home)
+      script = Provisioning.login_script("echo out; echo err >&2; exit 4")
+
+      assert {"out\nerr\n", 4} ==
+               System.cmd("bash", ["-c", script],
+                 env: [{"HOME", home}, {"POSIXLY_CORRECT", "1"}],
+                 stderr_to_stdout: true
+               )
+    end
+
+    # A syntax error in the first command is reported, not swallowed with the
+    # startup files' stderr, at the line it was always reported at.
+    @tag :tmp_dir
+    test "reports a syntax error in the script's first command", %{tmp_dir: home} do
+      sprite_home(home)
+      script = Provisioning.login_script("if true; then\necho x\n")
+
+      assert {out, 2} =
+               System.cmd("bash", ["-c", script], env: [{"HOME", home}], stderr_to_stdout: true)
+
+      assert out =~ "syntax error"
+      refute out =~ "bind"
+    end
+
+    # The environment's own BASH_ENV is still read by the login shell and
+    # still reaches the shells the command starts.
+    @tag :tmp_dir
+    test "keeps the environment's BASH_ENV", %{tmp_dir: home} do
+      sprite_home(home)
+      user_env = Path.join(home, "user_env")
+      File.write!(user_env, "from_user_env() { echo user; }\n")
+      script = Provisioning.login_script(~S[from_user_env; bash -c 'echo "child $BASH_ENV"'])
+
+      assert {"user\nchild #{user_env}\n", 0} ==
+               System.cmd("bash", ["-c", script],
+                 env: [{"HOME", home}, {"BASH_ENV", user_env}],
+                 stderr_to_stdout: true
+               )
     end
 
     @tag :tmp_dir

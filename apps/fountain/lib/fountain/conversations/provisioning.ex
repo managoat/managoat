@@ -852,20 +852,36 @@ defmodule Fountain.Conversations.Provisioning do
   # of the lines a failed setup script's error quotes.
   #
   # So the login shell reads its startup files with stderr on /dev/null, and
-  # gets it back before the command's first line. Bash reads `BASH_ENV` after
-  # a non-interactive login shell's profiles and before the `-c` command; this
-  # one puts stderr back from fd 3, where it waited, and unsets itself so that
-  # no shell the command starts reads it. The command still runs in the login
-  # shell itself, exactly as `bash -lc` ran it: the same `$0` and arguments,
-  # the profiles' functions and unexported variables. What a startup file
-  # prints on stdout still shows; what it prints on stderr, its own errors
-  # included, does not.
+  # gets it back, from fd 9 where it waited, before the command's first line.
+  # Bash reads `BASH_ENV` after a non-interactive login shell's profiles and
+  # before the `-c` command, so a `BASH_ENV` file does that. It then puts back
+  # the `BASH_ENV` the environment had, sourcing it as bash would have, or
+  # unsets it, so that no shell the command starts reads ours.
+  #
+  # Bash skips `BASH_ENV` in posix mode (`POSIXLY_CORRECT`, `SHELLOPTS`, a
+  # profile's `set -o posix`), and a profile can set `BASH_ENV` itself; either
+  # would leave the command's own stderr on /dev/null. The same line as the
+  # command's first therefore puts stderr back too if fd 9 is still open. It
+  # cannot do it alone: bash parses the whole first command before running
+  # any of it, so a syntax error there would go to /dev/null.
+  #
+  # The command still runs in the login shell itself, as `bash -lc` ran it:
+  # the same `$0`, arguments and line numbers, the profiles' functions and
+  # unexported variables. What a startup file prints on stdout still shows;
+  # what it prints on stderr, its own errors included, does not.
   @login_shell ~S"""
   login_shell() {
     local startup rc
     startup=$(mktemp) || return 1
-    printf '%s\n' 'exec 2>&3 3>&-' 'unset BASH_ENV' >"$startup"
-    BASH_ENV=$startup bash -lc "$1" 3>&2 2>/dev/null
+    {
+      echo 'exec 2>&9 9>&-'
+      if [ -n "${BASH_ENV-}" ]; then
+        printf 'BASH_ENV=%q\n. "$BASH_ENV"\n' "$BASH_ENV"
+      else
+        echo 'unset BASH_ENV'
+      fi
+    } >"$startup"
+    BASH_ENV=$startup bash -lc "{ : >&9; } 2>/dev/null && exec 2>&9 9>&-; $1" 9>&2 2>/dev/null
     rc=$?
     rm -f -- "$startup"
     return "$rc"
