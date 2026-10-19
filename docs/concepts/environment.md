@@ -82,11 +82,28 @@ setup does not start the agent. This controls setup, not inference time or spend
 
 A setup script cannot configure the runtime by writing into the image's
 `~/.claude`, `~/.codex` or `~/.gemini`: each conversation reads a config home
-of its own. A conversation's setup runs with `$CLAUDE_CONFIG_DIR`,
-`$CODEX_HOME` or `$GEMINI_CLI_HOME` naming it, so write there. A
-[workspace](workspaces.md)'s setup runs once, before any conversation, with
-none of those set, so it reaches no agent's configuration; put that on the
-agent instead.
+of its own, made after the setup has run. Write runtime configuration into
+the **runtime template** instead. The script runs with
+`MANAGOAT_RUNTIME_TEMPLATE` set to `/home/sprite/.managoat/template`, whose
+`claude/`, `codex/` and `gemini/` directories hold what `~/.claude`,
+`~/.codex` and `~/.gemini` would. Each conversation's config home starts as a
+copy of its runtime's directory, with Managoat's own files written on top.
+That works the same for a [workspace](workspaces.md)'s setup, which runs
+before any conversation exists, and for a conversation's own:
+
+```bash
+t="$MANAGOAT_RUNTIME_TEMPLATE"
+cat > "$t/claude/settings.json" <<'EOF'
+{ "includeCoAuthoredBy": false }
+EOF
+printf 'project_doc_max_bytes = 65536\n' > "$t/codex/config.toml"
+```
+
+The template is copied once per conversation, when its config home is made,
+so a later change reaches only new conversations. It is not a place for
+secrets. [Configure the runtimes from the setup](workspaces.md#configure-the-runtimes-from-the-setup)
+has the rules: which files Managoat's win over, which are merged, and what is
+not copied.
 
 The setup step ends when the script exits. A process the script starts in the
 background, such as a dev server, keeps running, but what it prints after the

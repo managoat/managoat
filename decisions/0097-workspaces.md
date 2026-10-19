@@ -195,6 +195,17 @@ Accepted cost: the Claude CLI pays its first-start policy fetch (about 1.2 s)
 on every fresh config home, and every live conversation is a resident adapter
 process.
 
+A config home starts as a copy of the **runtime template** (#2998). The
+environment's setup script runs with `MANAGOAT_RUNTIME_TEMPLATE`
+(`~/.managoat/template`, with empty `claude/`, `codex/` and `gemini/` made
+first) and writes there what it would have written into `~/.claude`,
+`~/.codex` or `~/.gemini`. The runtime's directory is copied into a home once,
+when the home is made, and Managoat's files go on top and win. The JSON files
+Managoat writes keys into (claude's `settings.json` and `.claude.json`,
+gemini's `settings.json`) are merged at the top level, Managoat's keys over
+the template's, and `mcpServers` is the agent's, whole. Only regular files and
+directories are copied; a symlink is neither followed nor copied.
+
 ### Lifecycle
 
 - **Ending a conversation** (terminate, delete) stops its adapter process and
@@ -993,3 +1004,36 @@ A PR sequence, each releasable alone:
   only that the provider was known, so it could destroy the working machine
   and then fail to build the next. A stranded build is refused the same way
   rather than started.
+- 2026-10-19 — The runtime template (#2998). A workspace's setup runs before
+  any conversation exists, and since step 1 a conversation ignores the
+  image's `~/.claude`, `~/.codex` and `~/.gemini`, so a setup script could
+  configure no runtime an agent used. Now every setup script, a workspace's
+  or a conversation's own, runs with `MANAGOAT_RUNTIME_TEMPLATE`
+  (`~/.managoat/template`), whose `claude/`, `codex/` and `gemini/` are made
+  empty in the setup's own exec, and each new config home starts as a copy of
+  its runtime's directory there, with Managoat's files written on top. The
+  copy is made once, when the home is made, not live: a conversation
+  attaching to a machine that is already up (a workspace launch, or a
+  conversation following its workspace onto a rebuilt one) copies it before
+  Managoat writes anything into a home that is not there yet, built beside
+  the home and renamed into place; a wake finds its home and copies nothing,
+  and one holding a runtime session skips the check; a conversation whose
+  own provision built the machine copies it after the setup script and
+  Managoat's own writes, without replacing them. A rebuild runs the setup on
+  the new machine before any conversation follows there, so each gets a home
+  from the new template. Calls made here: the JSON files Managoat writes keys
+  into (claude's `settings.json` and `.claude.json`, gemini's
+  `settings.json`) are merged at the top level, the template's file the base
+  and Managoat's keys over it, and every later write keeps the rest of the
+  file, where claude's `settings.json` used to be overwritten whole;
+  `mcpServers` is replaced whole rather than merged by name, so the servers
+  that run are the agent's, an agent that drops one drops it on its next
+  wake, and every server's credentials take the agent's path; only regular
+  files and directories are copied, with their modes, a symlink being
+  neither followed nor copied and a template that is itself a symlink not
+  used; a merged file that is not a JSON object fails the provision or the
+  attach, naming the file, rather than being dropped; a template skill named
+  like one Managoat writes gives way, whole; and the template is not a secret
+  store, on the disk where the file routes read it, redacted, like the
+  config homes. No new ADR: this completes step 1's config home for the setup
+  step 5 moved ahead of every conversation.

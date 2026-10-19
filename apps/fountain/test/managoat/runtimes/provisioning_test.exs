@@ -138,41 +138,67 @@ defmodule Managoat.Runtimes.ProvisioningTest do
       assert Gemini.config_env(@home) == [{"GEMINI_CLI_HOME", @home}]
     end
 
-    test "write_config/3 writes user-scope MCP servers under gemini's own .gemini" do
+    # The settings file reads as `existing` (nil: not there); writes and the
+    # rename into place are reported.
+    defp stub_gemini_settings(existing) do
       test = self()
 
-      expect(Sandbox, :write_file, fn @handle, path, body ->
-        send(test, {:wrote, path, body})
+      stub(Sandbox, :exec, fn
+        @handle, "bash", ["-c", _script, "managoat-json-read", path], _opts ->
+          send(test, {:read, path})
+          {:ok, if(existing, do: "+" <> Base.encode64(existing) <> "\n", else: "-\n"), 0}
+
+        @handle, "bash", ["-c", _rename], _opts ->
+          {:ok, "", 0}
+      end)
+
+      stub(Sandbox, :write_file, fn @handle, path, body, opts ->
+        send(test, {:wrote, path, body, opts})
         :ok
       end)
+    end
+
+    test "write_config/3 writes user-scope MCP servers under gemini's own .gemini" do
+      stub_gemini_settings(nil)
 
       servers = %{"fs" => %{"command" => "mcp-fs"}}
       assert :ok = Gemini.write_config(@handle, %{mcp_servers: servers}, @home)
 
       path = "#{@home}/.gemini/settings.json"
-      assert_receive {:wrote, ^path, body}
+      assert_receive {:read, ^path}
+      assert_receive {:wrote, tmp, body, mode: 0o600}
+      assert String.starts_with?(tmp, path <> ".managoat.")
       assert Jason.decode!(body) == %{"mcpServers" => servers}
     end
 
     test "write_config/3 without servers writes an empty list, so a dropped server goes" do
-      test = self()
-
-      stub(Sandbox, :write_file, fn @handle, path, body ->
-        send(test, {:wrote, path, body})
-        :ok
-      end)
+      stub_gemini_settings(~s({"mcpServers": {"gone": {}}}))
 
       for agent <- [nil, %{mcp_servers: %{}}, %{mcp_servers: nil}] do
         assert :ok = Gemini.write_config(@handle, agent, "/tmp")
-        assert_receive {:wrote, "/tmp/.gemini/settings.json", body}
+        assert_receive {:wrote, "/tmp/.gemini/settings.json.managoat." <> _, body, _}
         assert Jason.decode!(body) == %{"mcpServers" => %{}}
       end
     end
 
+    test "write_config/3 keeps the rest of the settings, a runtime template's included" do
+      stub_gemini_settings(~s({"ui": {"theme": "x"}, "mcpServers": {}}))
+
+      assert :ok = Gemini.write_config(@handle, %{mcp_servers: %{"a" => %{}}}, @home)
+      assert_receive {:wrote, _tmp, body, _}
+      assert Jason.decode!(body) == %{"ui" => %{"theme" => "x"}, "mcpServers" => %{"a" => %{}}}
+
+      # Already so: nothing is written.
+      stub_gemini_settings(~s({"ui": {}, "mcpServers": {"a": {}}}))
+      assert :ok = Gemini.write_config(@handle, %{mcp_servers: %{"a" => %{}}}, @home)
+      refute_receive {:wrote, _, _, _}, 50
+    end
+
     test "a refused config write is reported, not swallowed" do
+      stub_gemini_settings(nil)
       # `:not_found` is permanent in the sandbox taxonomy, so Retry does not
       # spend its attempts on it and the error comes straight back.
-      expect(Sandbox, :write_file, fn _h, _p, _b -> {:error, :not_found} end)
+      stub(Sandbox, :write_file, fn _h, _p, _b, _o -> {:error, :not_found} end)
 
       path = "#{@home}/.gemini/settings.json"
 

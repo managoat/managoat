@@ -120,8 +120,10 @@ session store and its credential files. Managoat points the runtime at it
 with one environment variable, which the agent's process carries. Two
 conversations on one machine therefore share no runtime state. The shared
 `~/.claude`, `~/.codex` and `~/.gemini` of the image are not read, so a
-setup script that writes into one of them no longer reaches the agent;
-write to the variable's directory instead.
+setup script that writes into one of them no longer reaches the agent. A
+setup script writes into the runtime template instead, which each new config
+home starts as a copy of: read
+[Configure the runtimes from the setup](../../concepts/workspaces.md#configure-the-runtimes-from-the-setup).
 
 Each runtime has its own layout under that home. That is why one skill list
 produces different paths. Below, `<home>` is the config home.

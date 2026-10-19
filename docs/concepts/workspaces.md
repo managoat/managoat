@@ -86,7 +86,9 @@ Each conversation has three things of its own on the shared machine:
   pointed at it with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GEMINI_CLI_HOME`.
   The agent's skills, its instructions file, its MCP configuration, the
   runtime's session and its inference credential live there, so two
-  conversations never overwrite each other's settings.
+  conversations never overwrite each other's settings. It starts as a copy
+  of the [runtime template](#configure-the-runtimes-from-the-setup) the
+  setup script filled.
 - **An adapter process**, the runtime itself, started for that conversation.
 
 So any mix works on one machine: claude, codex and gemini side by side, or two
@@ -140,14 +142,76 @@ event stream.
 
 The setup is not a conversation, so it has no transcript and no runtime: it
 runs with no `MANAGOAT_TOKEN`, no conversation id and no config home
-variables. A setup script that writes runtime configuration therefore reaches
-no agent. Put that configuration on the [agent](agent.md) instead.
+variables. To configure the runtimes the agents will use, the setup script
+writes into the runtime template instead, described next.
 
 You can launch conversations into a workspace before it is ready. Their first
 prompt waits for the setup. A prompt into a conversation in a `failed`
 workspace starts the setup again, with the environment as it is then, and
 fails with it if it fails again; two
 prompts that arrive together start it once.
+
+### Configure the runtimes from the setup
+
+A setup script runs before any conversation exists, so there is no config
+home for it to write into. It writes into the **runtime template** instead.
+The script runs with `MANAGOAT_RUNTIME_TEMPLATE` set to
+`/home/sprite/.managoat/template`, where `claude/`, `codex/` and `gemini/`
+are made, empty, just before it starts. Each one holds what `~/.claude`,
+`~/.codex` or `~/.gemini` would: a Claude `settings.json` with hooks and the
+scripts they run, a codex `config.toml`, a gemini `settings.json`.
+[Run several agents on one machine](../guides/agents-in-one-workspace.md#give-the-runtimes-their-settings)
+shows a setup script that writes a Claude hook and a codex `config.toml`.
+
+When Managoat makes a conversation's config home, it copies the template
+directory for that conversation's runtime into it, then writes its own files
+on top. The same holds for a conversation without a workspace whose
+environment has a setup script.
+
+- **It is copied once, when the home is made.** That is a conversation's
+  first attach to the workspace's machine, or, without a workspace, its own
+  provision, right after the setup script. A wake does not copy it again. A
+  later change to the template, by hand or by an agent, reaches only
+  conversations whose homes are made after it.
+- **Managoat's own files win.** These are the agent's instructions file
+  (when the agent has a system prompt), its skills (a template skill with the
+  same name is replaced, directory and all), the codex `auth.json` and the
+  runtime's session. Everything else in the template is copied as it is.
+- **Some JSON files are merged rather than replaced.** Claude's
+  `settings.json` and `.claude.json`, and gemini's `settings.json`, are files
+  Managoat writes keys into. For these, the template's file is the base and
+  Managoat sets its keys over it, at the top level: `showThinkingSummaries` in
+  Claude's `settings.json`, and `mcpServers` in the other two. A template's
+  `hooks`, `permissions` or `env` survive, then and on every later wake.
+- **`mcpServers` is replaced whole.** The MCP servers that run are the
+  agent's own. An agent that drops a server drops it on its next wake. Each
+  server's credentials take the agent's path, through `${VAR}` references and
+  the broker. Put MCP servers on the [agent](agent.md), not in the template.
+  Managoat writes no codex `config.toml`, so a template's `config.toml` is
+  used as it is, and any `[mcp_servers]` it names start beside the agent's.
+- **Only regular files and directories are copied, with their modes**, so a
+  hook script stays executable. A symlink is skipped, not followed, and so
+  is anything that is not a file. A template, or a runtime's directory in it,
+  that is itself a symlink is not used.
+- **A merged file that is not a JSON object fails.** For example, a
+  `settings.json` with a syntax error stops the conversation's provision or
+  attach with `runtime_template` and `not_a_json_object` naming the file.
+  Fix the setup script. A conversation without a workspace runs it again on
+  its next prompt. A ready workspace does not run its setup again, so create
+  the workspace again.
+- **It is not a place for secrets.** The template is on the machine's disk
+  like everything else. Every conversation's home gets a copy, and the
+  [disk reads](#reading-its-disk) can read it, redacted like any other file.
+  Give an agent a secret through the environment or the vault, as an
+  environment variable.
+
+A rebuild after a lost machine runs the setup again on the new machine, which
+fills a new template, before any conversation moves there. Each conversation
+then gets a new config home from that template.
+
+A conversation started before config homes existed keeps its shared
+directory and gets no template. So does one whose config home was already
+there when the template arrived. The `acp` runtime has no template directory.
 
 ### Conversations come and go
 
@@ -267,10 +331,10 @@ own `~/.claude`, `~/.codex` or `~/.gemini`. That affects every conversation,
 in a workspace or not:
 
 - A setup script that wrote into those directories no longer reaches new
-  conversations. A conversation's own setup runs with `$CLAUDE_CONFIG_DIR`,
-  `$CODEX_HOME` and `$GEMINI_CLI_HOME` set, so write there instead. A
-  workspace's setup has no conversation and no config home, so give that
-  configuration to the agent.
+  conversations. Write into `$MANAGOAT_RUNTIME_TEMPLATE/claude`, `/codex` or
+  `/gemini` instead: see
+  [Configure the runtimes from the setup](#configure-the-runtimes-from-the-setup).
+  That works for a workspace's setup and a conversation's own alike.
 - The Sprites image's bundled `sprite` skills in `~/.claude/skills` and
   `~/.codex/skills` are not seen by new conversations.
 - A conversation started before the upgrade keeps the shared directory its

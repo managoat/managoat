@@ -152,9 +152,17 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
 
       stub(Managoat.Sandbox, :exec, fn _handle,
                                        "bash",
-                                       ["-c", _, "fountain-setup", "echo hi"],
+                                       ["-c", wrapper, "fountain-setup", "echo hi"],
                                        opts ->
-        assert opts[:env] == sprite_env
+        # The runtime template (#2998): its directories are made in the same
+        # exec, before the script, which finds them in the env.
+        assert String.starts_with?(wrapper, Managoat.Runtimes.Template.prepare_script())
+        assert String.ends_with?(wrapper, Provisioning.stream_wrapper())
+
+        assert opts[:env] ==
+                 sprite_env ++
+                   [{"MANAGOAT_RUNTIME_TEMPLATE", "/home/sprite/.managoat/template"}]
+
         assert opts[:stderr_to_stdout]
         assert opts[:timeout] == 120_000
         {:ok, "hi\n", 0}

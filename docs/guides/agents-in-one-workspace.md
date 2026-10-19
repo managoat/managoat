@@ -80,6 +80,71 @@ The agents name no environment: in a workspace the environment comes from
 the workspace. An agent with `allowed_environment_ids` or `allowed_vault_ids`
 must allow the workspace's.
 
+### Give the runtimes their settings
+
+The setup script runs before any agent arrives, so it cannot write into an
+agent's `~/.claude` or `~/.codex`: each conversation gets a config home of its
+own, made later. It writes into the runtime template instead,
+`$MANAGOAT_RUNTIME_TEMPLATE`, whose `claude/`, `codex/` and `gemini/`
+directories hold what `~/.claude`, `~/.codex` and `~/.gemini` would. Each
+conversation's config home starts as a copy of its runtime's directory.
+
+This setup script gives every claude agent a hook that formats the files it
+edits, and every codex agent a larger limit for the `AGENTS.md` files it
+reads. Replace the environment's `setup_script` in `app.yml` with it:
+
+```yaml
+  setup_script: |
+    cd /home/sprite/app && npm ci
+
+    t="$MANAGOAT_RUNTIME_TEMPLATE"
+
+    # Claude: after each Edit or Write, format what changed.
+    mkdir -p "$t/claude/hooks"
+    cat > "$t/claude/hooks/format.sh" <<'EOF'
+    #!/bin/sh
+    cd /home/sprite/app && npx --no-install prettier --write --log-level warn . >/dev/null 2>&1
+    exit 0
+    EOF
+    chmod +x "$t/claude/hooks/format.sh"
+    cat > "$t/claude/settings.json" <<'EOF'
+    {
+      "hooks": {
+        "PostToolUse": [
+          {
+            "matcher": "Edit|Write",
+            "hooks": [
+              { "type": "command", "command": "\"$CLAUDE_CONFIG_DIR\"/hooks/format.sh" }
+            ]
+          }
+        ]
+      }
+    }
+    EOF
+
+    # Codex: read AGENTS.md files up to 64 KiB.
+    cat > "$t/codex/config.toml" <<'EOF'
+    project_doc_max_bytes = 65536
+    EOF
+```
+
+The hook's command names the script through `$CLAUDE_CONFIG_DIR`. That is the
+conversation's own config home, where the script was copied, so every claude
+conversation runs its own copy.
+
+Some things to know:
+
+- Managoat merges its own keys into Claude's `settings.json` and keeps the
+  rest, so the hooks survive. It replaces `mcpServers` with the agent's own:
+  put MCP servers on the agent.
+- The template is copied when a conversation's config home is made. Editing
+  it later changes only conversations started after the edit.
+- Do not put secrets in the template. Every conversation gets a copy, and the
+  workspace's disk reads can read it.
+
+[Configure the runtimes from the setup](../concepts/workspaces.md#configure-the-runtimes-from-the-setup)
+has the full rules.
+
 ## 2. Create the workspace
 
 ```bash
@@ -210,6 +275,8 @@ destroys the machine with its disk. Push the work first.
 |---|---|---|
 | `workspace setup failed: …` | The setup script, a package or a clone failed. The message names the step. | Fix the environment, then prompt a conversation in the workspace: that runs the setup again with the environment as it is now. |
 | `422 workspace_fixes_environment` | The launch named an environment or vault other than the workspace's. | Drop `--environment` and `--vault`. |
+| A conversation fails with `runtime_template` and `not_a_json_object` | A `settings.json` or `.claude.json` the setup script wrote into the template is not valid JSON. | Fix the setup script, then create the workspace again: a ready workspace does not run its setup again. |
+| An agent ignores a setting you added to the template | The template is copied when a conversation's config home is made, so a conversation started before the change kept the old copy. Managoat also owns `mcpServers` and `showThinkingSummaries`. | Start a new conversation. Put MCP servers on the agent. |
 | `422 environment_not_allowed` or `vault_not_allowed` | The agent's allowlist does not include the workspace's environment or vault. | Add them to the agent's `allowed_environment_ids` or `allowed_vault_ids`. |
 | `403` with `required_scope: "full"` | A sandbox's own key, such as `MANAGOAT_TOKEN` inside a sandbox, cannot use workspaces. | Use a key from `managoat auth login`. |
 | `503 fleet_full` on create | Every sandbox slot on the provider is in use. | Try again in a minute. |

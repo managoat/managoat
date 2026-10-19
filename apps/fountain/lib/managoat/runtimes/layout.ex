@@ -75,12 +75,17 @@ defmodule Managoat.Runtimes.Layout do
   # Where every conversation's config home lives, one directory each.
   @config_homes Path.join(@image_home, ".managoat/c")
 
+  # The runtime template an environment's setup script fills, one directory
+  # per runtime, copied into each new config home (#2998).
+  @runtime_template Path.join(@image_home, ".managoat/template")
+
   @layouts %{
     "claude" => %{
       config_var: "CLAUDE_CONFIG_DIR",
       config_dir: nil,
       legacy_home: Path.join(@image_home, ".claude"),
       instructions_file: "CLAUDE.md",
+      merged_files: ["settings.json", ".claude.json"],
       cwd: @image_home
     },
     "codex" => %{
@@ -88,6 +93,7 @@ defmodule Managoat.Runtimes.Layout do
       config_dir: nil,
       legacy_home: Path.join(@image_home, ".codex"),
       instructions_file: "AGENTS.md",
+      merged_files: [],
       cwd: @image_home
     },
     # The default cwd is separate because gemini walks up from cwd looking
@@ -99,6 +105,7 @@ defmodule Managoat.Runtimes.Layout do
       config_dir: ".gemini",
       legacy_home: "/tmp",
       instructions_file: "GEMINI.md",
+      merged_files: ["settings.json"],
       cwd: "/tmp/gemini-workspace"
     }
   }
@@ -116,6 +123,37 @@ defmodule Managoat.Runtimes.Layout do
   @doc "The directory every conversation's config home is created under."
   @spec config_homes() :: String.t()
   def config_homes, do: @config_homes
+
+  @doc """
+  The runtime template's root, `/home/sprite/.managoat/template`: an
+  environment's setup script runs with it as `MANAGOAT_RUNTIME_TEMPLATE`,
+  and each runtime's directory under it (`runtime_template/1`) is copied
+  into a conversation's config home when the home is made
+  (`Managoat.Runtimes.Template`).
+  """
+  @spec runtime_template_root() :: String.t()
+  def runtime_template_root, do: @runtime_template
+
+  @doc """
+  The runtime's template directory, `<runtime_template_root>/<runtime>`,
+  whose contents mirror the runtime's config directory (`config_dir/2`):
+  `claude/` what `~/.claude` would hold, `codex/` `~/.codex`, `gemini/`
+  `~/.gemini`. nil for a runtime we do not know, which has no template.
+  """
+  @spec runtime_template(runtime()) :: String.t() | nil
+  def runtime_template(runtime) do
+    if Map.has_key?(@layouts, runtime), do: Path.join(@runtime_template, runtime)
+  end
+
+  @doc """
+  The JSON files, relative to the runtime's config directory, that Managoat
+  writes keys into and otherwise keeps: claude's `settings.json`
+  (`showThinkingSummaries`) and `.claude.json` (`mcpServers`), gemini's
+  `settings.json` (`mcpServers`). A template's copy of one of these is
+  merged with what is there rather than skipped (`Managoat.Runtimes.Template`).
+  """
+  @spec merged_files(runtime()) :: [String.t()]
+  def merged_files(runtime), do: get_in(@layouts, [runtime, :merged_files]) || []
 
   @doc """
   The config home of the conversation `conversation_id`, for every runtime:

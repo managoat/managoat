@@ -19,6 +19,7 @@ defmodule Fountain.SandboxSkills do
   @managoat_skill_name "managoat"
   # Every sandbox gets these.
   @bundled_skills [@managoat_skill_name]
+  @plain_name ~r/\A[A-Za-z0-9_][A-Za-z0-9._-]*\z/
 
   @doc """
   Mount `skills` (a list of inline/github maps, the agent's `skills` field)
@@ -529,6 +530,21 @@ defmodule Fountain.SandboxSkills do
       {:ok, _output, code} -> {:error, "skill reconciliation exited with #{code}"}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc """
+  The directory names a mount of `skills` is sure to write under the skills
+  root: the bundled skills and the agent's inline ones. A GitHub skill's
+  directories are known only once it is fetched, and its install replaces
+  each one whole anyway. Only plain names (no `/`, not `.` or `..`) are
+  answered.
+  """
+  @spec inline_names([map()] | nil) :: [String.t()]
+  def inline_names(skills) do
+    agent =
+      for s <- normalize(skills), is_binary(s["content"]), is_binary(s["name"]), do: s["name"]
+
+    Enum.uniq(for name <- @bundled_skills ++ agent, name =~ @plain_name, do: name)
   end
 
   @doc """
