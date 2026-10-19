@@ -712,7 +712,7 @@ A PR sequence, each releasable alone:
   reaches it through the conversation's binding. An explicit workspace a
   rebuild set back to `provisioning` settles with the build. Once this has
   rebuilt a machine, a rollback must not go to a release with 3b and not 3c.
-- 2026-10-19 — Step 5a built, with no API yet
+- 2026-10-18 — Step 5a built, with no API yet
   (`Fountain.Workspaces.create_workspace/3`, `delete_workspace/2`). The
   network an explicit workspace's setup runs under is the workspace's
   (`Fountain.Workspaces.Network`): the floor and the broker CA are the

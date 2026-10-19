@@ -1185,7 +1185,7 @@ defmodule Fountain.Machines.Provision do
     error ->
       Logger.warning(
         "machine #{sandbox.id}: could not destroy the machine this failed provision " <>
-          "(#{inspect(reason)}) built: " <> Exception.format(:error, error, __STACKTRACE__)
+          "(#{reason_text(reason)}) built: " <> Exception.format(:error, error, __STACKTRACE__)
       )
 
       :ok
