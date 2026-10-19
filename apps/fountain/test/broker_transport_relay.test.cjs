@@ -190,6 +190,71 @@ test('transport relay integration', { timeout: 60_000 }, async t => {
     assert.deepEqual(await exchange(listen, Buffer.from('awake')), Buffer.from('awake'));
   });
 
+  await t.test('a supervisor exiting mid-request counts as gone, not as a failure (#3021)', async () => {
+    await command('stop', config);
+    // Stand-ins for a supervisor that exits with a status or stop request in
+    // flight: it either ends the connection unanswered or closes it with the
+    // request unread, which the client reads as ECONNRESET.
+    const exits = {
+      unanswered: socket => { socket.resume(); socket.end(); },
+      reset: socket => setTimeout(() => socket.destroy(), 100)
+    };
+    for (const [name, hangUp] of Object.entries(exits)) {
+      for (const mode of ['ensure', 'stop']) {
+        const exiting = net.createServer({ pauseOnConnect: true }, socket => {
+          socket.on('error', () => {});
+          exiting.close();
+          hangUp(socket);
+        });
+        await new Promise(resolve => exiting.listen(controlPath, resolve));
+        try {
+          await assert.doesNotReject(command(mode, config), `${mode} after a supervisor ${name} exit`);
+        } finally { if (exiting.listening) exiting.close(); }
+        await command('stop', config);
+      }
+    }
+    await command('ensure', config);
+    assert.equal((await status()).ready, true);
+  });
+
+  await t.test('a live supervisor that hangs up once is asked again, never replaced (#3021)', async () => {
+    await command('stop', config);
+    // A supervisor stalled past its 1 s request timeout resets the
+    // connection but keeps its socket. Treating that as gone would unlink
+    // the live socket and orphan it; it must be asked again instead.
+    async function stalled(reply) {
+      let connections = 0;
+      const live = net.createServer({ pauseOnConnect: true }, socket => {
+        socket.on('error', () => {});
+        if (++connections === 1) return setTimeout(() => socket.destroy(), 100);
+        socket.resume();
+        socket.end(JSON.stringify(reply));
+      });
+      await new Promise(resolve => live.listen(controlPath, resolve));
+      return { live, connections: () => connections };
+    }
+    const another = await stalled({ owner: 'another-conversation' });
+    try {
+      await assert.rejects(command('ensure', config));
+      assert.equal(fs.existsSync(controlPath), true);
+      assert.equal(another.connections(), 2);
+    } finally { another.live.close(); }
+
+    const stopping = await stalled({ owner: config.owner });
+    stopping.live.on('connection', () => {
+      if (stopping.connections() === 2) stopping.live.close();
+    });
+    try {
+      await command('stop', config);
+      assert.equal(stopping.connections(), 2);
+    } finally { if (stopping.live.listening) stopping.live.close(); }
+    // A wrongly started supervisor must not outlive this case.
+    await command('stop', config);
+
+    await command('ensure', config);
+    assert.equal((await status()).ready, true);
+  });
+
   await t.test('supervisor loss closes the worker; ensure repairs the stale socket', async () => {
     const before = await status();
     process.kill(before.pid, 'SIGKILL');
