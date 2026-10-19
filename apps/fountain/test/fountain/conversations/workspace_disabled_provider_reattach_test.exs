@@ -201,6 +201,42 @@ defmodule Fountain.Conversations.WorkspaceDisabledProviderReattachTest do
       assert Repo.reload!(sandbox).status == "ready"
     end
 
+    # The instance default keeps its lazy credential check, so the refusal
+    # above lets it through; an adapter that raises on its missing credential
+    # is a retryable reattach failure, not a crash loop.
+    test "a lookup that raises fails the reattach, retryable, without a crash", ctx do
+      stub(Managoat.Sandbox, :get, fn _handle -> raise "SPRITES_TOKEN is not set" end)
+
+      sandbox = insert_sandbox(user_id: ctx.user.id, machine_name: "on-default", status: "ready")
+      assert sandbox.provider == "sprites"
+
+      conv =
+        insert_conversation(
+          user_id: ctx.user.id,
+          agent: ctx.agent,
+          sandbox: sandbox,
+          status: "idle"
+        )
+
+      supervisor = Process.whereis(Fountain.ConversationSupervisor)
+
+      log =
+        capture_log(fn ->
+          Rehydrator.run()
+          eventually(fn -> stages(conv.id, "reattach") end)
+          eventually(fn -> is_nil(ConversationServer.whereis(conv.id)) end)
+        end)
+
+      [{"failed", data}] = stages(conv.id, "reattach")
+      assert data["retryable"] == true
+      assert data["reason"] =~ "lookup_raised"
+      refute data["reason"] =~ "SPRITES_TOKEN"
+      refute log =~ "terminating"
+      assert log =~ "SPRITES_TOKEN is not set"
+      assert Process.whereis(Fountain.ConversationSupervisor) == supervisor
+      assert Repo.reload!(sandbox).status == "ready"
+    end
+
     test "a prompt the server holds is reported as not run, with the advice", ctx do
       {_workspace, sandbox} = ready_machine(ctx.user, :explicit)
 

@@ -53,6 +53,25 @@ defmodule Fountain.Conversations.Reattachment do
   end
 
   @doc """
+  The reattach's provider lookup, with a raise folded into an error the
+  server's transient arm answers (retryable, the row untouched). An adapter
+  raises on a missing credential (`E2B.Api.api_key!/0`,
+  `Sprites.Client.get!/0`), and a raise there restarted the `:transient`
+  server straight back into it (#3004). `provider_usable/2` refuses a
+  disabled provider before this; this is for what it lets through, the
+  instance default with no credential. The stage gets the exception's
+  module, the log its message.
+  """
+  @spec lookup(Managoat.Sandbox.Handle.t()) :: {:ok, map()} | {:error, term()}
+  def lookup(handle) do
+    Managoat.Sandbox.get(handle)
+  rescue
+    error ->
+      Logger.warning("sandbox lookup for #{handle.name} raised: #{Exception.message(error)}")
+      {:error, {:lookup_raised, error.__struct__}}
+  end
+
+  @doc """
   Bring a parked machine up before a server reattaches to it: a `suspended`
   row is resumed through its owner (`Machine.ensure_up/2`), with the fleet
   gate and the provider call a wake makes, and read again. Any other row is

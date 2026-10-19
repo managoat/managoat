@@ -223,6 +223,31 @@ defmodule Fountain.Workers.SandboxReaperTest do
       refute Repo.reload(conv).status in ~w(terminated failed completed)
     end
 
+    # #3004: no server can reach a machine on a provider since disabled, so it
+    # looks abandoned; but its park and the fallback destroy cannot reach the
+    # provider either, and the destroy would retire the row over a machine
+    # still running there. It is kept for the provider's return.
+    test "a ready sandbox on a provider since disabled is left alone, past both bounds" do
+      refute Fountain.SandboxProviders.enabled?(:e2b)
+      stub(Managoat.Sandbox, :suspend, fn h -> flunk("suspend called for #{inspect(h)}") end)
+      stub(Managoat.Sandbox, :destroy, fn h -> flunk("destroy called for #{inspect(h)}") end)
+
+      user = insert_verified_user()
+      sandbox = insert_sandbox(user_id: user.id, status: "ready", machine_name: "on-e2b")
+      {:ok, sandbox} = update_sandbox(sandbox, %{provider: "e2b"})
+      conv = insert_conversation(user_id: user.id, sandbox: sandbox, status: "idle")
+      insert_turn(conv, %{status: "completed"})
+      sandbox = age_rows(sandbox, conv, 60 * 24 * 83)
+
+      with_bounds([sandbox_idle_timeout_minutes: 60, sandbox_max_lifetime_hours: 24], fn ->
+        capture_log(fn -> assert {0, 0, 0, 1} = SandboxReaper.sweep_abandoned_sandboxes() end)
+      end)
+
+      reloaded = Fountain.Machines.Lease.get(sandbox.id)
+      assert reloaded.status == "ready"
+      refute reloaded.terminated_at
+    end
+
     test "past the idle bound but under the ceiling, a ready sandbox is parked" do
       # The common case after a crash or deploy gap: the server that would
       # have suspended it is gone. Parking is the reaper doing the server's

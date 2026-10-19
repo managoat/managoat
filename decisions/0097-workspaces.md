@@ -1200,8 +1200,12 @@ A PR sequence, each releasable alone:
   workspace's advice; a server reattaching to it, the boot sweep's
   included, stops before any provider call with a `reattach` `failed` stage
   (`sandbox_provider_disabled`, not retryable, with the same `advice`) and
-  reports any prompt it holds as not run with it. The row is left as it is.
-  Before, the adapter raised on its missing credential and the server was
-  restarted into the raise until the restart budget every conversation
-  server shares ran out, which took all of them down. The instance default
-  keeps its lazy credential check here too.
+  reports any prompt it holds as not run with it. The row is left as it is,
+  and the reaper's idle and ceiling sweep skips it: its park could not reach
+  the provider, and the fallback destroy would have retired the row over a
+  machine still running there. Before, the adapter raised on its missing
+  credential and the server was restarted into the raise until the restart
+  budget every conversation server shares ran out, which took all of them
+  down. The instance default keeps its lazy credential check here too, so a
+  reattach's lookup now turns a raise into its retryable failure rather than
+  a crash.

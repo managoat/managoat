@@ -410,11 +410,12 @@ that says what to change. No turn opens for that prompt.
 
 A workspace's sandbox provider that was disabled after the workspace was made
 (its credentials removed) is refused this way whether the machine was parked,
-lost or up, and so is a conversation's own parked or up sandbox. A launch with a prompt into a workspace on that provider answers
-`201`, and the prompt's `wake` stage fails with `sandbox_provider_disabled`.
-A conversation whose server reattaches to such a sandbox, as every attached
-conversation does when the instance restarts, gets a `reattach` stage with
-the `failed` state, the same `reason`, `retryable: false` and `advice`.
+lost or up, and so is a conversation's own parked or up sandbox. The sandbox
+is kept for the provider's return. A launch with a prompt into a workspace on
+that provider answers `201`, and the prompt's `wake` stage fails with
+`sandbox_provider_disabled`. When the instance restarts, an idle or running
+conversation on such a sandbox gets a `reattach` stage with the `failed`
+state, the same `reason`, `retryable: false` and `advice`.
 
 ```json
 {"prompt": "Run the approved plan.", "client_request_id": "plan-7-step-3"}

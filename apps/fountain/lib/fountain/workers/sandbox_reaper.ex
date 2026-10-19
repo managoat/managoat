@@ -527,10 +527,26 @@ defmodule Fountain.Workers.SandboxReaper do
         )
       end)
 
+      # A machine on a provider since disabled is kept for the provider's
+      # return, as the wake keeps it (#3004). It has no server, because none
+      # can reach it, so it reads as abandoned here; but its park cannot reach
+      # the provider either, and the fallback destroy would finalize the row
+      # over a machine still running there, out of sight of every later pass.
+      # Skipped, and counted as skipped.
+      {unreachable, free} =
+        Enum.split_with(free, &(Fountain.Conversations.Wake.machine_provider_usable(&1) != :ok))
+
+      Enum.each(unreachable, fn sandbox ->
+        Logger.info(
+          "reaper: left sandbox #{sandbox.id} (#{sandbox.machine_name}) alone: " <>
+            "its provider #{sandbox.provider} is not configured on this instance"
+        )
+      end)
+
       {parked, expired, refused, skipped, _destroys_left, _attempts_left} =
         Enum.reduce(
           Enum.map(free, &{&1, check_bounds(&1, now)}),
-          {0, 0, 0, length(held), destroy_limit(), owner_attempt_limit()},
+          {0, 0, 0, length(held) + length(unreachable), destroy_limit(), owner_attempt_limit()},
           &sweep_verdict/2
         )
 
