@@ -932,7 +932,11 @@ A PR sequence, each releasable alone:
   written (`409 turns_running`, naming the conversations), and so does a
   prompt accepted and not yet admitted (its receipt, from this boot, which
   admission deletes in the turn's own transaction), because its server
-  would be stopped with the prompt still in it; with it, those
+  would be stopped with the prompt still in it. A receipt counts while its
+  conversation's server is setting up or for a wake's window (a resume's
+  bound and a minute) after it was taken: a few stops leave a receipt behind
+  them that only the next boot clears, and it must not refuse a rebuild for
+  half an hour. With `interrupt`, those
   turns are ended in the same commit, as interrupted with
   `machine_destroyed`, transcripts kept, and announced and audited after it,
   so a rebuild refused for another reason (a full fleet) ends none. A

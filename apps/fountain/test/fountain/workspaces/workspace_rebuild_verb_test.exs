@@ -166,6 +166,26 @@ defmodule Fountain.Workspaces.WorkspaceRebuildVerbTest do
     assert {:ok, _} = rebuild(ctx)
   end
 
+  test "a receipt left behind by a server that stopped does not refuse it", ctx do
+    conv = conversation(ctx)
+    meta = Fountain.Conversations.PromptReceipt.accept(conv.id, [])
+    old = DateTime.add(DateTime.utc_now(), -600, :second)
+
+    {1, _} =
+      Repo.update_all(
+        from(r in Fountain.Conversations.PromptReceipt, where: r.id == ^meta[:prompt_receipt_id]),
+        set: [inserted_at: old]
+      )
+
+    # While a server is setting up with it queued, it still counts.
+    {:ok, _} = Registry.register(Fountain.ConversationRegistry, conv.id, :setting_up)
+    assert {:error, {:turns_running, [_]}} = rebuild(ctx)
+
+    # Once nothing carries it, it is an orphan the next boot clears.
+    :ok = Registry.unregister(Fountain.ConversationRegistry, conv.id)
+    assert {:ok, _} = rebuild(ctx)
+  end
+
   test "an earlier boot's receipt, which its recovery reports, does not refuse it", ctx do
     conv = conversation(ctx)
 

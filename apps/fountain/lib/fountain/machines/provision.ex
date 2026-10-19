@@ -786,12 +786,8 @@ defmodule Fountain.Machines.Provision do
         )
       )
 
-    cutoff =
-      DateTime.add(
-        DateTime.utc_now(),
-        -Fountain.Conversations.PromptReceipt.ttl_seconds(),
-        :second
-      )
+    now = DateTime.utc_now()
+    cutoff = DateTime.add(now, -Fountain.Conversations.PromptReceipt.ttl_seconds(), :second)
 
     accepted =
       Repo.all(
@@ -799,15 +795,32 @@ defmodule Fountain.Machines.Provision do
           where:
             r.conversation_id in ^moving and r.boot_id == ^Lease.boot_id() and
               r.inserted_at >= ^cutoff,
-          distinct: true,
-          select: r.conversation_id
+          select: {r.conversation_id, r.inserted_at}
         )
       )
+      |> Enum.filter(fn {conv_id, inserted_at} -> in_flight?(conv_id, inserted_at, now) end)
+      |> Enum.map(&elem(&1, 0))
 
     case Enum.uniq(running ++ accepted) do
       [] -> :ok
       busy -> {:error, {:turns_running, Enum.sort(busy)}}
     end
+  end
+
+  # A receipt outlives its prompt on a few stops that do not resolve it (a
+  # server stopped before it read a queued prompt: a full fleet on a lazy
+  # rebuild, a co-tenant's park, a failed wake mid-reattach), and the next
+  # boot's recovery is what clears it. So one counts as a prompt in flight
+  # only while something could still be carrying it (review of #2986): its
+  # conversation's server is setting up, with the prompt queued behind that,
+  # or the receipt is young enough for a wake still bringing that server up
+  # (a resume's whole bound, and a margin). An older receipt with no server
+  # setting up is one whose prompt is already gone.
+  @wake_window_ms Fountain.Machines.Machine.resume_timeout_ms() + 60_000
+
+  defp in_flight?(conv_id, inserted_at, now) do
+    DateTime.diff(now, inserted_at, :millisecond) <= @wake_window_ms or
+      Fountain.Conversations.ServerPhase.setting_up?(conv_id)
   end
 
   # `machine_gone` to every conversation the succession moved (ADR 0097: it
