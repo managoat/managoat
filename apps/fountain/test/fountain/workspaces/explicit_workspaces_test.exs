@@ -309,12 +309,13 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       sandbox = sandbox_of(workspace)
 
       capture_log(fn ->
-        assert {:error, {:setup_exit, 3}, %{}} = Provisioner.run(workspace.id, sandbox.id)
+        assert {:error, {:setup_exit, 3, "nope\n"}, %{}} =
+                 Provisioner.run(workspace.id, sandbox.id)
       end)
 
       assert Repo.reload!(sandbox).status == "failed"
 
-      assert %Workspace{status: "failed", error: "the environment's setup script exited 3"} =
+      assert %Workspace{status: "failed", error: "the environment's setup script exited 3:\nnope"} =
                Repo.reload!(workspace)
 
       assert_receive {:workspace_status, %{status: "failed", error: error}}
@@ -406,7 +407,11 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       workspace = create!(ctx)
       sandbox = sandbox_of(workspace)
 
-      tail = "et-value-123 cut here\nusing s3cret-value-123 for apt\nE: failed"
+      # As long as a kept tail, so cut from a longer output.
+      tail =
+        "et-value-123 cut here\n" <>
+          String.duplicate("filler\n", 300) <>
+          "using s3cret-value-123 for apt\nE: failed"
 
       error = Workspaces.describe_failure(sandbox, {:packages, 100, tail})
 
@@ -423,7 +428,10 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       sandbox = sandbox_of(workspace)
 
       # The tail begins inside the value: its first line is the cut one.
-      tail = "secretline1AAAA\nBBBBsecretline2BBBB\n-----END KEY-----\nfailed"
+      tail =
+        "secretline1AAAA\nBBBBsecretline2BBBB\n-----END KEY-----\n" <>
+          String.duplicate("filler\n", 300) <> "failed"
+
       error = Workspaces.describe_failure(sandbox, {:packages, 1, tail})
 
       refute error =~ "secretline2"
@@ -457,6 +465,41 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert [event] = Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.provision_failed")
       assert event.metadata["reason"] == "{:packages, 100}"
       assert Repo.reload!(workspace).error =~ "printed secret-ish output"
+    end
+
+    test "a failed setup script quotes the end of what it printed, redacted", ctx do
+      insert_vault_secret(ctx.vault, %{"key" => "API_SECRET", "value" => "s3cret-value-123"})
+      output = "npm ERR! missing script: build\nusing s3cret-value-123\n"
+      record_provider(self(), 1, output)
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+
+      capture_log(fn -> Provisioner.run(workspace.id, sandbox.id) end)
+
+      # Short enough not to have been cut: quoted whole, first line included.
+      assert Repo.reload!(workspace).error ==
+               "the environment's setup script exited 1:\n" <>
+                 "npm ERR! missing script: build\nusing [REDACTED]"
+
+      # Kept off the records that are not redacted.
+      assert [event] = Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.provision_failed")
+      assert event.metadata["reason"] == "{:setup_exit, 1}"
+    end
+
+    test "a long failed setup keeps its words and the end of its output", ctx do
+      output = Enum.map_join(1..400, &"line #{&1}\n") <> "the last line\n"
+      record_provider(self(), 2, output)
+      workspace = create!(ctx)
+      sandbox = sandbox_of(workspace)
+
+      capture_log(fn -> Provisioner.run(workspace.id, sandbox.id) end)
+
+      error = Repo.reload!(workspace).error
+      assert String.starts_with?(error, "the environment's setup script exited 2:\n")
+      assert String.ends_with?(error, "the last line")
+      assert String.length(error) <= 2_000
+      # The tail was cut, so its first, possibly partial, line is gone.
+      refute error =~ "line 1\n"
     end
 
     test "the setup takes its own session token out of a failure before it is recorded", ctx do

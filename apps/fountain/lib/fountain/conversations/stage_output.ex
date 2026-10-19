@@ -41,6 +41,12 @@ defmodule Fountain.Conversations.StageOutput do
     }
   end
 
+  @doc """
+  How much of a step's end `tail/1` keeps. A tail this long may have been
+  cut from a longer output, so its first line may begin inside a value.
+  """
+  def tail_bytes, do: @tail_bytes
+
   @doc "The longest unfinished line held back before it is written anyway."
   def max_pending, do: @max_pending
 

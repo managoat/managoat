@@ -913,9 +913,12 @@ defmodule Fountain.Conversations.Provisioning do
             publish_stage(conv_id, "setup", "done", %{exit_code: 0})
             {:ok, %{outcome: :ok, exit_code: 0}}
 
-          {{:ok, code}, _tail} ->
+          # The end of what it printed travels with the exit code, as a
+          # package step's does, for a workspace's redacted `error`; records
+          # that are not redacted drop it (`Provision.reason_text/1`).
+          {{:ok, code}, tail} ->
             publish_stage(conv_id, "setup", "failed", %{exit_code: code})
-            {{:error, {:setup_exit, code}}, %{outcome: :failed, exit_code: code}}
+            {{:error, {:setup_exit, code, tail}}, %{outcome: :failed, exit_code: code}}
 
           {{:error, reason}, _tail} ->
             publish_stage(conv_id, "setup", "failed", %{reason: inspect(reason)})

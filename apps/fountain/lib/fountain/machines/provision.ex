@@ -434,7 +434,9 @@ defmodule Fountain.Machines.Provision do
   `:environment` is recorded on the new row as it is inserted
   and `:provider` (`:destroy`, the default, or `:already_gone`), and
   `:notice`, the note the moved conversations get in place of the lost
-  machine's. Answers
+  machine's, and `:announce` (default `true`): `false` when the caller has
+  already broadcast the workspace's `provisioning` (a retry), so the
+  succession does not send it twice. Answers
   `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
   refusals and failures, plus `Lease.succeed/3`'s; the reservation's
   `:fleet_full` writes nothing.
@@ -637,8 +639,10 @@ defmodule Fountain.Machines.Provision do
         announce_ended_turns(ended, old, opts)
         tell_moved(old, moved, opts)
         # The workspace is `provisioning` again (`Lease.succeed/3`): an
-        # explicit one says so on its owner's event stream (ADR 0097 step 5).
-        announce_provisioning(next)
+        # explicit one says so on its owner's event stream (ADR 0097 step 5),
+        # unless the caller already has (`announce: false`, a retry, which
+        # sent it when it moved the workspace out of `failed`).
+        if Keyword.get(opts, :announce, true), do: announce_provisioning(next)
 
         case build(next, epoch, false, pipeline, opts) do
           {:ok, :provisioned, result} -> {:ok, :rebuilt, Lease.get(next.id), result}
@@ -1549,6 +1553,7 @@ defmodule Fountain.Machines.Provision do
   defp reason_text(reason), do: reason |> without_output() |> inspect() |> String.slice(0, 200)
 
   defp without_output({:packages, code, _tail}), do: {:packages, code}
+  defp without_output({:setup_exit, code, _tail}), do: {:setup_exit, code}
   defp without_output({:clone, _url, code}), do: {:clone, code}
   defp without_output({:clone_unreachable, _url, _reason}), do: :clone_unreachable
   defp without_output({:clone_unsupported_url, _url}), do: :clone_unsupported_url

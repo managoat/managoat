@@ -1121,16 +1121,18 @@ defmodule Fountain.Workspaces do
   transcript"): every value of the workspace's environment and vault, and
   whatever a live conversation on the machine registered
   (`Fountain.SandboxFiles.redaction_values/1`), replaced with `[REDACTED]`.
-  At most #{@error_limit} characters.
+  At most #{@error_limit} characters: past that, the failure in words and the
+  end of what the step printed, which is the part a reader needs.
 
-  A step's quoted output is cut by the step from its end, so its first line
-  may begin part-way through a value redaction would no longer recognise;
-  that line is dropped before redaction runs.
+  A step's quoted output is cut by the step from its end, so when it was cut
+  its first line may begin part-way through a value redaction would no
+  longer recognise; that line is dropped before redaction runs. Output short
+  enough not to have been cut is quoted whole.
   """
   @spec describe_failure(Sandbox.t(), term()) :: String.t()
   def describe_failure(%Sandbox{} = sandbox, reason) do
     case redaction_values(sandbox) do
-      {:ok, values} -> values |> redact(failure_words(reason)) |> String.slice(0, @error_limit)
+      {:ok, values} -> values |> redact(failure_words(reason)) |> within_limit()
       :error -> @unredactable
     end
   rescue
@@ -1181,6 +1183,9 @@ defmodule Fountain.Workspaces do
   defp failure_words({:packages_unreachable, _}),
     do: "the environment's packages could not be installed: the sandbox did not answer"
 
+  defp failure_words({:setup_exit, code, tail}) when is_binary(tail),
+    do: "the environment's setup script exited #{code}" <> quoted(tail)
+
   defp failure_words({:setup_exit, code}), do: "the environment's setup script exited #{code}"
 
   defp failure_words({:setup_unreachable, _}),
@@ -1218,12 +1223,41 @@ defmodule Fountain.Workspaces do
   defp failure_words(reason) when is_atom(reason), do: "the provision failed (#{reason})"
   defp failure_words(reason), do: "the provision failed: " <> inspect(reason, limit: 20)
 
-  # The step's tail, without its first line, which the cut may have begun
-  # inside a value.
+  # The cap, applied after redaction (a slice of redacted text cannot rebuild
+  # a value): the words, then as much of the end of the output as fits.
+  defp within_limit(text) do
+    if String.length(text) <= @error_limit do
+      text
+    else
+      case String.split(text, "\n", parts: 2) do
+        [words, output] ->
+          keep = max(@error_limit - String.length(words) - 3, 0)
+          words <> "\n…" <> String.slice(output, -keep, keep)
+
+        [words] ->
+          String.slice(words, 0, @error_limit)
+      end
+    end
+  end
+
+  # The step's tail. When it was cut from a longer output (it is as long as
+  # a tail is kept, `StageOutput.tail_bytes/0`), without its first line,
+  # which the cut may have begun inside a value; otherwise it is all the
+  # step printed, and whole.
   defp quoted(tail) do
-    case String.split(tail, "\n", parts: 2) do
-      [_partial, rest] when rest != "" -> ":\n" <> rest
-      _ -> ""
+    text =
+      if byte_size(tail) >= Fountain.Conversations.StageOutput.tail_bytes() do
+        case String.split(tail, "\n", parts: 2) do
+          [_partial, rest] -> rest
+          [_only_partial] -> ""
+        end
+      else
+        tail
+      end
+
+    case String.trim_trailing(text) do
+      "" -> ""
+      text -> ":\n" <> text
     end
   end
 

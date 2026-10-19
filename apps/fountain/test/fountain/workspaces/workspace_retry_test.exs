@@ -115,6 +115,30 @@ defmodule Fountain.Workspaces.WorkspaceRetryTest do
   end
 
   describe "retry_workspace/2" do
+    test "says provisioning once, and its setup log replaces the failed one's (#3009)", ctx do
+      {workspace, failed} = failed_workspace!(ctx)
+      :ok = Workspaces.subscribe(ctx.user.id)
+
+      assert {:ok, %Workspace{status: "provisioning"}} =
+               Workspaces.retry_workspace(workspace, actor: "api")
+
+      # `assert_receive` takes only the `ready`; the `provisioning`s stay.
+      assert_receive {:workspace_status, %{status: "ready"}}, 5_000
+      wait_until(fn -> not Provisioner.running?(workspace.id) end)
+
+      {:messages, messages} = Process.info(self(), :messages)
+
+      provisioning =
+        Enum.count(messages, &match?({:workspace_status, %{status: "provisioning"}}, &1))
+
+      assert provisioning == 1
+
+      log = Workspaces.setup_log(Repo.reload!(workspace))
+      assert log.status == "succeeded"
+      refute log.sandbox_id == failed.id
+      assert Enum.map(log.steps, & &1["step"]) == ~w(machine broker environment setup_script)
+    end
+
     test "sets the workspace up again from the environment as it is now", ctx do
       {workspace, failed} = failed_workspace!(ctx)
 

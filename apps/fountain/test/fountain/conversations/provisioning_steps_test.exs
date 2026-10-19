@@ -226,7 +226,7 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
           Provisioning.run_setup_script(handle(), %{setup_script: script}, [], conv.id)
         end)
 
-      assert result == {:error, {:setup_exit, 4}}
+      assert {:error, {:setup_exit, 4, _tail}} = result
       assert micros < 10_000_000
 
       assert [%{data: "done\noops\n"}] =
@@ -249,7 +249,7 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
 
       script = "echo one; sleep 2; echo two; printf partial; exit 2"
 
-      assert {:error, {:setup_exit, 2}} =
+      assert {:error, {:setup_exit, 2, "one\ntwo\npartial"}} =
                Provisioning.run_setup_script(handle(), %{setup_script: script}, [], conv.id)
 
       assert [one, two, partial] = setup_output(conv.id)
@@ -290,7 +290,7 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
       conv = insert_conversation()
       stub(Managoat.Sandbox, :exec, fn _handle, "bash", _args, _opts -> {:ok, "boom", 3} end)
 
-      assert {:error, {:setup_exit, 3}} =
+      assert {:error, {:setup_exit, 3, "boom"}} =
                Provisioning.run_setup_script(handle(), %{setup_script: "exit 3"}, [], conv.id)
 
       assert stages(conv.id, "setup") == [{"started", %{}}, {"failed", %{"exit_code" => 3}}]

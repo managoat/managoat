@@ -1148,4 +1148,11 @@ A PR sequence, each releasable alone:
   so (its deadline). An implicit workspace's setup emits no event and keeps
   no log: its conversation's transcript has had it since #2550, and
   `workspace.status` is explicit-only too. A rebuild after a loss run by a
-  conversation goes to both.
+  conversation goes to both. Two fixes from the v0.38.0 check came with it.
+  A failed setup script's `error` now quotes the end of what it printed, as
+  a package step's always did: `{:setup_exit, code, tail}`, with the tail
+  kept off the sandbox row and the audit. A tail shorter than the 2 KB kept
+  is quoted whole, its first line included, since it was not cut. Past the
+  2,000-character cap the error keeps its words and the end of the output.
+  And a retry sends `provisioning` once: the succession it runs no longer
+  announces it again (`announce: false`).
