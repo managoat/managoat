@@ -247,4 +247,4 @@ its files are all of theirs (decision 11).
 - 2026-10-15 — Admitted reads held in ETS instead of `sandbox_reads` rows (single node); the table dropped by migration `20261017120000`.
 - 2026-10-15 — "Never a wake" narrowed to what Managoat parked; a provider's own sleep may be woken by a read (#2395).
 - 2026-10-17 — Context names the `admin` scope added since; the `full`/`sprite` reasoning is unchanged.
-- 2026-10-19 — Amended by [0097](0097-workspaces.md) step 5c: the reads are also addressed by workspace, and on an explicit workspace's shared machine resolve from `/home/sprite` with every live conversation's working directory as a root (decision 11); "a sandbox belongs to exactly one conversation" holds for implicit workspaces only.
+- 2026-10-18 — Amended by [0097](0097-workspaces.md) step 5c: the reads are also addressed by workspace, and on an explicit workspace's shared machine resolve from `/home/sprite` with every live conversation's working directory as a root (decision 11); "a sandbox belongs to exactly one conversation" holds for implicit workspaces only.

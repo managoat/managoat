@@ -777,11 +777,20 @@ A PR sequence, each releasable alone:
   broadcast and an implicit one's is not; the conversation's `workspace_id`
   is its implicit workspace's too, as `?implicit=true` lists them.
   0045 and 0096 are amended.
-- 2026-10-19 — Step 5c built: `/api/workspaces/:id/files`, `/file`, `/diff`
+- 2026-10-18 — Step 5c built: `/api/workspaces/:id/files`, `/file`, `/diff`
   and `/git-status` read the workspace's current machine through
   `Fountain.SandboxFiles`, full scope. On an explicit workspace's machine the
   relative base is `/home/sprite` and the roots are it and every live
   conversation's working directory, whichever route reads it; an implicit
   one's are as before. A workspace with no sandbox at all is `404`; one whose
   current machine is not `ready` (parked, provisioning, failed or lost) is
-  `409 sandbox_not_ready` with that status. 0039 is amended.
+  `409 sandbox_not_ready` with that status. A working directory is a root
+  only where it physically lies, under the home or, for one that names
+  `/tmp`, under `/tmp`: a conversation's directory that another process
+  replaced with a symlink elsewhere does not carry a read there. The roots and
+  the redaction take every live conversation of the workspace, including one
+  a rebuild has moved whose row does not yet name the new machine. A gemini
+  conversation launched with `cwd: "/tmp"` makes all of `/tmp` readable
+  through the workspace's routes, as it was through its own sandbox's; on a
+  shared machine that is everyone's `/tmp`, inside the one trust boundary.
+  0039 is amended.

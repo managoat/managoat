@@ -1259,7 +1259,7 @@ export interface paths {
         };
         /**
          * List a directory on a sandbox
-         * @description The entries of one directory, directories first then by name. Without `path`, the agent's working directory. A sandbox being parked or destroyed is `503 sandbox_unavailable`; retry after the `Retry-After`. Full scope. Only a `ready` sandbox answers: a sandbox Managoat parked (`suspended`) is `409 sandbox_not_ready` and a read never resumes it. A `ready` sandbox the provider put to sleep by itself (a sprite scaled to zero, an E2B sandbox paused on its timeout) is woken by the read, and that provider time is billed.
+         * @description The entries of one directory, directories first then by name. Without `path`, the agent's working directory (on a workspace's machine, `/home/sprite`). A sandbox being parked or destroyed is `503 sandbox_unavailable`; retry after the `Retry-After`. Full scope. Only a `ready` sandbox answers: a sandbox Managoat parked (`suspended`) is `409 sandbox_not_ready` and a read never resumes it. A `ready` sandbox the provider put to sleep by itself (a sprite scaled to zero, an E2B sandbox paused on its timeout) is woken by the read, and that provider time is billed.
          */
         get: operations["FountainWeb.SandboxFilesController.index"];
         put?: never;
@@ -9169,7 +9169,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.diff": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. On a workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
                 /** @description Diff the index (`--cached`). */
                 staged?: boolean;
@@ -9272,7 +9272,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.show": {
         parameters: {
             query: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. On a workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path: string;
                 /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
                 max_bytes?: number;
@@ -9371,7 +9371,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.index": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. On a workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
             };
             header?: never;
@@ -9468,7 +9468,7 @@ export interface operations {
     "FountainWeb.SandboxFilesController.git_status": {
         parameters: {
             query?: {
-                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. */
+                /** @description In-sandbox path, absolute or relative to the conversation's working directory (its launch's `cwd`, else `/home/sprite` for claude and codex and `/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that directory: anything else is `422 path_outside_sandbox`. On a workspace's machine, which several conversations share, a relative path resolves from `/home/sprite` and the working directory of every live conversation there is also allowed. */
                 path?: string;
                 /** @description What to do about untracked paths: collapse an untracked directory to one entry (`normal`), list every file under it (`all`), or leave them out (`no`). */
                 untracked?: "normal" | "all" | "no";

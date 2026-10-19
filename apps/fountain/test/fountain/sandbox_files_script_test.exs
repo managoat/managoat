@@ -104,6 +104,26 @@ defmodule Fountain.SandboxFilesScriptTest do
       assert {_encoded, 0} = run(:read, ["100", Path.join(link, "secret.txt"), c.root, c.outside])
     end
 
+    test "a working-directory root replaced by a symlink out of the home is no root", c do
+      # A conversation's cwd on a shared machine (ADR 0097) that another
+      # process swapped for a link to somewhere else.
+      link = Path.join(c.root, "b")
+      File.ln_s!(c.outside, link)
+      logical = ["/home/sprite", "/home/sprite/b"]
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(link, "secret.txt"), c.root, link], [], logical)
+
+      # A real directory under the home still is one.
+      nested = Path.join(c.root, "nested")
+
+      assert {_encoded, 0} =
+               run(:read, ["100", Path.join(nested, "inside.txt"), c.root, nested], [], [
+                 "/home/sprite",
+                 "/home/sprite/nested"
+               ])
+    end
+
     test "newlines at the end of physical paths are preserved", c do
       root = Path.join(c.root, "odd\n")
       File.mkdir_p!(root)

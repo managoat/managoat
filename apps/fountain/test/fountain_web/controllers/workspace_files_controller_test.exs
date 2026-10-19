@@ -11,6 +11,8 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
   use FountainWeb.ConnCase, async: true
   use Mimic
 
+  import Ecto.Query, only: [from: 2]
+
   @home "/home/sprite"
 
   setup do
@@ -69,6 +71,16 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
         workspace_id: workspace.id,
         cwd: "/home/sprite/gone",
         status: "terminated"
+      )
+
+    _failed =
+      insert_conversation(
+        user_id: user.id,
+        agent: agent,
+        sandbox: sandbox,
+        workspace_id: workspace.id,
+        cwd: "/home/sprite/broken",
+        status: "failed"
       )
 
     {:ok,
@@ -158,13 +170,31 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
   end
 
   test "another account's workspace is 404, and a sandbox's own key is 403", ctx do
-    foreign = insert_workspace(user_id: insert_verified_user().id, implicit: false, name: "x")
+    other = insert_verified_user()
+    foreign = insert_workspace(user_id: other.id, implicit: false, name: "x")
+    # A machine that would answer, so a 404 is the scoping's and not the
+    # missing machine's.
+    insert_sandbox(user_id: other.id, workspace_id: foreign.id, status: "ready")
+
+    # And one of the caller's own being deleted: taken from its owner first.
+    deleting = insert_workspace(user_id: ctx.user.id, implicit: false, name: "going")
+    insert_sandbox(user_id: ctx.user.id, workspace_id: deleting.id, status: "ready")
+
+    {1, _} =
+      Fountain.Repo.update_all(
+        from(w in Fountain.Workspaces.Workspace, where: w.id == ^deleting.id),
+        set: [user_id: nil]
+      )
+
     reject(&Managoat.Sandbox.exec/4)
 
-    for route <- ["files", "file?path=x", "diff", "git-status"] do
+    for route <- ["files", "file?path=x", "diff", "git-status"],
+        id <- [foreign.id, deleting.id] do
       assert %{"error" => "not_found"} =
-               ctx |> get_api("/api/workspaces/#{foreign.id}/#{route}") |> json_response(404)
+               ctx |> get_api("/api/workspaces/#{id}/#{route}") |> json_response(404)
+    end
 
+    for route <- ["files", "file?path=x", "diff", "git-status"] do
       assert %{"reason" => "insufficient_scope", "required_scope" => "full"} =
                ctx
                |> get_api("/api/workspaces/#{ctx.workspace.id}/#{route}", ctx.sprite_key)
@@ -185,7 +215,10 @@ defmodule FountainWeb.WorkspaceFilesControllerTest do
   end
 
   test "an implicit workspace's sandbox keeps its conversation's directory as the base", ctx do
+    # The factory gives a sandbox an implicit workspace of its own.
     implicit_sandbox = insert_sandbox(user_id: ctx.user.id, status: "ready")
+
+    assert Fountain.Repo.get!(Fountain.Workspaces.Workspace, implicit_sandbox.workspace_id).implicit
 
     insert_conversation(
       user_id: ctx.user.id,
