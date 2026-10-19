@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 to 4 and step 5 but its file routes built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following; /api/workspaces, provisioned on create under a network of its own, and workspace_id on launch): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 to 5 built, the CLI and manual not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following; /api/workspaces, provisioned on create under a network of its own, and workspace_id on launch): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -29,11 +29,12 @@ its own network floor, broker CA, relay and setup broker session, provisions
 it on create, deletes it, and settles and broadcasts its status, all in the
 context and with no API yet; the second (5b) is `/api/workspaces`, the
 launch fields and refusals, the `409` on deleting an environment or vault a
-workspace names, and the SDK; the third (5c) is the file routes. 5a and 5b
-are built, and amend [0045](0045-sandbox-api-access.md) and
-[0096](0096-sandbox-key-confined-to-its-conversation-tree.md). The rest (5c,
-and step 6's CLI and manual page) is not built; the Cost section sets out
-the work and its order. It amends
+workspace names, and the SDK; the third (5c) is the file routes. All three
+are built, and amend [0039](0039-sandbox-files-over-the-api.md),
+[0045](0045-sandbox-api-access.md) and
+[0096](0096-sandbox-key-confined-to-its-conversation-tree.md). The rest
+(step 6's CLI and manual page) is not built; the Cost section sets out the
+work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -776,3 +777,11 @@ A PR sequence, each releasable alone:
   broadcast and an implicit one's is not; the conversation's `workspace_id`
   is its implicit workspace's too, as `?implicit=true` lists them.
   0045 and 0096 are amended.
+- 2026-10-19 — Step 5c built: `/api/workspaces/:id/files`, `/file`, `/diff`
+  and `/git-status` read the workspace's current machine through
+  `Fountain.SandboxFiles`, full scope. On an explicit workspace's machine the
+  relative base is `/home/sprite` and the roots are it and every live
+  conversation's working directory, whichever route reads it; an implicit
+  one's are as before. A workspace with no sandbox at all is `404`; one whose
+  current machine is not `ready` (parked, provisioning, failed or lost) is
+  `409 sandbox_not_ready` with that status. 0039 is amended.

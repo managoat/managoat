@@ -27,7 +27,10 @@ defmodule Fountain.SandboxFiles do
 
   Every path is confined to the sandbox home (`/home/sprite`) or the
   conversation's working directory (its launch's `cwd`, else the runtime's
-  default, `Fountain.Conversations.ConfigHome.cwd/1`) — including the one
+  default, `Fountain.Conversations.ConfigHome.cwd/1`), or on an explicit
+  workspace's shared machine, the home or the working directory of any live
+  conversation on it, with a relative path resolved from the home (ADR
+  0097) — including the one
   the caller never names, the repository root `git rev-parse --show-toplevel`
   finds by walking up. A root outside those is `not_a_repository`, not a
   listing of it.
@@ -168,17 +171,48 @@ defmodule Fountain.SandboxFiles do
   The directories a path may live under: the sandbox home and the
   conversation's working directory (by default the same for claude and
   codex, `/tmp/…` for gemini; a launch may name its own `cwd`).
+
+  On an explicit workspace's machine, which several conversations share
+  (ADR 0097, Files), the home and the working directory of every live
+  conversation on it.
   """
   @spec roots(Sandbox.t()) :: [String.t()]
-  def roots(%Sandbox{} = sandbox), do: Enum.uniq([@home, cwd(sandbox)])
+  def roots(%Sandbox{} = sandbox) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> Enum.uniq([@home | live_cwds(sandbox)])
+      :implicit -> Enum.uniq([@home, cwd(sandbox)])
+    end
+  end
+
+  # ownership: the caller fetched `sandbox` tenant-scoped; its conversations
+  # are the same tenant's.
+  defp live_cwds(%Sandbox{id: id}) do
+    from(c in Conversation,
+      where:
+        c.sandbox_id == ^id and not is_nil(c.runtime) and
+          c.status not in ["terminated", "failed"],
+      select: %{runtime: c.runtime, cwd: c.cwd}
+    )
+    |> Repo.all()
+    |> Enum.map(&Fountain.Conversations.ConfigHome.cwd/1)
+  end
 
   @doc """
   Where a relative path resolves from — the working directory of the
   conversation on this disk (one per machine since #2676): its launch's
-  `cwd`, else its runtime's default, else its agent's runtime's.
+  `cwd`, else its runtime's default, else its agent's runtime's. On an
+  explicit workspace's machine, which has no one conversation's directory,
+  `/home/sprite` (ADR 0097, Files).
   """
   @spec cwd(Sandbox.t()) :: String.t()
   def cwd(%Sandbox{} = sandbox) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> @home
+      :implicit -> conversation_cwd(sandbox)
+    end
+  end
+
+  defp conversation_cwd(%Sandbox{} = sandbox) do
     case conversation_layout(sandbox) do
       %{runtime: _} = conv ->
         Fountain.Conversations.ConfigHome.cwd(conv)

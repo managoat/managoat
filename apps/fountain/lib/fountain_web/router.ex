@@ -317,6 +317,17 @@ defmodule FountainWeb.Router do
     get "/git-status", SandboxFilesController, :git_status, as: :sandbox_git_status
   end
 
+  # The same four reads of a workspace's current machine (ADR 0097, Files),
+  # full scope as every workspace route is.
+  scope "/api/workspaces/:workspace_id", FountainWeb do
+    pipe_through [:accepts_json, :api, :require_full_scope]
+
+    get "/files", WorkspaceFilesController, :index, as: :workspace_files
+    get "/file", WorkspaceFilesController, :show, as: :workspace_file
+    get "/diff", WorkspaceFilesController, :diff, as: :workspace_diff
+    get "/git-status", WorkspaceFilesController, :git_status, as: :workspace_git_status
+  end
+
   # Password change (#521) — same gate, same reason: a conversation-scoped
   # sprite token must not be able to rotate the account password. It requires
   # the current password on top of the bearer token.

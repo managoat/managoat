@@ -1523,6 +1523,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{workspace_id}/diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * git diff in a workspace
+         * @description `git diff` of the repository containing `path` (default `/home/sprite`), redacted. `staged=true` compares the index; `ref` compares against a commit, branch or tag (`422 invalid_ref`, `404 ref_not_found`). A directory outside any repository is `422 not_a_repository`. Served from the workspace's current machine, as `/api/sandboxes/{id}` serves one, redacted with the workspace's environment and vault and every live conversation's credentials. Only a `ready` machine answers: one Managoat parked is `409 sandbox_not_ready` and a read never resumes it, and one being provisioned or lost is `409` with its status. A machine the provider put to sleep by itself is woken by the read, and billed. One being parked or destroyed is `503 sandbox_unavailable` with `Retry-After`. Full scope.
+         */
+        get: operations["FountainWeb.WorkspaceFilesController.diff"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspace_id}/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a file in a workspace
+         * @description The bytes of one file, redacted. `content` is the text when it is valid UTF-8 (`encoding: utf-8`) and base64 otherwise. `size` is the whole file; `truncated` says whether `content` is short of it. Served from the workspace's current machine, as `/api/sandboxes/{id}` serves one, redacted with the workspace's environment and vault and every live conversation's credentials. Only a `ready` machine answers: one Managoat parked is `409 sandbox_not_ready` and a read never resumes it, and one being provisioned or lost is `409` with its status. A machine the provider put to sleep by itself is woken by the read, and billed. One being parked or destroyed is `503 sandbox_unavailable` with `Retry-After`. Full scope.
+         */
+        get: operations["FountainWeb.WorkspaceFilesController.show"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspace_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a directory in a workspace
+         * @description The entries of one directory, directories first then by name. Without `path`, `/home/sprite`. Served from the workspace's current machine, as `/api/sandboxes/{id}` serves one, redacted with the workspace's environment and vault and every live conversation's credentials. Only a `ready` machine answers: one Managoat parked is `409 sandbox_not_ready` and a read never resumes it, and one being provisioned or lost is `409` with its status. A machine the provider put to sleep by itself is woken by the read, and billed. One being parked or destroyed is `503 sandbox_unavailable` with `Retry-After`. Full scope.
+         */
+        get: operations["FountainWeb.WorkspaceFilesController.index"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/workspaces/{workspace_id}/git-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * git status in a workspace
+         * @description `git status` of the repository containing `path` (default `/home/sprite`), one entry per changed path, each relative to `repo_root`; shows untracked files, which `/diff` cannot. A directory outside any repository is `422 not_a_repository`. Served from the workspace's current machine, as `/api/sandboxes/{id}` serves one, redacted with the workspace's environment and vault and every live conversation's credentials. Only a `ready` machine answers: one Managoat parked is `409 sandbox_not_ready` and a read never resumes it, and one being provisioned or lost is `409` with its status. A machine the provider put to sleep by itself is woken by the read, and billed. One being parked or destroyed is `503 sandbox_unavailable` with `Retry-After`. Full scope.
+         */
+        get: operations["FountainWeb.WorkspaceFilesController.git_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -11009,6 +11089,404 @@ export interface operations {
             };
             /** @description Too Many Requests */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceFilesController.diff": {
+        parameters: {
+            query?: {
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite` and the working directory of every live conversation in the workspace: anything else is `422 path_outside_sandbox`. */
+                path?: string;
+                /** @description Diff the index. */
+                staged?: boolean;
+                /** @description A commit, branch or tag to diff against. */
+                ref?: string;
+                /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
+                max_bytes?: number;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Diff */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxDiffResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such workspace, machine, path or ref */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description The workspace's machine is not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not a repository, bad ref, or outside the workspace's roots */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sandbox provider unreachable, or the machine is being parked or destroyed (`sandbox_unavailable`, with `Retry-After`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceFilesController.show": {
+        parameters: {
+            query: {
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite` and the working directory of every live conversation in the workspace: anything else is `422 path_outside_sandbox`. */
+                path: string;
+                /** @description How many bytes to return, at most 4194304 (default 262144). `truncated` says whether the content stopped short. */
+                max_bytes?: number;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description File */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxFileResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such workspace, machine or path */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description The workspace's machine is not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A directory, unreadable, or outside the workspace's roots */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sandbox provider unreachable, or the machine is being parked or destroyed (`sandbox_unavailable`, with `Retry-After`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceFilesController.index": {
+        parameters: {
+            query?: {
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite` and the working directory of every live conversation in the workspace: anything else is `422 path_outside_sandbox`. */
+                path?: string;
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Directory listing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxListingResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such workspace, machine or path */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description The workspace's machine is not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not a directory, or outside the workspace's roots */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sandbox provider unreachable, or the machine is being parked or destroyed (`sandbox_unavailable`, with `Retry-After`) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceFilesController.git_status": {
+        parameters: {
+            query?: {
+                /** @description In-sandbox path, absolute or relative to `/home/sprite`. Confined to `/home/sprite` and the working directory of every live conversation in the workspace: anything else is `422 path_outside_sandbox`. */
+                path?: string;
+                /** @description Collapse an untracked directory to one entry (`normal`), list every file under it (`all`), or leave them out (`no`). */
+                untracked?: "normal" | "all" | "no";
+            };
+            header?: never;
+            path: {
+                workspace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SandboxStatusResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Insufficient scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No such workspace, machine or path */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description The workspace's machine is not ready */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not a repository, or outside the workspace's roots */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Sandbox provider unreachable, or the machine is being parked or destroyed (`sandbox_unavailable`, with `Retry-After`) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
