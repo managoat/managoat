@@ -64,6 +64,16 @@ defmodule Fountain.Conversations.PromptReceipt do
 
   def resolve(_conversation_id, _receipt_id), do: :ok
 
+  @doc "Whether this conversation's receipt is still waiting for a turn or a report."
+  @spec pending?(Ecto.UUID.t(), Ecto.UUID.t() | nil) :: boolean()
+  def pending?(conversation_id, receipt_id) when is_binary(receipt_id) do
+    Repo.exists?(
+      from r in __MODULE__, where: r.id == ^receipt_id and r.conversation_id == ^conversation_id
+    )
+  end
+
+  def pending?(_conversation_id, _receipt_id), do: false
+
   @doc false
   def child_spec(opts),
     do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :temporary}

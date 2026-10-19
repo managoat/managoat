@@ -96,11 +96,14 @@ defmodule Fountain.Machines.Admission do
   Every turn-ending write an actor makes comes through `end_turn/3`: the
   completion (`Fountain.Conversations._unsafe_complete_turn/4`, which is also
   how a spawn that never started fails its turn), the two-phase interrupt's
-  first half (`Fountain.Conversations.Interruption._unsafe_interrupt_turn/2`)
-  and the recovery of a turn nothing is driving any more
+  first half (`Fountain.Conversations.Interruption._unsafe_interrupt_turn/2`),
+  the recovery of a turn nothing is driving any more
   (`Fountain.Conversations._unsafe_orphan_turn/3`, from a server's `terminate/2`,
   the reattach path's give-up, a wake's dead-interrupt reconcile, and the
-  `SandboxReaper.sweep_stuck_turns/0`). The writes themselves stay in the context, where the
+  `SandboxReaper.sweep_stuck_turns/0`), and the withdrawal of a turn whose
+  adapter never started on a machine the provider then said was gone
+  (`Fountain.Conversations._unsafe_withdraw_turn/2`, #3005), whose prompt runs
+  under the same number on the rebuilt machine. The writes themselves stay in the context, where the
   locks they take are; what moves here is the door and the one predicate they
   all check, `bound?/2`.
 
@@ -219,9 +222,13 @@ defmodule Fountain.Machines.Admission do
   completion writer (`extra` may carry `:exit_code`); `:mark_interrupted` is
   the two-phase interrupt's first half, which leaves the parent `running` until
   the peer has stopped; `{:orphan, why}` is the recovery of a turn nothing is
-  driving.
+  driving; `:withdraw` takes back a turn whose prompt never reached an agent.
   """
-  @type ending :: {:finish, String.t(), keyword()} | :mark_interrupted | {:orphan, String.t()}
+  @type ending ::
+          {:finish, String.t(), keyword()}
+          | :mark_interrupted
+          | {:orphan, String.t()}
+          | :withdraw
 
   @doc """
   Admit a turn on the machine behind `sandbox_id`.
@@ -312,6 +319,11 @@ defmodule Fountain.Machines.Admission do
 
   def end_turn(%Turn{} = turn, {:orphan, why}, opts) when is_binary(why) and is_list(opts) do
     Conversations._unsafe_orphan_turn(turn, why, opts)
+  end
+
+  # An actor's write, so the binding is required, as for `{:finish, _, _}`.
+  def end_turn(%Turn{} = turn, :withdraw, opts) when is_list(opts) do
+    Conversations._unsafe_withdraw_turn(turn, Keyword.fetch!(opts, :sandbox_id))
   end
 
   @doc """

@@ -363,9 +363,10 @@ defmodule Fountain.Machines.Destroy do
   # instead, before anything is claimed.
   defp validated_notify(nil), do: :ok
 
+  # A `nil` message stops each server without a note on its transcript.
   defp validated_notify({conversation_id, event, reason, message})
        when is_binary(conversation_id) and is_binary(event) and is_binary(reason) and
-              is_binary(message),
+              (is_binary(message) or is_nil(message)),
        do: :ok
 
   defp validated_notify(other) do

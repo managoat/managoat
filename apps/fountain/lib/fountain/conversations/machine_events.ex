@@ -16,6 +16,10 @@ defmodule Fountain.Conversations.MachineEvents do
   # parent stranded `running` with no running turn survives the rebind, while
   # the transcript event does not. The obsolete actor still stops after
   # cleanup, because its handle is already gone with the machine.
+  #
+  # A `nil` message stops the server with nothing on its transcript: a lost
+  # machine (#3005), whose one note is the rebuild's (`Machines.Provision`),
+  # written to every conversation it moves.
   def gone(
         %{sandbox_id: sandbox_id} = state,
         sandbox_id,
@@ -29,6 +33,9 @@ defmodule Fountain.Conversations.MachineEvents do
 
     # Ownership: the actor supplies the sandbox whose local handle it closed.
     case Conversations._unsafe_finish_machine_gone(state.conversation_id, sandbox_id) do
+      :ok when is_nil(message) ->
+        :ok
+
       :ok ->
         Output.publish_stage(state.conversation_id, "sandbox", "done", %{
           event: event,
@@ -57,7 +64,7 @@ defmodule Fountain.Conversations.MachineEvents do
   brings the machine back. A cast: a co-tenant whose server is already gone
   (including a cross-pod registry miss) is not an error here.
   """
-  @spec tell_cotenants([String.t()], String.t() | nil, String.t(), String.t(), String.t()) ::
+  @spec tell_cotenants([String.t()], String.t() | nil, String.t(), String.t(), String.t() | nil) ::
           :ok
   def tell_cotenants(ids, sandbox_id, event, reason, message) do
     Enum.each(ids, fn id ->

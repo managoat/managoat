@@ -743,7 +743,35 @@ defmodule Fountain.Conversations.Wake do
       prompt_receipt_id: meta[:prompt_receipt_id]
     })
 
+    end_withdrawn_turn(conv_id, reason, meta)
     Fountain.Conversations.PromptReceipt.resolve(conv_id, meta[:prompt_receipt_id])
+  end
+
+  # A prompt withdrawn from a turn whose machine was lost (#3005,
+  # `MachineLoss`): its client saw that turn start, and the SDK and the CLI
+  # stop reading `wake` stages once their turn has started, so the turn's own
+  # stage says it is over. By number: the row is gone, and a stage naming its
+  # id would point at nothing.
+  #
+  # Not for `conversation_busy`: another prompt's turn is running, and it may
+  # have taken this number, so a stage by number would end that client's turn.
+  defp end_withdrawn_turn(_conv_id, :conversation_busy, _meta), do: :ok
+
+  defp end_withdrawn_turn(conv_id, reason, meta) do
+    case meta[:withdrawn_turn] do
+      number when is_integer(number) ->
+        Conversations.publish_stage(conv_id, "turn", "failed", %{
+          turn_number: number,
+          reason: "machine_lost",
+          detail: failed_wake_reason(reason),
+          retryable: retryable_wake_failure?(reason),
+          exit_code: nil,
+          client_request_id: meta[:client_request_id]
+        })
+
+      _ ->
+        :ok
+    end
   end
 
   defp failed_wake_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
@@ -752,7 +780,8 @@ defmodule Fountain.Conversations.Wake do
 
   # The ones a retry of the same prompt can succeed on without the caller
   # changing anything: the provider or the fleet was busy.
-  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy)a
+  # `machine_lost`: the next prompt rebuilds the machine (ADR 0097).
+  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy machine_lost)a
 
   defp retryable_wake_failure?(reason) when is_atom(reason),
     do: reason in @retryable_wake_failures
@@ -832,7 +861,7 @@ defmodule Fountain.Conversations.Wake do
   # wake_conversation_for/3 above; the sandbox is its own.
   defp rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images) do
     with :ok <- check_saved_inference(conv, agent),
-         :ok <- retire_lost(sandbox),
+         :ok <- retire_lost(conv, sandbox),
          :ok <- room_for(sandbox),
          {:ok, marked} <- mark_waking(conv, sandbox) do
       case start_conversation_server(conv, sandbox.id, runtime_module, initial_prompt, images) do
@@ -880,15 +909,21 @@ defmodule Fountain.Conversations.Wake do
     })
   end
 
-  defp retire_lost(%Sandbox{status: status} = sandbox) when status in ["ready", "suspended"] do
-    case mark_old_sandbox_terminated(sandbox.id) do
+  # A lost machine, retired through its owner with the provider step skipped.
+  # Every other conversation bound to it is told quietly: its server stops
+  # with nothing on its transcript, because the rebuild this wake starts
+  # writes the one note each conversation it moves gets ("The sandbox was
+  # lost and a new one is being built"). A `replaced` notice here as well gave
+  # each of them two notes that disagreed (#3005).
+  defp retire_lost(conv, %Sandbox{status: status} = sandbox)
+       when status in ["ready", "suspended"] do
+    case Fountain.Conversations.MachineLoss.retire(sandbox.id, conv.id, "system:wake") do
       {:ok, _} -> :ok
-      :ok -> :ok
       {:error, _} -> {:error, :sandbox_unavailable}
     end
   end
 
-  defp retire_lost(%Sandbox{}), do: :ok
+  defp retire_lost(_conv, %Sandbox{}), do: :ok
 
   # The rebuild reserves its slot itself, inside the owner's succession; this
   # is the same check made synchronous, so a full fleet is the wake's answer

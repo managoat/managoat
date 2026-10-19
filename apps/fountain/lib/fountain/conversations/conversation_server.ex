@@ -17,7 +17,7 @@ defmodule Fountain.Conversations.ConversationServer do
 
   alias Fountain.Conversations.{CallbackKey, Connection, Conversation, KeyHandover}
   alias Fountain.Conversations.{Egress, FreshProvision}
-  alias Fountain.Conversations.{Lifecycle, MachineEvents, McpConnections, McpServers}
+  alias Fountain.Conversations.{Lifecycle, MachineEvents, MachineLoss, McpConnections, McpServers}
   alias Fountain.Conversations.{Output, Pending}
   alias Fountain.Conversations.{PromptDelivery, ProvisionWatchdog, Reattachment, ServerPhase}
   alias Fountain.Conversations.{Redaction, SpriteEnv, Termination, TurnLaunch, TurnMachine, Wake}
@@ -691,27 +691,19 @@ defmodule Fountain.Conversations.ConversationServer do
           "reattach failed for sprite #{sandbox.machine_name}: not found — retiring the machine"
         )
 
-        Output.publish_stage(state.conversation_id, "reattach", "failed", %{
-          reason: "not_found",
-          retryable: false
-        })
+        # Retired through its owner with the provider step skipped, quietly
+        # (`MachineLoss.retire/3`). The conversation is not failed: the prompt
+        # this server was started for, if any, goes to the machine's rebuild,
+        # and only with none is the client told to prompt again.
+        MachineLoss.retire(sandbox.id, conv.id, "system:conversation_server")
 
-        # A destroy, through the owner (ADR 0058 stage 7b), with the provider
-        # step skipped: this server has just asked and been told the machine
-        # does not exist, which is exactly what `provider: :already_gone` is
-        # for. `terminating_conversation_id: nil` keeps it forced — a home
-        # whose disk is gone is not a machine to keep for the conversation
-        # standing in front of it.
-        Termination._unsafe_destroy_machine(sandbox.id,
-          actor: "system:conversation_server",
-          destroy_reason: :provider_gone,
-          reason: "reattach_not_found",
-          terminating_conversation_id: nil,
-          provider: :already_gone
-        )
+        if MachineLoss.requeue(conv.id) == 0,
+          do:
+            Output.publish_stage(conv.id, "reattach", "failed", %{
+              reason: "not_found",
+              retryable: false
+            })
 
-        # Don't mark the conversation failed — the user can still send a
-        # prompt and auto-wake will spin a fresh sandbox.
         {:stop, :normal, state}
 
       {:error, reason} ->
@@ -1648,16 +1640,14 @@ defmodule Fountain.Conversations.ConversationServer do
     )
   end
 
+  # A machine the provider says is gone is rebuilt for this prompt (#3005).
   defp fail_turn_before_start(state, turn, reason) do
     detail = inspect(reason)
-    Logger.error("spawn failed: #{detail}")
+    Logger.error("conv #{state.conversation_id}: spawn failed: #{detail}")
 
-    TurnMachine.fail_before_start(
-      turn,
-      state.conversation_id,
-      state.sandbox_id,
-      detail
-    )
+    if MachineLoss.gone?(state.handle),
+      do: MachineLoss.hand_off(state, turn, detail),
+      else: TurnMachine.fail_before_start(turn, state.conversation_id, state.sandbox_id, detail)
 
     %{state | current_turn: nil, turn_session_retry: nil, turn_provider_failure: nil}
   end
