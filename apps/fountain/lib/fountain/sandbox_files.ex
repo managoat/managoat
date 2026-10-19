@@ -655,23 +655,34 @@ defmodule Fountain.SandboxFiles do
     ~S"""
     inside=
     home=
+    first=1
     while [ "$#" -ge 2 ]; do
       r=$1
       logical=${2#sandbox:}
       shift 2
-      r=$(cd -- "$r" 2>/dev/null && pwd -P && printf '.') || continue
-      r=${r%$'\n.'}
-      # The first root is the home. Any other is a working directory, and is
-      # a root only where it physically lies: under the home, or under /tmp
-      # for one that names /tmp. A working directory replaced by a symlink to
-      # somewhere else (another process on a shared machine can make one)
-      # does not carry the read there.
-      if [ -z "$home" ]; then
-        home=$r
+      if r=$(cd -- "$r" 2>/dev/null && pwd -P && printf '.'); then
+        r=${r%$'\n.'}
       else
+        r=
+      fi
+      # The first root is the home, whether or not it resolves: one that does
+      # not is no root, and nothing lies under it. Any other is a working
+      # directory, and is a root only where it physically lies: under the
+      # home, or under /tmp for one that names /tmp. A working directory
+      # replaced by a symlink to somewhere else (another process on a shared
+      # machine can make one) does not carry the read there. `/tmp` is read
+      # in the execution namespace as it is named, so an adapter that mapped
+      # it elsewhere would refuse such roots rather than widen them.
+      if [ -n "$first" ]; then
+        first=
+        home=$r
+        [ -n "$r" ] || continue
+      else
+        [ -n "$r" ] || continue
         case $logical in
           /tmp|/tmp/*) base=$(cd /tmp 2>/dev/null && pwd -P) || continue ;;
-          *) base=$home ;;
+          # With no home, nothing lies under it ("$base"/* would be "/*").
+          *) [ -n "$home" ] || continue; base=$home ;;
         esac
         case $r in
           "$base"|"$base"/*) ;;

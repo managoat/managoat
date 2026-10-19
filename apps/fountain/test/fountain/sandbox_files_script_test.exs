@@ -97,11 +97,36 @@ defmodule Fountain.SandboxFilesScriptTest do
     end
 
     test "either allowed root can contain the physical target", c do
+      # A second root is a working directory under /tmp (gemini's), wherever
+      # this host keeps its temporary directory.
+      tmp = Path.join("/tmp", "sandbox-files-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf(tmp) end)
+      File.write!(Path.join(tmp, "secret.txt"), "outside")
+
       link = Path.join(c.root, "workspace")
-      File.ln_s!(c.outside, link)
-      assert {listing, 0} = run(:list, [link, c.root, c.outside])
+      File.ln_s!(tmp, link)
+      logical = ["/home/sprite", "/tmp/gemini-workspace"]
+      assert {listing, 0} = run(:list, [link, c.root, tmp], [], logical)
       assert listing =~ "secret.txt"
-      assert {_encoded, 0} = run(:read, ["100", Path.join(link, "secret.txt"), c.root, c.outside])
+
+      assert {_encoded, 0} =
+               run(:read, ["100", Path.join(link, "secret.txt"), c.root, tmp], [], logical)
+    end
+
+    test "a home that does not resolve is no root, and admits no working directory under it",
+         c do
+      # The home made unreadable by a process on a shared machine must not
+      # promote the next root to the home.
+      link = Path.join(c.root, "b")
+      File.ln_s!(c.outside, link)
+      missing = Path.join(c.root, "no-such-home")
+
+      assert {"", 9} =
+               run(:read, ["100", Path.join(link, "secret.txt"), missing, link], [], [
+                 "/home/sprite",
+                 "/home/sprite/b"
+               ])
     end
 
     test "a working-directory root replaced by a symlink out of the home is no root", c do
@@ -324,8 +349,13 @@ defmodule Fountain.SandboxFilesScriptTest do
     end
 
     test "one of several roots is enough, the way `roots/1` passes them", ctx do
-      assert {_output, 0} = run(:status, [ctx.sandbox, @cap, "all", "/home/sprite", ctx.outside])
-      assert {_output, 6} = run(:status, [ctx.sandbox, @cap, "all", "/home/sprite", "/tmp/other"])
+      # The home first, then a working directory that does not exist.
+      assert {_output, 0} = run(:status, [ctx.sandbox, @cap, "all", ctx.outside, "/tmp/other"])
+
+      elsewhere = TmpDir.mkdir!("sandbox-files-other-home")
+
+      assert {_output, 6} =
+               run(:status, [ctx.sandbox, @cap, "all", elsewhere, "/tmp/other"])
     end
   end
 end

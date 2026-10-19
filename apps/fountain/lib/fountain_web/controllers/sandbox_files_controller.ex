@@ -31,7 +31,7 @@ defmodule FountainWeb.SandboxFilesController do
       "In-sandbox path, absolute or relative to the conversation's working directory " <>
         "(its launch's `cwd`, else `/home/sprite` for claude and codex and " <>
         "`/tmp/gemini-workspace` for gemini). Confined to `/home/sprite` and that " <>
-        "directory: anything else is `422 path_outside_sandbox`. On a workspace's machine, " <>
+        "directory: anything else is `422 path_outside_sandbox`. On an explicit workspace's machine, " <>
         "which several conversations share, a relative path resolves from `/home/sprite` " <>
         "and the working directory of every live conversation there is also allowed."
   ]
@@ -63,7 +63,7 @@ defmodule FountainWeb.SandboxFilesController do
     summary: "List a directory on a sandbox",
     description:
       "The entries of one directory, directories first then by name. Without `path`, " <>
-        "the agent's working directory (on a workspace's machine, `/home/sprite`). A sandbox being parked or destroyed is " <>
+        "the agent's working directory (on an explicit workspace's machine, `/home/sprite`). A sandbox being parked or destroyed is " <>
         "`503 sandbox_unavailable`; retry after the `Retry-After`. Full scope." <> @parked,
     parameters: [sandbox_id: [in: :path, type: :string, required: true], path: @path_param],
     responses: [
