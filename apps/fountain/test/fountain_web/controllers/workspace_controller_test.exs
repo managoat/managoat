@@ -268,6 +268,87 @@ defmodule FountainWeb.WorkspaceControllerTest do
     end
   end
 
+  describe "POST /api/workspaces/:id/rebuild" do
+    # A workspace whose setup finished, with a conversation on its machine.
+    setup ctx do
+      data = create!(ctx)
+      sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+      {:ok, sandbox} = update_sandbox(sandbox, %{status: "ready"})
+
+      {1, _} =
+        Repo.update_all(from(w in Workspace, where: w.id == ^data["id"]), set: [status: "ready"])
+
+      conv =
+        insert_conversation(
+          user_id: ctx.user.id,
+          agent: insert_agent(user_id: ctx.user.id),
+          sandbox: sandbox,
+          workspace_id: data["id"],
+          status: "idle"
+        )
+
+      {:ok, workspace: data, sandbox: sandbox, conv: conv}
+    end
+
+    defp rebuild!(ctx, body, status) do
+      capture_log(fn ->
+        send(
+          self(),
+          {:body,
+           api(ctx)
+           |> post_json("/api/workspaces/#{ctx.workspace["id"]}/rebuild", body)
+           |> json_response(status)}
+        )
+      end)
+
+      assert_received {:body, body}
+      body
+    end
+
+    test "answers 202 provisioning, moves the conversation and audits the caller", ctx do
+      assert %{"data" => data} = rebuild!(ctx, %{}, 202)
+      assert data["status"] == "provisioning"
+      assert data["sandbox_status"] == "pending"
+      assert data["sandbox_id"] != ctx.sandbox.id
+
+      assert Repo.reload!(ctx.conv).sandbox_id == data["sandbox_id"]
+      assert Repo.reload!(ctx.sandbox).status == "terminated"
+
+      assert [%{actor: "api"}] =
+               Audit.list_for_user(ctx.user.id, action_prefix: "workspace.rebuilt")
+
+      # A second one while it builds.
+      stub(Fountain.Workspaces.Provisioner, :running?, fn _id -> true end)
+      assert %{"error" => "rebuild_in_progress"} = rebuild!(ctx, %{}, 409)
+    end
+
+    test "a running turn is 409 turns_running, and interrupt: true gets past it", ctx do
+      {:ok, conv} = Fountain.Conversations.update_conversation(ctx.conv, %{status: "running"})
+      turn = insert_turn(conv, status: "running")
+
+      assert %{"error" => "turns_running", "conversation_ids" => [id], "message" => _} =
+               rebuild!(ctx, %{}, 409)
+
+      assert id == conv.id
+      assert Repo.reload!(ctx.sandbox).status == "ready"
+
+      assert %{"data" => %{"status" => "provisioning"}} =
+               rebuild!(ctx, %{"interrupt" => true}, 202)
+
+      assert Repo.reload!(turn).status == "interrupted"
+    end
+
+    test "another account's workspace, and an implicit one, are 404", ctx do
+      foreign = insert_workspace(user_id: insert_active_user().id, implicit: false, name: "x")
+      implicit = insert_workspace(user_id: ctx.user.id)
+
+      for id <- [foreign.id, implicit.id, "not-a-uuid"] do
+        assert %{"error" => "not_found"} =
+                 api(ctx) |> post_json("/api/workspaces/#{id}/rebuild", %{}) |> json_response(404)
+      end
+    end
+  end
+
   describe "a sandbox's own key" do
     test "may not create, list, show or delete workspaces", ctx do
       data = create!(ctx)
@@ -277,7 +358,8 @@ defmodule FountainWeb.WorkspaceControllerTest do
             {:post, "/api/workspaces", %{"name" => "w", "environment_id" => ctx.env.id}},
             {:get, "/api/workspaces", nil},
             {:get, "/api/workspaces/#{data["id"]}", nil},
-            {:delete, "/api/workspaces/#{data["id"]}", nil}
+            {:delete, "/api/workspaces/#{data["id"]}", nil},
+            {:post, "/api/workspaces/#{data["id"]}/rebuild", %{"interrupt" => true}}
           ] do
         conn =
           api(ctx, sprite)

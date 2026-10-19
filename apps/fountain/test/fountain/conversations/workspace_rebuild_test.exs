@@ -89,6 +89,41 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       assert next.built_from_revision == edited.revision
     end
 
+    test "after a rebuild asked for (#2986), the conversation's next server attaches to the new machine",
+         _ctx do
+      user = insert_verified_user()
+      agent = insert_agent(user_id: user.id)
+      old = insert_sandbox(user_id: user.id, status: "ready") |> explicit_workspace!()
+      conv = insert_conversation(user_id: user.id, agent: agent, sandbox: old, status: "idle")
+
+      workspace =
+        Workspace
+        |> Repo.get!(old.workspace_id)
+        |> Ecto.Changeset.change(status: "ready")
+        |> Repo.update!()
+
+      stub_happy_sprite()
+      stub(Fountain.Workspaces.Provisioner, :start, fn _w, _id -> {:ok, self()} end)
+
+      capture_log(fn ->
+        assert {:ok, %Workspace{status: "provisioning"}} =
+                 Fountain.Workspaces.rebuild_workspace(workspace, actor: "api")
+      end)
+
+      moved = Repo.reload!(conv)
+      assert moved.sandbox_id != old.id
+
+      # The workspace's provision built it.
+      {1, _} =
+        Repo.update_all(from(s in Sandbox, where: s.id == ^moved.sandbox_id),
+          set: [status: "ready"]
+        )
+
+      {pid, _ref, :alive} = start_server(moved)
+      assert :sys.get_state(pid).sandbox_id == moved.sandbox_id
+      assert is_nil(:sys.get_state(pid).runtime_session_id)
+    end
+
     test "a server restarted with no wake asking does not build a machine", _ctx do
       # A crash restart replays the child spec, with no prompt: the
       # conversation is `idle`, not marked by a wake.

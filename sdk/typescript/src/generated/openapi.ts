@@ -1523,6 +1523,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{id}/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebuild a workspace's machine
+         * @description Destroys the workspace's machine, with everything on its disk, and builds a new one from its environment as it is now, under the same workspace. Save any work first: GET /api/workspaces/{id}/diff reads it while the machine is ready. Every conversation in the workspace keeps its transcript and stays in the workspace, with its runtime session cleared: its agent starts fresh on its next prompt. Answers 202 with status provisioning; the status moves to ready or failed, each a workspace.status event. Refused with 409 turns_running while any conversation in it has a running turn or a prompt accepted and not yet started, unless interrupt is true, which ends those turns as interrupted (transcripts kept). A rebuild while the workspace is provisioning is 409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a conversation's own sandbox. The vault is not touched.
+         */
+        post: operations["FountainWeb.WorkspaceController.rebuild"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspace_id}/diff": {
         parameters: {
             query?: never;
@@ -2642,6 +2662,8 @@ export interface components {
              * @description Beside `error: "connection_exists"` and `error: "connection_reconnect_required"`: the connection meant.
              */
             connection_id?: string;
+            /** @description Beside `error: "turns_running"` on a workspace rebuild: the conversations whose running turn refused it. */
+            conversation_ids?: string[];
             /** @description Beside `error: "conversation_depth_exceeded"`: the depth the refused conversation would have had in its spawn chain. */
             depth?: number;
             /**
@@ -3659,7 +3681,7 @@ export interface components {
             /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. It describes the machine as built: a conversation started after an edit to env_vars or the networking fields already runs with the new values. */
             stale: boolean;
             /**
-             * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, or on a rebuild after a loss), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
+             * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, on a rebuild after a loss, or on a rebuild asked for), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
              * @enum {string}
              */
             status: "provisioning" | "ready" | "failed";
@@ -3687,6 +3709,11 @@ export interface components {
         /** WorkspaceListResponse */
         WorkspaceListResponse: {
             data: components["schemas"]["Workspace"][];
+        };
+        /** WorkspaceRebuildRequest */
+        WorkspaceRebuildRequest: {
+            /** @description Interrupt every running turn in the workspace's conversations rather than be refused with 409 turns_running. Each ends interrupted (reason machine_destroyed), its transcript kept. Defaults to false. */
+            interrupt?: boolean;
         };
         /** WorkspaceResponse */
         WorkspaceResponse: {
@@ -11125,6 +11152,96 @@ export interface operations {
             };
             /** @description Too Many Requests */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Rebuild options */
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WorkspaceRebuildRequest"];
+            };
+        };
+        responses: {
+            /** @description Workspace */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description A running turn (turns_running), or a rebuild in progress (rebuild_in_progress) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Every sandbox slot in use (fleet_full), or the machine busy with another operation (sandbox_unavailable) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

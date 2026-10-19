@@ -24,8 +24,9 @@ provider. All four are fixed when you create it: to point it at another
 environment, vault or provider, create another workspace. What is fixed is
 which environment and vault, not what they hold. A setup reads them as they
 are at that moment, so editing the environment changes what the next setup
-runs: a retry after a failure, or a rebuild after a loss. An environment
-several workspaces share changes all of their next rebuilds. A workspace belongs to the account that created it and is
+runs: a retry after a failure, a rebuild after a loss, or a rebuild you ask
+for. An environment several workspaces share changes all of their next
+rebuilds. A workspace belongs to the account that created it and is
 never shared with another account.
 
 An edit does not change a machine that is already built, so a workspace tells
@@ -202,6 +203,27 @@ next prompt rebuilds it.
 
 A workspace's `sandbox_id` names its current machine, and changes on a
 rebuild. Address the workspace, not the sandbox.
+
+### Rebuild on purpose
+
+To apply an edited environment, rebuild the workspace
+(`POST /api/workspaces/{id}/rebuild`, `managoat workspace rebuild`). It is
+the lost-machine rebuild above, done when you ask and at once.
+
+!!! warning "A rebuild wipes the disk"
+
+    The machine is destroyed with everything on it: uncommitted work,
+    unpushed commits, build output. Save what you need first, for example
+    with the workspace's `diff` read, while the machine is ready.
+
+Every conversation keeps its transcript and stays in the workspace, and its
+agent starts a fresh session on its next prompt. The workspace goes
+`provisioning`, then `ready` or `failed`, and `stale` clears. A running turn
+refuses the rebuild with `409 turns_running`, and so does a prompt accepted
+but not yet started, unless you pass
+`interrupt: true`, which interrupts those turns and keeps their transcripts.
+A second rebuild while one is building is `409 rebuild_in_progress`. An
+implicit workspace cannot be rebuilt: it is a conversation's own sandbox.
 
 ### Delete ends everything
 

@@ -171,7 +171,8 @@ defmodule FountainWeb.Schemas do
           enum: Fountain.Workspaces.Workspace.statuses(),
           description:
             "The provision's outcome: provisioning while its machine is being set up (on " <>
-              "create, on a retry, or on a rebuild after a loss), then ready or failed. A " <>
+              "create, on a retry, on a rebuild after a loss, or on a rebuild asked for), " <>
+              "then ready or failed. A " <>
               "park does not move it; sandbox_status does. Each change is a " <>
               "workspace.status event on GET /api/events/stream."
         },
@@ -267,6 +268,25 @@ defmodule FountainWeb.Schemas do
         }
       },
       required: [:name, :environment_id]
+    })
+  end
+
+  defmodule WorkspaceRebuildRequest do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "WorkspaceRebuildRequest",
+      type: :object,
+      properties: %{
+        interrupt: %Schema{
+          type: :boolean,
+          description:
+            "Interrupt every running turn in the workspace's conversations rather than be " <>
+              "refused with 409 turns_running. Each ends interrupted (reason " <>
+              "machine_destroyed), its transcript kept. Defaults to false."
+        }
+      }
     })
   end
 
@@ -3021,6 +3041,13 @@ defmodule FountainWeb.Schemas do
           description:
             "Beside `error: \"insufficient_scope\"`: the key scope that is allowed " <>
               "the request, a `full` key such as one from `managoat auth login`."
+        },
+        conversation_ids: %Schema{
+          type: :array,
+          items: %Schema{type: :string, format: :uuid},
+          description:
+            "Beside `error: \"turns_running\"` on a workspace rebuild: the conversations " <>
+              "whose running turn refused it."
         },
         depth: %Schema{
           type: :integer,

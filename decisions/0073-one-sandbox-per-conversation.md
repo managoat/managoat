@@ -164,3 +164,7 @@ its step 4, explicit workspaces reachable from step 5):
 - 2026-10-18 — Amended by [0097](0097-workspaces.md): this ADR's machine per
   conversation is the implicit workspace; an explicit workspace keeps its
   machine when a conversation ends and parks it at the ceiling (0097 step 4).
+- 2026-10-19 — The reset door this ADR removed comes back for explicit
+  workspaces only, as [0097](0097-workspaces.md)'s rebuild on request
+  (`POST /api/workspaces/:id/rebuild`, #2986), which keeps the conversations;
+  `DELETE /api/sandboxes/:id` stays gone.

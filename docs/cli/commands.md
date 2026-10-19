@@ -687,6 +687,36 @@ Options:
       --json       output JSON
 ```
 
+## `managoat workspace rebuild`
+
+Rebuild a workspace's machine from its environment as it is now
+
+Rebuild a workspace's machine: destroy it, with everything on its disk,
+and set up a new one from the environment as it is now. Use it after editing
+the environment (`managoat workspace show` says when the machine is stale).
+
+The disk is wiped. Save any work on it first, for example with
+`GET /api/workspaces/<id>/diff`.
+
+Every conversation in the workspace keeps its transcript and stays in it,
+with its runtime session cleared: its agent starts fresh on its next prompt.
+The command is refused while any conversation has a running turn, unless
+--interrupt, which interrupts those turns. With --wait it follows the setup
+and exits non-zero if it fails.
+
+```
+managoat workspace rebuild <id-or-name> [flags]
+```
+
+Options:
+
+```
+      --interrupt          interrupt running turns rather than be refused
+      --json               print the workspace as JSON
+      --timeout duration   how long --wait waits (default 30m0s)
+      --wait               wait until the workspace is ready, and fail if its setup fails
+```
+
 ## `managoat workspace show`
 
 Show a workspace and its machine

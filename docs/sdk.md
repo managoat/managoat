@@ -390,6 +390,7 @@ const [web, api] = await Promise.all([
 ]);
 
 await managoat.workspaces.gitStatus(ws.id, { path: "/home/sprite/app" });   // files, file, diff too
+await managoat.workspaces.rebuild(ws.id, { interrupt: true });   // wipes the disk: a new machine from the environment now
 await managoat.workspaces.delete(ws.id);   // terminates its conversations, destroys the machine
 ```
 
@@ -417,6 +418,13 @@ A workspace's machine has no lifetime limit, and Managoat does not cap how
 many you keep. Delete the ones you are done with. Read
 [About workspaces](concepts/workspaces.md) and
 [Run several agents on one machine](guides/agents-in-one-workspace.md).
+
+`rebuild` replaces the machine with one set up from the environment as it is
+now, and **wipes its disk**: read what you need with `diff` first. Every run's
+conversation stays in the workspace with its transcript and starts a fresh
+session. A running turn refuses it with code `turns_running` unless
+`interrupt: true`; one while the workspace is provisioning is code
+`rebuild_in_progress`.
 
 A workspace says whether its machine is behind its environment: `stale`, and
 `changed_fields`, the names (never the values) of the environment's fields

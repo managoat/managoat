@@ -30,6 +30,8 @@ export type ManagoatErrorCode =
   | "source_in_use_by_workspace"
   | "sandbox_not_ready"
   | "workspace_failed"
+  | "turns_running"
+  | "rebuild_in_progress"
   | "sandbox_provider_disabled"
   | "insufficient_scope"
   | "not_found"

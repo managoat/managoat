@@ -110,6 +110,14 @@ func (w *workspaceAPI) serve(t *testing.T) func(http.ResponseWriter, *http.Reque
 				errText = `"setup script exited 1: npm ERR! missing script: build"`
 			}
 			_, _ = io.WriteString(rw, `{"data":{"id":"`+wsUUID+`","name":"shared","status":"`+status+`","error":`+errText+`,"sandbox_id":null,"sandbox_status":null}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/workspaces/"+wsUUID+"/rebuild":
+			if body["interrupt"] != true {
+				rw.WriteHeader(http.StatusConflict)
+				_, _ = io.WriteString(rw, `{"error":"turns_running","message":"a conversation in this workspace is running a turn","conversation_ids":["conv-1"]}`)
+				return
+			}
+			rw.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(rw, `{"data":{"id":"`+wsUUID+`","name":"shared","status":"provisioning"}}`)
 		case r.Method == http.MethodDelete:
 			rw.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/conversations":
@@ -329,6 +337,41 @@ func TestACPCreateConversationCarriesTheWorkspace(t *testing.T) {
 	got := lastWrite(t, w.requests())
 	if got.Body["workspace_id"] != wsUUID || got.Body["cwd"] != "/home/sprite/web" {
 		t.Errorf("body = %v", got.Body)
+	}
+}
+
+// Rebuild names the workspace by name, sends interrupt only when asked, and
+// turns a running turn's refusal into the flag that gets past it (#2986).
+func TestWorkspaceRebuild(t *testing.T) {
+	w := newWorkspaceAPI(t)
+	silenceStdout(t)
+	flags := func(c *cobra.Command) {
+		c.Flags().Bool("interrupt", false, "")
+		c.Flags().Bool("wait", false, "")
+		c.Flags().Duration("timeout", time.Second, "")
+		c.Flags().Bool("json", false, "")
+	}
+	err := workspaceRebuild(testCmd(t, flags), "shared")
+	if err == nil || !strings.Contains(err.Error(), "--interrupt") {
+		t.Fatalf("a running turn's refusal = %v, want the --interrupt hint", err)
+	}
+	if err := workspaceRebuild(testCmd(t, flags, "--interrupt", "--wait"), "shared"); err != nil {
+		t.Fatal(err)
+	}
+	var posts []recordedRequest
+	for _, r := range w.requests() {
+		if r.Method == http.MethodPost {
+			posts = append(posts, r)
+		}
+	}
+	if len(posts) != 2 || posts[0].Path != "/api/workspaces/"+wsUUID+"/rebuild" {
+		t.Fatalf("posts = %+v", posts)
+	}
+	if _, ok := posts[0].Body["interrupt"]; ok {
+		t.Errorf("interrupt sent without --interrupt: %v", posts[0].Body)
+	}
+	if posts[1].Body["interrupt"] != true {
+		t.Errorf("--interrupt not sent: %v", posts[1].Body)
 	}
 }
 

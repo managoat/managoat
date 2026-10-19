@@ -849,6 +849,7 @@ the task. Every workspace route needs a full-scope key; a sandbox's own key is
 | `POST /api/workspaces` | Create one: `name` and `environment_id`, optional `vault_id` and `sandbox_provider`. Answers `201` with `status: "provisioning"` and starts the setup at once. |
 | `GET /api/workspaces` | The caller's workspaces, newest first. `?implicit=true` adds the implicit ones, one per conversation launched without a workspace. |
 | `GET /api/workspaces/{id}` | One workspace, with its machine's state. |
+| `POST /api/workspaces/{id}/rebuild` | Destroy its machine, **with everything on its disk**, and set up a new one from the environment as it is now. Every conversation keeps its transcript and stays in the workspace. Optional body `{"interrupt": true}`. Answers `202` with `status: "provisioning"`. See [Rebuild a workspace](#rebuild-a-workspace). |
 | `DELETE /api/workspaces/{id}` | Terminate every live conversation in it, keeping their transcripts, and destroy its machine. `204`. Not refused while conversations are running. |
 | `GET /api/workspaces/{id}/files`, `/file`, `/diff`, `/git-status` | Read the workspace's current machine. See [Files, git status and git diff](#files-git-status-and-git-diff). |
 
@@ -903,6 +904,52 @@ reconnect.
 | `503 fleet_full` | Every sandbox slot on the provider is in use. Honor `Retry-After`. |
 | `404 not_found` | Another account's workspace, on every route. |
 | `409 source_in_use_by_workspace` | `DELETE /api/environments/{id}` or `DELETE /api/vaults/{id}` on one a workspace was created from. Delete the workspace first. |
+
+### Rebuild a workspace
+
+An edit to the environment does not reach a machine already built (`stale`
+says when one is behind). `POST /api/workspaces/{id}/rebuild` applies it: it
+replaces the machine with a new one set up from the environment as it is now.
+
+!!! warning "The disk is wiped"
+
+    The rebuild destroys the workspace's machine and everything on its disk:
+    uncommitted changes, unpushed commits, build output, files an agent wrote.
+    Save what you need first. `GET /api/workspaces/{id}/diff` (and `files` and
+    `file`) read the machine while it is `ready`.
+
+What happens, in order:
+
+1. Every conversation in the workspace moves to the new machine. Each keeps
+   its transcript and stays in the workspace, but loses its runtime session,
+   so its agent starts fresh, without memory of earlier turns, on its next
+   prompt, which also sets its config home, skills and MCP configuration up
+   again on the new machine. A conversation with a live process is told on
+   its stream that the workspace is being rebuilt.
+2. The old machine is destroyed.
+3. The workspace goes `provisioning` and its new machine is set up, as on
+   create, then `ready` or `failed`. Each change is a `workspace.status`
+   event. Once it is `ready`, `built_from_revision` is the environment's
+   current `revision` and `stale` is `false`.
+
+The vault is not touched: its secrets reach the machine through the broker.
+The rebuild is audited as `workspace.rebuilt`, with the caller.
+
+| Refusal | When |
+|---|---|
+| `409 turns_running` | A conversation in the workspace has a running turn, or a prompt Managoat accepted that has not started its turn yet (its machine is still waking, say). `conversation_ids` names them. Wait for them to end, or send `{"interrupt": true}`, which ends each as `interrupted` (reason `machine_destroyed`), keeping its transcript. |
+| `409 rebuild_in_progress` | The workspace is `provisioning`: its create, a retry, a rebuild after a loss or another rebuild is still building its machine. Wait for `ready` or `failed`. |
+| `404 not_found` | Another account's workspace, or an implicit one, as for `DELETE`: an implicit workspace is a conversation's own sandbox. |
+| `503 fleet_full` | Every sandbox slot on the provider is in use. Nothing was changed. |
+| `503 sandbox_unavailable` | Another operation (a park, a wake) holds the machine right now. Nothing was changed; send it again shortly. |
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $MANAGOAT_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"interrupt":true}' \
+  "$MANAGOAT_URL/api/workspaces/YOUR_WORKSPACE_ID/rebuild"
+```
 
 A workspace's machine parks when idle and wakes on the next prompt, like any
 sandbox. At the `SANDBOX_MAX_LIFETIME_HOURS` ceiling it is parked rather than
