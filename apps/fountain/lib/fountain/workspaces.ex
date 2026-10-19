@@ -129,9 +129,9 @@ defmodule Fountain.Workspaces do
   sandbox inside the provider's fleet reservation, so a full fleet is the
   create's own `{:error, :fleet_full}` and leaves nothing behind. Under the
   tenant's source lock, as environment and vault deletion take it, so a
-  workspace naming one cannot be created while it is being deleted. Refusing
-  that delete while the workspace exists (`names_source?/3`) is ADR 0097
-  step 5b's; until then the foreign key nilifies it, as for an implicit one.
+  workspace naming one cannot be created while it is being deleted, and its
+  delete is refused while the workspace exists (`names_source?/3`, read by
+  `Fountain.Agents.delete_source_and_version_agents/2`).
 
   Answers `{:ok, workspace}` with `status: "provisioning"`, once the
   provision is started (`Fountain.Workspaces.Provisioner`). Audits
@@ -549,9 +549,11 @@ defmodule Fountain.Workspaces do
 
   @doc """
   Whether an explicit workspace of `user_id`'s names the environment or vault
-  `source_id`: the reason its delete is to be refused (ADR 0097, Data). For
-  the delete's transaction to read under the tenant lock `create_workspace/3`
-  takes; nothing calls it before step 5b.
+  `source_id`: the reason its delete is refused, `409 source_in_use_by_workspace`
+  (ADR 0097, Data). Read inside the delete's transaction
+  (`Fountain.Agents.delete_source_and_version_agents/2`), under the tenant lock
+  `create_workspace/3` takes. A workspace being deleted (ownerless) holds
+  nothing.
   """
   @spec names_source?(:environment | :vault, Ecto.UUID.t(), Ecto.UUID.t()) :: boolean()
   def names_source?(kind, source_id, user_id) when kind in [:environment, :vault] do

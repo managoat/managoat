@@ -412,6 +412,14 @@ defmodule Fountain.Agents do
               lock: "FOR UPDATE"
           )
 
+        # An explicit workspace fixes its environment and vault for its life
+        # (ADR 0097, Data), so deleting one it names is refused while it
+        # exists. Under the tenant lock `Workspaces.create_workspace/3` takes,
+        # so a workspace either commits first and is seen here or finds the
+        # source gone. An implicit workspace's foreign key still nilifies.
+        if Fountain.Workspaces.names_source?(kind, source.id, source.user_id),
+          do: Repo.rollback(:source_in_use_by_workspace)
+
         changes =
           source_referencing_agents(source, kind)
           |> Repo.all()

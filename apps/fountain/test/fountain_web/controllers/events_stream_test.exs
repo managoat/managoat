@@ -357,6 +357,35 @@ defmodule FountainWeb.EventsStreamTest do
     end
   end
 
+  describe "workspace.status" do
+    test "carries the caller's workspaces' status changes and no other account's", %{
+      user: user,
+      raw_key: key
+    } do
+      mine = insert_workspace(user_id: user.id, implicit: false, name: "mine", status: "ready")
+      theirs = insert_workspace(user_id: insert_verified_user().id, implicit: false, name: "x")
+
+      task = stream_async(key, "/api/events/stream")
+      Process.sleep(300)
+
+      Fountain.Workspaces.publish_status(mine)
+      Fountain.Workspaces.publish_status(theirs)
+
+      conn = Task.await(task, 5_000)
+
+      assert [payload] =
+               Regex.run(~r/event: workspace.status\ndata: (\{[^\n]*\})/, conn.resp_body,
+                 capture: :all_but_first
+               )
+
+      assert %{"workspace_id" => id, "status" => "ready", "name" => "mine"} =
+               Jason.decode!(payload)
+
+      assert id == mine.id
+      refute conn.resp_body =~ theirs.id
+    end
+  end
+
   describe "?blocks=true on the per-conversation surfaces" do
     test "GET /events adds blocks for output events and [] for stage events", %{
       user: user,

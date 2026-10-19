@@ -110,6 +110,10 @@ defmodule FountainWeb.SchemaEnumGuardrailTest do
     {FountainWeb.Schemas.StreamLogEvent, "state"} => {LogEvent, :states},
     {FountainWeb.Schemas.ManifestResource, "kind"} => {Manifest, :kinds},
     {FountainWeb.Schemas.Sandbox, "status"} => {Sandbox, :statuses},
+    # A workspace's provision outcome (ADR 0097), on the resource and the event.
+    {FountainWeb.Schemas.Workspace, "status"} => {Fountain.Workspaces.Workspace, :statuses},
+    {FountainWeb.Schemas.StreamWorkspaceStatus, "status"} =>
+      {Fountain.Workspaces.Workspace, :statuses},
     # The sandbox listing (ADR 0023 gate 3): a sandbox with its conversations.
     {FountainWeb.Schemas.SandboxDetail, "status"} => {Sandbox, :statuses},
     {FountainWeb.Schemas.SandboxConversation, "status"} => {Conversation, :statuses},

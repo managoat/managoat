@@ -135,10 +135,14 @@ defmodule FountainWeb.VaultController do
 
   operation(:delete,
     summary: "Delete a vault",
+    description:
+      "Refused with 409 `source_in_use_by_workspace` while a workspace was created with it: " <>
+        "a workspace fixes its vault for its life. Delete the workspace first.",
     parameters: [id: [in: :path, type: :string, required: true]],
     responses: [
       no_content: "Deleted",
-      not_found: {"Not found", "application/json", Schemas.Error}
+      not_found: {"Not found", "application/json", Schemas.Error},
+      conflict: {"A workspace names it", "application/json", Schemas.Error}
     ]
   )
 

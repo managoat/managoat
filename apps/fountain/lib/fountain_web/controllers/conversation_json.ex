@@ -63,6 +63,7 @@ defmodule FountainWeb.ConversationJSON do
       agent_version: agent_version_number(c),
       vault_id: c.vault_id,
       environment_id: c.environment_id,
+      workspace_id: c.workspace_id,
       model: c.model,
       # The working directory the agent runs in: the launch's, or the
       # runtime's default (ADR 0097).

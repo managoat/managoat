@@ -71,7 +71,16 @@ them.
    `required_scope: "full"`. A refused write is still on the audit trail as
    the sandbox's. A test walks the router and fails if the set of routes
    that pass changes.
-6. **No opt-out.** There is no `sandbox_api_access` level for account-wide
+6. **Workspaces are full scope** ([0097](0097-workspaces.md), step 5). The
+   key may not create, list, show or delete a workspace (the routes are not
+   on the allowlist, and sit behind `:require_full_scope`), nor name a
+   `workspace_id` on a start (`403 insufficient_scope`, `required_scope:
+   "full"`), so a child it starts gets a sandbox of its own. The tree
+   confinement holds per implicit workspace; inside a shared one, every
+   process can read every conversation's key, so a key's reach there is in
+   effect the union of the trees of the conversations on it, which 0097's
+   one trust boundary accepts.
+7. **No opt-out.** There is no `sandbox_api_access` level for account-wide
    reach. An owner who wants a sandbox to act on the whole account puts a
    full-scope key of their own in a vault or environment. `none` is
    unchanged.
@@ -121,3 +130,4 @@ them.
 ## History
 
 - 2026-10-17 — Decided by Jake and built (#2981).
+- 2026-10-18 — Amended by [0097](0097-workspaces.md) step 5: workspaces are full scope, a start from a sandbox may not name a `workspace_id`, and the tree confinement is bounded by a shared workspace's one trust boundary (decision 6).

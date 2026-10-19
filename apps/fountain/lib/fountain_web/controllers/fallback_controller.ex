@@ -365,8 +365,57 @@ defmodule FountainWeb.FallbackController do
     |> json(%{
       error: "sandbox_attach_unsupported",
       message:
-        "every conversation gets a sandbox of its own; attaching to an existing sandbox " <>
-          "with sandbox_id is no longer supported, so omit it"
+        "a conversation cannot attach to a sandbox by sandbox_id; to run conversations on " <>
+          "one machine, create a workspace and launch each with its workspace_id, or omit " <>
+          "sandbox_id for a sandbox of the conversation's own"
+    })
+  end
+
+  # A launch into a workspace takes the workspace's environment and vault
+  # (ADR 0097): naming a different one is refused rather than ignored.
+  def call(conn, {:error, :workspace_fixes_environment}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      error: "workspace_fixes_environment",
+      message:
+        "the workspace fixes the environment and vault its conversations run with; omit " <>
+          "environment_id and vault_id, or send the workspace's own"
+    })
+  end
+
+  # A machine name names a fresh sandbox; a workspace's machine is its own.
+  def call(conn, {:error, :machine_name_with_workspace}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      error: "machine_name_with_workspace",
+      message: "a workspace names its own machine; omit machine_name with workspace_id"
+    })
+  end
+
+  # A sandbox's own key naming a workspace (ADR 0097): the same body the
+  # full-scope plug answers with.
+  def call(conn, {:error, :insufficient_scope}) do
+    conn
+    |> put_status(:forbidden)
+    |> json(%{
+      error: "this API key is not permitted to use workspaces",
+      reason: "insufficient_scope",
+      required_scope: "full"
+    })
+  end
+
+  # Deleting an environment or vault an explicit workspace names (ADR 0097,
+  # Data): the workspace was provisioned from it and fixes it for its life.
+  def call(conn, {:error, :source_in_use_by_workspace}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      error: "source_in_use_by_workspace",
+      message:
+        "a workspace was created from this, and fixes it for its life; delete the " <>
+          "workspace first"
     })
   end
 
@@ -476,7 +525,7 @@ defmodule FountainWeb.FallbackController do
       error: "invalid_sandbox_api_access",
       message:
         "sandbox_api_access must be owner or none; none requires a fresh ephemeral sandbox, " <>
-          "cannot name a machine_name, and cannot change on resume"
+          "cannot name a machine_name or a workspace_id, and cannot change on resume"
     })
   end
 
