@@ -666,8 +666,9 @@ defmodule Fountain.Machines.Provision do
       # and before this lock (a co-tenant's server still on it), would move
       # with its conversation and strand `running` there: its server's own
       # ending is refused by the moved binding. Ended here, under the lock and
-      # in the move's commit, as interrupted; no audit row, which may not be
-      # written inside a transaction (review of step 4b).
+      # in the move's commit, as interrupted (review of step 4b). Both callers
+      # announce and audit them after the commit (`announce_ended_turns/3`,
+      # #3001), since no audit may be written inside a transaction.
       {stranded, ended} =
         Repo.update_all(
           from(t in Fountain.Conversations.Turn,
