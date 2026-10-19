@@ -93,6 +93,11 @@ defmodule Fountain.Application do
         # request process that started it, or the test that made the request
         # (#1040). Supervised and unlinked, a crash here is a log line.
         {Task.Supervisor, name: Fountain.TaskSupervisor},
+        # The explicit workspaces whose provision on create is running, by
+        # workspace id (ADR 0097, `Fountain.Workspaces.Provisioner`), so a
+        # delete can stop one. The tasks themselves run under the supervisor
+        # above.
+        {Registry, [name: Fountain.WorkspaceSetupRegistry, keys: :unique]},
         FountainWeb.Plugs.RateLimit.Sweeper,
         Fountain.Conversations.Redaction,
         # The sandbox-files reads in flight (`Fountain.Machines.Reads`): before

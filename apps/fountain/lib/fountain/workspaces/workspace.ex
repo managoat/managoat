@@ -9,8 +9,8 @@ defmodule Fountain.Workspaces.Workspace do
   workspace, made in the same transaction as its row, and every live sandbox
   is given one at boot if it has none
   (`Fountain.Workspaces._unsafe_reconcile_live/0`). The lifecycle reads the
-  workspace in step 4, and explicit workspaces, made through
-  `/api/workspaces`, come in step 5.
+  workspace in step 4, and explicit workspaces are made through
+  `Fountain.Workspaces.create_workspace/3` (step 5).
 
   `user_id` is `nil` only on a workspace whose sandbox outlived its account's
   deletion, as `sandboxes.user_id` is (#2329).
@@ -18,8 +18,9 @@ defmodule Fountain.Workspaces.Workspace do
   `status` is the provision's outcome, not the machine's state:
   `provisioning` until the provision of the workspace's sandbox settles, then
   `ready` or `failed`. A park or a destroy does not move it; the sandbox row
-  says that. `error` is unused until explicit workspaces ship, where it
-  carries a failed provision's redacted reason.
+  says that. `error` is a failed provision's reason, in words and redacted
+  (`Fountain.Workspaces.describe_failure/2`), and cleared when a rebuild sets
+  the workspace back to `provisioning`.
   """
 
   use Ecto.Schema
@@ -63,6 +64,23 @@ defmodule Fountain.Workspaces.Workspace do
   end
 
   def statuses, do: @statuses
+
+  @doc """
+  The changeset for a new explicit workspace (ADR 0097, step 5): its name
+  from the request, and its owner, environment, vault and provider, which
+  `Fountain.Workspaces.create_workspace/3` has already resolved and checked
+  against the caller. Fixed at create: there is no update changeset.
+  """
+  def create_changeset(attrs) do
+    %__MODULE__{implicit: false, status: "provisioning"}
+    |> cast(attrs, [:user_id, :environment_id, :vault_id, :provider, :name])
+    |> update_change(:name, &String.trim/1)
+    |> validate_required([:user_id, :environment_id, :provider, :name])
+    |> validate_length(:name, min: 1, max: 200)
+    |> validate_inclusion(:provider, Fountain.SandboxProviders.known_providers())
+    |> foreign_key_constraint(:environment_id)
+    |> foreign_key_constraint(:vault_id)
+  end
 
   @doc """
   The changeset for a new implicit workspace: the launch's resolved

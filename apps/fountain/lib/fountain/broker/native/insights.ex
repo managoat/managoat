@@ -355,6 +355,8 @@ defmodule Fountain.Broker.Native.Insights do
         select: %{
           id: s.id,
           conversation_id: s.conversation_id,
+          # A workspace's setup session has no conversation (ADR 0097).
+          workspace_id: s.workspace_id,
           user_id: s.user_id,
           email: u.email,
           policy: s.unmatched_host_policy,

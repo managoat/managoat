@@ -187,7 +187,7 @@ defmodule Fountain.Machines.Destroy do
   # `:destroy_reason` against `:reason` one layer up in `Termination`).
   @reasons ~w(terminated idle max_lifetime reclaimed reset admin_reap home_destroyed
               provider_gone replaced account_deleted compute_stopped
-              teardown)a
+              teardown workspace_deleted)a
 
   @reason_by_string Map.new(@reasons, &{Atom.to_string(&1), &1})
   @known_reason_strings Map.keys(@reason_by_string)

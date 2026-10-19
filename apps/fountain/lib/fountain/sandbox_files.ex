@@ -947,7 +947,17 @@ defmodule Fountain.SandboxFiles do
   # the callback token, which come from Fountain rather than the identity.
   # Longest first, like `Redaction.put/2`, so a value that contains another
   # is replaced whole.
-  defp secret_values(%Sandbox{} = sandbox) do
+  defp secret_values(%Sandbox{} = sandbox), do: redaction_values(sandbox)
+
+  @doc """
+  What a read of `sandbox` redacts, longest first: the values of its
+  environment and vault, and whatever a live server of a conversation on it
+  registered. Also what a failed workspace's `error` is redacted with
+  (`Fountain.Workspaces.describe_failure/2`). `sandbox` is the caller's,
+  established by a scoped fetch or by the machine's own owner.
+  """
+  @spec redaction_values(Sandbox.t()) :: [String.t()]
+  def redaction_values(%Sandbox{} = sandbox) do
     (identity_values(sandbox) ++ registered_values(sandbox))
     |> Enum.filter(&(is_binary(&1) and byte_size(&1) >= Redaction.min_length()))
     |> Enum.uniq()

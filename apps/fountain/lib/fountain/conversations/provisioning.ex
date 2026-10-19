@@ -282,7 +282,7 @@ defmodule Fountain.Conversations.Provisioning do
   `limited` environment is not refused since gate 2: its `allowed_hosts` are
   enforced at the broker (`Fountain.Broker.network_for/1`).
   """
-  @spec check_broker_support(atom(), String.t()) ::
+  @spec check_broker_support(atom(), String.t() | nil) ::
           :ok | {:error, {:broker, atom()} | {:broker, :unreachable, term()}}
   def check_broker_support(provider, conv_id) do
     cond do
@@ -316,7 +316,7 @@ defmodule Fountain.Conversations.Provisioning do
   (ADR 0019 §2). On a provider without `:network_policy` this is skipped;
   `check_broker_support/2` has already refused a launch there.
   """
-  @spec apply_broker_floor(Handle.t(), String.t()) :: :ok | {:error, term()}
+  @spec apply_broker_floor(Handle.t(), String.t() | nil) :: :ok | {:error, term()}
   def apply_broker_floor(handle, conv_id) do
     host = Fountain.Broker.proxy_host()
 
@@ -446,7 +446,7 @@ defmodule Fountain.Conversations.Provisioning do
   file is checked with `visudo -c` before it is installed, since a bad
   sudoers fragment disables sudo outright.
   """
-  @spec install_broker_ca(Handle.t(), String.t()) :: :ok | {:error, term()}
+  @spec install_broker_ca(Handle.t(), String.t() | nil) :: :ok | {:error, term()}
   def install_broker_ca(handle, conv_id) do
     path = Fountain.Broker.ca_path()
     staging = Fountain.Broker.ca_staging_path() <> "." <> Ecto.UUID.generate()

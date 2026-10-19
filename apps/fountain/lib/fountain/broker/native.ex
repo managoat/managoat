@@ -121,8 +121,13 @@ defmodule Fountain.Broker.Native do
     session = Map.get(meta, :meta) || %{}
     conv = session["conversation_id"]
 
+    owner =
+      if session["workspace_id"],
+        do: "workspace #{session["workspace_id"]}",
+        else: "conv #{conv || "?"}"
+
     Logger.info(
-      "broker: conv #{conv || "?"} #{meta.method} #{meta.host}#{meta.path} " <>
+      "broker: #{owner} #{meta.method} #{meta.host}#{meta.path} " <>
         describe(meta.outcome, Map.get(meta, :scheme), meta.rule) <>
         ending(meta, measurements) <> correlation(meta)
     )
@@ -285,6 +290,59 @@ defmodule Fountain.Broker.Native do
         meta_for(conversation_id, user_id, brokered, bindings)
       )
     end
+  end
+
+  @doc """
+  Mint a workspace's session (ADR 0097, step 5): `prepare/4`'s rules for the
+  workspace's own environment and vault, owned by the workspace rather than
+  a conversation, for the provision on create that runs before any
+  conversation exists. `opts[:user_id]` is required: the workspace's owner.
+  Its egress is logged, and not written to any conversation's egress trail.
+  """
+  @spec prepare_workspace(String.t(), %{String.t() => String.t()}, Broker.bindings(), keyword()) ::
+          {:ok, Broker.session()} | {:error, term()}
+  def prepare_workspace(workspace_id, brokered, bindings, opts)
+      when is_binary(workspace_id) and is_map(brokered) and is_map(bindings) do
+    network = Keyword.get(opts, :network, :unrestricted)
+    user_id = Keyword.fetch!(opts, :user_id)
+
+    Sessions.create_workspace(%{
+      workspace_id: workspace_id,
+      user_id: user_id,
+      rules: rules_for(brokered, bindings, network),
+      unmatched_host_policy: policy_for(network),
+      meta: workspace_meta(workspace_id, user_id, brokered, bindings),
+      ttl_seconds: Application.get_env(:fountain, :broker_session_ttl_seconds, 21_600)
+    })
+  end
+
+  @doc "`refresh/4` for a workspace's live sessions. `opts[:user_id]` is required."
+  @spec refresh_workspace(String.t(), %{String.t() => String.t()}, Broker.bindings(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def refresh_workspace(workspace_id, brokered, bindings, opts)
+      when is_binary(workspace_id) and is_map(brokered) and is_map(bindings) do
+    network = Keyword.get(opts, :network, :unrestricted)
+    user_id = Keyword.fetch!(opts, :user_id)
+
+    Sessions.update_workspace_rules(
+      workspace_id,
+      user_id,
+      rules_for(brokered, bindings, network),
+      workspace_meta(workspace_id, user_id, brokered, bindings)
+    )
+  end
+
+  @doc "Delete a workspace's sessions. Their tokens stop working at once."
+  @spec release_workspace(String.t()) :: :ok
+  def release_workspace(workspace_id) when is_binary(workspace_id),
+    do: Sessions.release_workspace(workspace_id)
+
+  defp workspace_meta(workspace_id, user_id, brokered, bindings) do
+    %{
+      "workspace_id" => workspace_id,
+      "user_id" => user_id,
+      "credential_keys" => credential_keys(brokered, bindings)
+    }
   end
 
   defp meta_for(conversation_id, user_id, brokered, bindings) do

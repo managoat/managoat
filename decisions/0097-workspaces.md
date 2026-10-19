@@ -1,7 +1,7 @@
 ---
 type: ADR
 title: "A workspace owns the sandbox, and conversations run in it"
-description: "Steps 1 to 4 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
+description: "Steps 1 to 4 and the first of step 5 built, the rest not (per-conversation config homes and cwd; schema and implicit workspaces; the owner and lease keyed by workspace; the lifecycle reads the workspace, and a lost machine is rebuilt in it with its conversations following; an explicit workspace provisioned on create under a network of its own, with no API yet): a workspace (user, environment, vault, fixed at create) owns the sandbox through one owner and lease that survive rebuilds; an explicit one is provisioned on create, carries a status, and parks at the max-lifetime ceiling; a conversation may launch into one of the caller's workspaces in any folder, with a config home and adapter process of its own, and a conversation that names none gets an implicit single-use workspace ended with it."
 tags: [sandbox, lifecycle, conversations, product, api]
 status: stable
 adr: "0097"
@@ -24,8 +24,14 @@ anything calls yet. Step 4 is two PRs: the first (4a) makes ending a
 conversation, the park, the reaper and the ceiling read the workspace, and
 amends 0073 and 0017; the second (4b) wires the rebuild after a loss into
 the wake, with every conversation of the workspace following the new
-machine. Explicit workspaces exist only in tests until step 5. The rest is
-not built; the Cost section sets out the work and its order. It amends
+machine. Step 5 is three PRs: the first (5a) gives an explicit workspace
+its own network floor, broker CA, relay and setup broker session, provisions
+it on create, deletes it, and settles and broadcasts its status, all in the
+context and with no API yet; the second (5b) is `/api/workspaces`, the
+launch fields and refusals, the `409` on deleting an environment or vault a
+workspace names, and the SDK; the third (5c) is the file routes. Until 5b
+explicit workspaces are made only in tests. The rest (step 6) is not built;
+the Cost section sets out the work and its order. It amends
 [0073](0073-one-sandbox-per-conversation.md) and the binding layer of
 [0058](0058-the-machine-has-one-owner.md), and touches
 [0017](0017-suspend-idle-sandboxes.md), [0039](0039-sandbox-files-over-the-api.md),
@@ -706,3 +712,41 @@ A PR sequence, each releasable alone:
   reaches it through the conversation's binding. An explicit workspace a
   rebuild set back to `provisioning` settles with the build. Once this has
   rebuilt a machine, a rollback must not go to a release with 3b and not 3c.
+- 2026-10-18 — Step 5a built, with no API yet
+  (`Fountain.Workspaces.create_workspace/3`, `delete_workspace/2`). The
+  network an explicit workspace's setup runs under is the workspace's
+  (`Fountain.Workspaces.Network`): the floor and the broker CA are the
+  machine's, applied before the setup and again by every conversation that
+  attaches, on a wake and after a rebuild; the transport relay is owned by
+  the workspace on an explicit machine (by the conversation on an implicit
+  one, as before), because the relay refuses a second owner and a second
+  conversation's attach would otherwise fail; and the setup runs under a
+  broker session owned by the workspace (`broker_sessions.workspace_id`),
+  minted from its environment and vault with the account's bindings and the
+  environment's network shape, carrying no inference credential and no
+  callback key, released when the setup ends and cascaded with the
+  workspace. A secret write while it is live rewrites its rules (#2548);
+  conversations in the workspace name its environment and vault, so the
+  existing refresh reaches them. Create reserves the workspace and its first
+  sandbox in one commit inside the fleet reservation and starts the
+  provision in a task (`Fountain.Workspaces.Provisioner`), bounded by the
+  provision deadline; `Machine.set_up/3` now takes that network and refuses
+  any other. A failed workspace's `error` is the failure in words, with a
+  step's quoted output minus its first line, redacted with the workspace's
+  environment and vault and every live conversation's registered values, and
+  the setup's own token taken out first; a rebuild clears it. An explicit
+  workspace's status changes are broadcast on `workspaces:<user_id>`. Delete
+  takes the workspace from its owner first (nilifying `user_id`, so no
+  scoped read and no rebuild reaches it), stops a running provision, fences
+  and destroys the machine with the caller's attribution, terminates every
+  live conversation (ending one whose server is busy or gone directly), and
+  deletes the row once it has ended; one whose destroy is pending is swept
+  later, ownerless. Account deletion stops the account's running provisions
+  before it destroys their machines. The reaper's idle park of a ready
+  workspace with no conversations needed no change but its clock: the setup
+  dates its machine's `last_resumed_at` at the ready finalize, so the idle
+  bound (and the ceiling) run from the moment it is ready, not from its
+  creation. Failure text is kept out of the unredacted records: the sandbox's
+  `transition_reason`, the `sandbox.provision_failed` audit and the log line
+  carry a failing step and its exit code, not the output it quoted, on every
+  provision.

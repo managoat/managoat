@@ -6,8 +6,16 @@ defmodule Fountain.Workspaces do
   pairing at every boot. The machine's owner and lease are the workspace's
   (step 3b), and `Fountain.Machines.Lease` reads and writes them. Since step 4
   the lifecycle reads the workspace's kind (`machine_kind/1`): a detach keeps
-  an explicit workspace's machine, and the ceiling parks it. Nothing a caller
-  sees reads a workspace yet (step 5).
+  an explicit workspace's machine, and the ceiling parks it.
+
+  **Explicit workspaces** (step 5) are made and deleted by their owner:
+  `create_workspace/3` reserves the workspace and its first sandbox in one
+  commit and provisions it at once, with no conversation
+  (`Fountain.Workspaces.Provisioner`), and `delete_workspace/2` ends every
+  live conversation on it and destroys its machine. Each status change of an
+  explicit workspace is broadcast on the owner's `workspaces:<user_id>`
+  topic (`subscribe/1`), which the account event stream carries as
+  `workspace.status`.
 
   Every query a caller can reach is scoped by `user_id`. `_unsafe_reconcile_live/0`
   and `_unsafe_sweep_ended/0` are sweeps over every account and say so.
@@ -24,13 +32,14 @@ defmodule Fountain.Workspaces do
   a machine whose destroy failed, #2329) once that machine is terminal, and
   the `provisioning` rows a lost wake race left before step 4.
 
-  **Nothing here is audited, deliberately.** An implicit workspace is made in
-  the launch's transaction, where an audit event cannot be recorded (ADR 0013),
-  and it is not a thing anybody asked for: it is the launch's own sandbox
-  given an owner record, and `conversation.created` and
-  `sandbox.provisioned` / `sandbox.provision_failed`, recorded after their
-  commits, already describe it. `workspace.created` and `workspace.deleted`
-  are for the explicit workspaces a caller creates and deletes by API (step 5).
+  **Nothing about an implicit workspace is audited, deliberately.** An
+  implicit workspace is made in the launch's transaction, where an audit event
+  cannot be recorded (ADR 0013), and it is not a thing anybody asked for: it
+  is the launch's own sandbox given an owner record, and
+  `conversation.created` and `sandbox.provisioned` / `sandbox.provision_failed`,
+  recorded after their commits, already describe it. `workspace.created` and
+  `workspace.deleted` are the explicit workspaces' a caller creates and
+  deletes, recorded here after their commits with the caller's attribution.
   """
 
   import Ecto.Query, only: [from: 2]
@@ -103,6 +112,472 @@ defmodule Fountain.Workspaces do
     |> Repo.insert()
   end
 
+  # ── explicit workspaces (step 5) ──────────────────────────────────────────
+
+  @doc """
+  Create an explicit workspace for `user_id` and start provisioning it
+  (ADR 0097, "The workspace API").
+
+  `attrs` (string keys, as a request gives them): `"name"` and
+  `"environment_id"`, required; `"vault_id"`, optional; and
+  `"sandbox_provider"`, optional, the instance default when absent. The
+  environment and vault are fetched scoped to `user_id` (another account's
+  id is `:environment_not_found` / `:vault_not_found`, so it cannot be
+  probed) and are fixed for the workspace's life, as the provider is.
+
+  The workspace and its first sandbox are written in one commit, the
+  sandbox inside the provider's fleet reservation, so a full fleet is the
+  create's own `{:error, :fleet_full}` and leaves nothing behind. Under the
+  tenant's source lock, as environment and vault deletion take it, so a
+  workspace naming one cannot be created while it is being deleted. Refusing
+  that delete while the workspace exists (`names_source?/3`) is ADR 0097
+  step 5b's; until then the foreign key nilifies it, as for an implicit one.
+
+  Answers `{:ok, workspace}` with `status: "provisioning"`, once the
+  provision is started (`Fountain.Workspaces.Provisioner`). Audits
+  `workspace.created` with the caller's attribution after the commit.
+  """
+  @spec create_workspace(Ecto.UUID.t(), map(), keyword()) ::
+          {:ok, Workspace.t()} | {:error, term()}
+  def create_workspace(user_id, attrs, opts \\ []) when is_binary(user_id) and is_map(attrs) do
+    # Its own commit, then an audit event and a task that reads it: neither
+    # may run inside a caller's transaction.
+    if Repo.in_transaction?(),
+      do: {:error, :provider_transaction_open},
+      else: do_create_workspace(user_id, attrs, opts)
+  end
+
+  defp do_create_workspace(user_id, attrs, opts) do
+    with {:ok, provider} <- resolve_provider(attrs["sandbox_provider"]),
+         {:ok, machine_name} <-
+           Fountain.Conversations.mint_machine_name(provider, user_id, nil),
+         {:ok, {workspace, sandbox}} <-
+           reserve_explicit(user_id, attrs, Atom.to_string(provider), machine_name) do
+      Fountain.Audit.record(%{
+        user_id: user_id,
+        action: "workspace.created",
+        resource_type: "workspace",
+        resource_id: workspace.id,
+        actor: Keyword.get(opts, :actor, "self"),
+        request_ip: Keyword.get(opts, :request_ip),
+        metadata: %{
+          "name" => workspace.name,
+          "environment_id" => workspace.environment_id,
+          "vault_id" => workspace.vault_id,
+          "provider" => workspace.provider
+        }
+      })
+
+      publish_status(workspace)
+
+      case Fountain.Workspaces.Provisioner.start(workspace, sandbox.id) do
+        {:ok, _pid} ->
+          :ok
+
+        {:error, reason} ->
+          # The reservation stands; the reaper's pass over rows stuck
+          # mid-provision fails it, and the workspace with it.
+          Logger.error("workspace #{workspace.id}: provision did not start: #{inspect(reason)}")
+      end
+
+      {:ok, workspace}
+    end
+  end
+
+  defp resolve_provider(nil), do: {:ok, Fountain.SandboxProviders.default_provider()}
+  defp resolve_provider(""), do: resolve_provider(nil)
+
+  defp resolve_provider(name) when is_binary(name) do
+    if name in Fountain.SandboxProviders.known_providers() do
+      provider = String.to_existing_atom(name)
+
+      if Fountain.SandboxProviders.enabled?(provider),
+        do: {:ok, provider},
+        else: {:error, {:sandbox_provider_disabled, provider}}
+    else
+      {:error, field_error(:sandbox_provider, "is not a sandbox provider this instance knows")}
+    end
+  end
+
+  defp resolve_provider(_other),
+    do: {:error, field_error(:sandbox_provider, "is not a sandbox provider this instance knows")}
+
+  defp field_error(field, message) do
+    %Workspace{}
+    |> Ecto.Changeset.change()
+    |> Ecto.Changeset.add_error(field, message)
+  end
+
+  defp reserve_explicit(user_id, attrs, provider, machine_name) do
+    Repo.transaction(fn ->
+      # The tenant lock environment and vault deletion take (and the launch):
+      # a workspace naming a source either commits before the delete's check
+      # or finds the source gone.
+      :ok = Fountain.InferenceCredentials.lock_source(user_id)
+
+      with {:ok, environment_id} <-
+             owned_source(
+               Fountain.Environments.Environment,
+               attrs["environment_id"],
+               user_id,
+               :environment_not_found
+             ),
+           {:ok, vault_id} <-
+             owned_source(Fountain.Vaults.Vault, attrs["vault_id"], user_id, :vault_not_found),
+           {:ok, workspace} <-
+             %{
+               user_id: user_id,
+               environment_id: environment_id,
+               vault_id: vault_id,
+               provider: provider,
+               name: attrs["name"]
+             }
+             |> Workspace.create_changeset()
+             |> Repo.insert(),
+           {:ok, sandbox} <-
+             Fountain.Quotas.with_sandbox_reservation([provider: provider], fn ->
+               Fountain.Machines.Provision.reserve(%{
+                 user_id: user_id,
+                 workspace_id: workspace.id,
+                 environment_id: environment_id,
+                 vault_id: vault_id,
+                 provider: provider,
+                 machine_name: machine_name,
+                 status: "pending"
+               })
+             end) do
+        {workspace, sandbox}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  # A source named by id, which must be the caller's: read `FOR SHARE`, so a
+  # delete that locked it first is waited out. A blank id is none, and a
+  # missing environment is the changeset's required-field error.
+  defp owned_source(_schema, id, _user_id, _not_found) when id in [nil, ""], do: {:ok, nil}
+
+  defp owned_source(schema, id, user_id, not_found) when is_binary(id) do
+    with {:ok, uuid} <- Ecto.UUID.cast(id),
+         found when not is_nil(found) <-
+           Repo.one(
+             from(s in schema,
+               where: s.id == ^uuid and s.user_id == ^user_id,
+               select: s.id,
+               lock: "FOR SHARE"
+             )
+           ) do
+      {:ok, found}
+    else
+      _ -> {:error, not_found}
+    end
+  end
+
+  defp owned_source(_schema, _id, _user_id, not_found), do: {:error, not_found}
+
+  @doc """
+  One of `user_id`'s workspaces, explicit or implicit, or `nil`: another
+  account's id reads exactly as a missing one.
+  """
+  @spec get_workspace(term(), Ecto.UUID.t()) :: Workspace.t() | nil
+  def get_workspace(id, user_id) when is_binary(user_id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} ->
+        Repo.one(from(w in Workspace, where: w.id == ^uuid and w.user_id == ^user_id))
+
+      :error ->
+        nil
+    end
+  end
+
+  @doc """
+  `user_id`'s workspaces, newest first: the explicit ones, and the implicit
+  ones too with `implicit: true` (ADR 0097: implicit workspaces "are not
+  listed ... unless asked").
+  """
+  @spec list_workspaces(Ecto.UUID.t(), keyword()) :: [Workspace.t()]
+  def list_workspaces(user_id, opts \\ []) when is_binary(user_id) do
+    query =
+      from(w in Workspace,
+        where: w.user_id == ^user_id,
+        order_by: [desc: w.inserted_at, desc: w.id]
+      )
+
+    query =
+      if Keyword.get(opts, :implicit, false),
+        do: query,
+        else: from(w in query, where: not w.implicit)
+
+    Repo.all(query)
+  end
+
+  @doc """
+  The sandbox each of `workspaces` has now: its live one, else its newest,
+  or none for a workspace that has never had one. One query for the lot.
+  """
+  @spec current_sandboxes([Workspace.t()]) :: %{Ecto.UUID.t() => Sandbox.t()}
+  def current_sandboxes([]), do: %{}
+
+  def current_sandboxes(workspaces) when is_list(workspaces) do
+    ids = Enum.map(workspaces, & &1.id)
+
+    from(s in Sandbox,
+      where: s.workspace_id in ^ids,
+      distinct: s.workspace_id,
+      order_by: [
+        asc: s.workspace_id,
+        desc: fragment("? NOT IN ('terminated', 'failed')", s.status),
+        desc: s.inserted_at,
+        desc: s.id
+      ]
+    )
+    |> Repo.all()
+    |> Map.new(&{&1.workspace_id, &1})
+  end
+
+  @doc "The sandbox `workspace` has now (`current_sandboxes/1`), or `nil`."
+  @spec current_sandbox(Workspace.t()) :: Sandbox.t() | nil
+  def current_sandbox(%Workspace{id: id} = workspace),
+    do: Map.get(current_sandboxes([workspace]), id)
+
+  @doc """
+  Delete an explicit workspace (ADR 0097, Lifecycle): not refused while
+  conversations are live.
+
+  `workspace` comes from the caller's scoped `get_workspace/2`. In order:
+
+    1. The workspace is taken from its owner under its row lock: its
+       `user_id` is cleared, so from here it reads as gone to every scoped
+       query (a `GET`, a launch into it, a wake's rebuild into it) and no
+       successor machine can be built in it (`Lease.succeed/3`).
+    2. A provision on create still running is stopped
+       (`Fountain.Workspaces.Provisioner.stop/1`), which releases its setup
+       session.
+    3. The machine is fenced and destroyed through its owner
+       (`Machines.Destroy`), recording `sandbox.teardown_requested` and
+       `sandbox.destroyed` with the caller. A machine another operation holds
+       (a conversation's rebuild or resume) keeps the fence, and that
+       operation, or `SandboxReaper`'s driver, finishes the destroy.
+    4. Every live conversation on it is terminated, with the caller as each
+       `conversation.terminated`'s actor; transcripts are kept.
+    5. The row is deleted once it has ended (no live sandbox, no live
+       conversation, no lease held). One whose destroy is still pending stays
+       ownerless until `SandboxReaper`'s hourly pass deletes it, as account
+       deletion leaves one (#2329).
+
+  Audits `workspace.deleted` with the caller, outside every transaction.
+  """
+  @spec delete_workspace(Workspace.t(), keyword()) ::
+          {:ok, Workspace.t()} | {:error, :not_found | :provider_transaction_open}
+  def delete_workspace(workspace, opts \\ [])
+
+  def delete_workspace(%Workspace{implicit: false, user_id: user_id} = workspace, opts)
+      when is_binary(user_id) do
+    if Repo.in_transaction?() do
+      {:error, :provider_transaction_open}
+    else
+      with :ok <- disown(workspace) do
+        teardown(workspace, opts)
+      end
+    end
+  end
+
+  def delete_workspace(%Workspace{}, _opts), do: {:error, :not_found}
+
+  defp disown(%Workspace{id: id, user_id: user_id}) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Repo.update_all(
+           from(w in Workspace, where: w.id == ^id and w.user_id == ^user_id and not w.implicit),
+           set: [user_id: nil, updated_at: now]
+         ) do
+      {1, _} -> :ok
+      {0, _} -> {:error, :not_found}
+    end
+  end
+
+  defp teardown(%Workspace{} = workspace, opts) do
+    attribution = [
+      actor: Keyword.get(opts, :actor, "self"),
+      request_ip: Keyword.get(opts, :request_ip)
+    ]
+
+    :ok = Fountain.Workspaces.Provisioner.stop(workspace.id)
+    destroyed = destroy_live_machine(workspace, attribution)
+    terminated = terminate_live_conversations(workspace, attribution)
+    :ok = Fountain.Workspaces.Network.release(workspace.id)
+    _ = delete_ended([workspace.id])
+
+    Fountain.Audit.record(%{
+      user_id: workspace.user_id,
+      action: "workspace.deleted",
+      resource_type: "workspace",
+      resource_id: workspace.id,
+      actor: Keyword.fetch!(attribution, :actor),
+      request_ip: Keyword.fetch!(attribution, :request_ip),
+      metadata: %{
+        "name" => workspace.name,
+        "provider" => workspace.provider,
+        "sandbox_destroyed" => destroyed,
+        "conversations_terminated" => terminated
+      }
+    })
+
+    {:ok, workspace}
+  end
+
+  # The machine first, so a conversation's server still on it is told
+  # `machine_gone` and stops, and the terminations below take the dead-server
+  # path rather than waiting out a server mid-operation. The fence is written
+  # first, on its own: the destroy's own claim waits only briefly for a lease
+  # another operation holds, and the fence is what makes that operation end
+  # by destroying what it built.
+  defp destroy_live_machine(%Workspace{id: id}, attribution) do
+    # ownership: the workspace's own machine, the workspace the caller's
+    # scoped fetch returned.
+    case Repo.one(
+           from(s in Sandbox,
+             where: s.workspace_id == ^id and s.status not in ^@terminal_statuses
+           )
+         ) do
+      nil ->
+        false
+
+      %Sandbox{} = sandbox ->
+        fence =
+          Fountain.Conversations.Lifecycle.fence_sandbox_for_teardown(
+            sandbox,
+            attribution ++
+              [reason: "workspace_deleted", transition_reason: "workspace_deleted"]
+          )
+
+        # ownership: the workspace's own machine, read just above for the
+        # workspace the caller's scoped fetch returned.
+        destroyed =
+          Fountain.Conversations.Termination._unsafe_destroy_machine(
+            sandbox.id,
+            attribution ++
+              [
+                destroy_reason: :workspace_deleted,
+                reason: "workspace_deleted",
+                terminating_conversation_id: nil
+              ]
+          )
+
+        case {fence, destroyed} do
+          {_, {:ok, _outcome}} ->
+            true
+
+          other ->
+            Logger.warning(
+              "workspace #{id}: machine #{sandbox.id} left to its fence: #{inspect(other)}"
+            )
+
+            false
+        end
+    end
+  end
+
+  defp terminate_live_conversations(%Workspace{id: id}, attribution) do
+    from(c in Conversation,
+      where: c.workspace_id == ^id and c.status not in ^@terminal_statuses,
+      select: c.id
+    )
+    |> Repo.all()
+    |> Enum.count(&terminate_one(&1, id, attribution))
+  end
+
+  # ownership: the conversations of the workspace the caller's scoped fetch
+  # returned, whose owner it was.
+  defp terminate_one(conv_id, workspace_id, attribution) do
+    case Fountain.Conversations.Termination.terminate_conversation(conv_id, attribution) do
+      :ok ->
+        true
+
+      {:ok, _} ->
+        true
+
+      # A server that stopped mid-call (the destroy above told it the machine
+      # had gone), or one busy past the call's timeout (a rebuild, which the
+      # fence now ends by destroying what it built): its conversation is
+      # ended here instead, so it cannot outlive its workspace.
+      {:error, reason} when reason in [:not_running, :provisioning] ->
+        force_terminated(conv_id, workspace_id, reason, attribution)
+
+      other ->
+        Logger.warning(
+          "workspace #{workspace_id}: conversation #{conv_id} not terminated: #{inspect(other)}"
+        )
+
+        false
+    end
+  end
+
+  defp force_terminated(conv_id, workspace_id, why, attribution) do
+    case Repo.update_all(
+           from(c in Conversation,
+             where:
+               c.id == ^conv_id and c.workspace_id == ^workspace_id and
+                 c.status not in ^@terminal_statuses
+           ),
+           set: [
+             status: "terminated",
+             updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
+           ]
+         ) do
+      {1, _} ->
+        Logger.info(
+          "workspace #{workspace_id}: conversation #{conv_id} ended with its workspace (#{why})"
+        )
+
+        Fountain.Conversations.Termination.audit_lifecycle(
+          conv_id,
+          "conversation.terminated",
+          :ok,
+          attribution,
+          %{"reason" => "workspace_deleted"}
+        )
+
+        true
+
+      {0, _} ->
+        # Already ended by the time this ran.
+        true
+    end
+  end
+
+  @doc """
+  Whether an explicit workspace of `user_id`'s names the environment or vault
+  `source_id`: the reason its delete is to be refused (ADR 0097, Data). For
+  the delete's transaction to read under the tenant lock `create_workspace/3`
+  takes; nothing calls it before step 5b.
+  """
+  @spec names_source?(:environment | :vault, Ecto.UUID.t(), Ecto.UUID.t()) :: boolean()
+  def names_source?(kind, source_id, user_id) when kind in [:environment, :vault] do
+    query = from(w in Workspace, where: w.user_id == ^user_id and not w.implicit)
+
+    query =
+      case kind do
+        :environment -> from(w in query, where: w.environment_id == ^source_id)
+        :vault -> from(w in query, where: w.vault_id == ^source_id)
+      end
+
+    Repo.exists?(query)
+  end
+
+  @doc """
+  Stop every provision on create running for `user_id`'s workspaces, for
+  account deletion: before it destroys the account's machines, so their
+  destroys take leases those provisions would otherwise hold.
+  """
+  @spec stop_provisions(Ecto.UUID.t()) :: :ok
+  def stop_provisions(user_id) when is_binary(user_id) do
+    from(w in Workspace, where: w.user_id == ^user_id and not w.implicit, select: w.id)
+    |> Repo.all()
+    |> Enum.each(&Fountain.Workspaces.Provisioner.stop/1)
+  end
+
   @doc """
   Move a workspace out of `provisioning` once its sandbox's provision has
   settled: `ready` for a `ready` sandbox, `failed` for a `failed` one.
@@ -111,23 +586,38 @@ defmodule Fountain.Workspaces do
   workspace is `provisioning` again only while a rebuild of its lost machine
   runs (`Lease.succeed/3`, ADR 0097 step 4), and settles the same way.
 
+  A `failed` workspace carries an `error`: `reason`, the provision's own,
+  described and redacted like the transcript (`describe_failure/2`). A
+  `ready` one has none. An explicit workspace's change is broadcast as a
+  `workspace.status` event (`subscribe/1`); an implicit one's is not, since
+  its conversation's own stream already reports its provision.
+
   Called by `Fountain.Machines.Provision` after its own write commits, outside
   every transaction. Best effort: a workspace that cannot be written is
-  logged and the provision's answer stands, because nothing reads the status
-  yet.
+  logged and the provision's answer stands.
   """
-  @spec settle_provision(Sandbox.t()) :: :ok
-  def settle_provision(%Sandbox{workspace_id: workspace_id, user_id: user_id, status: status})
+  @spec settle_provision(Sandbox.t(), term()) :: :ok
+  def settle_provision(sandbox, reason \\ nil)
+
+  def settle_provision(
+        %Sandbox{workspace_id: workspace_id, user_id: user_id, status: status} = sandbox,
+        reason
+      )
       when is_binary(workspace_id) and is_binary(user_id) and status in ["ready", "failed"] do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
+    error = if status == "failed", do: describe_failure(sandbox, reason)
 
-    _ =
-      Repo.update_all(
-        from(w in Workspace,
-          where: w.id == ^workspace_id and w.user_id == ^user_id and w.status == "provisioning"
-        ),
-        set: [status: status, updated_at: now]
-      )
+    case Repo.update_all(
+           from(w in Workspace,
+             where:
+               w.id == ^workspace_id and w.user_id == ^user_id and w.status == "provisioning",
+             select: w
+           ),
+           set: [status: status, error: error, updated_at: now]
+         ) do
+      {1, [%Workspace{implicit: false} = workspace]} -> publish_status(workspace)
+      _ -> :ok
+    end
 
     :ok
   rescue
@@ -140,7 +630,169 @@ defmodule Fountain.Workspaces do
       :ok
   end
 
-  def settle_provision(%Sandbox{}), do: :ok
+  def settle_provision(%Sandbox{}, _reason), do: :ok
+
+  @error_limit 2_000
+  @unredactable "the sandbox could not be provisioned"
+
+  @doc """
+  The `error` a failed workspace carries: what `reason` says went wrong, in
+  words, with the end of what a step printed where the reason quotes it, and
+  then redacted as a transcript is (ADR 0097: "redacted like the
+  transcript"): every value of the workspace's environment and vault, and
+  whatever a live conversation on the machine registered
+  (`Fountain.SandboxFiles.redaction_values/1`), replaced with `[REDACTED]`.
+  At most #{@error_limit} characters.
+
+  A step's quoted output is cut by the step from its end, so its first line
+  may begin part-way through a value redaction would no longer recognise;
+  that line is dropped before redaction runs.
+  """
+  @spec describe_failure(Sandbox.t(), term()) :: String.t()
+  def describe_failure(%Sandbox{} = sandbox, reason) do
+    case failure_values(sandbox) do
+      {:ok, values} -> values |> redact(failure_words(reason)) |> String.slice(0, @error_limit)
+      :error -> @unredactable
+    end
+  rescue
+    # Nothing to redact with is nothing safe to say.
+    _ -> @unredactable
+  end
+
+  # The values to take out, and each line of a value that spans lines (a PEM
+  # key, a JSON credential): a quoted tail may begin part-way through one, and
+  # its later lines would match no whole value. Refused when the tenant's key
+  # cannot be loaded, since then the values cannot be read either.
+  defp failure_values(%Sandbox{user_id: user_id} = sandbox) when is_binary(user_id) do
+    case Fountain.Crypto.load_tenant_key(user_id) do
+      {:ok, _dek} ->
+        values = Fountain.SandboxFiles.redaction_values(sandbox)
+
+        lines =
+          values
+          |> Enum.flat_map(&String.split(&1, ["\r\n", "\n"]))
+          |> Enum.filter(&(byte_size(&1) >= Fountain.Conversations.Redaction.min_length()))
+
+        {:ok, (values ++ lines) |> Enum.uniq() |> Enum.sort_by(&byte_size/1, :desc)}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp failure_values(%Sandbox{}), do: :error
+
+  defp redact([], text), do: text
+
+  defp redact(values, text),
+    do: :binary.replace(text, values, Fountain.Conversations.Redaction.placeholder(), [:global])
+
+  defp failure_words({:packages, code, tail}) when is_binary(tail),
+    do: "installing the environment's packages exited #{code}" <> quoted(tail)
+
+  defp failure_words({:packages_unreachable, _}),
+    do: "the environment's packages could not be installed: the sandbox did not answer"
+
+  defp failure_words({:setup_exit, code}), do: "the environment's setup script exited #{code}"
+
+  defp failure_words({:setup_unreachable, _}),
+    do: "the environment's setup script could not be run: the sandbox did not answer"
+
+  defp failure_words({:clone, url, code}) when is_binary(url),
+    do: "cloning #{url} exited #{code}"
+
+  defp failure_words({:clone_unreachable, url, _}) when is_binary(url),
+    do: "cloning #{url} failed: the sandbox did not answer"
+
+  defp failure_words({:clone_unsupported_url, url}) when is_binary(url),
+    do: "#{url} is not an HTTPS repository URL"
+
+  defp failure_words({:clone_invalid_spec, _}), do: "a repository in the environment is invalid"
+
+  defp failure_words({:broker, :backend_lacks_network_policy}),
+    do: "the sandbox provider cannot enforce the broker's network floor"
+
+  defp failure_words({:broker, :unreachable, _}), do: "the egress broker is not answering"
+  defp failure_words({:broker, :relay_unavailable}), do: "the broker relay did not start"
+  defp failure_words({:broker, :relay_unreachable}), do: "the broker relay did not start"
+
+  defp failure_words({:broker, :ca_install_exit, code, _}),
+    do: "installing the broker CA exited #{code}"
+
+  defp failure_words({:broker, _, _}), do: "the egress broker could not be set up"
+  defp failure_words({:network_policy, _}), do: "the broker's network floor could not be applied"
+  defp failure_words(:create_failed), do: "the sandbox provider could not create the machine"
+
+  defp failure_words(:provision_deadline_exceeded),
+    do: "the provision did not finish within its deadline"
+
+  defp failure_words(nil), do: "the sandbox could not be provisioned"
+  defp failure_words(reason) when is_atom(reason), do: "the provision failed (#{reason})"
+  defp failure_words(reason), do: "the provision failed: " <> inspect(reason, limit: 20)
+
+  # The step's tail, without its first line, which the cut may have begun
+  # inside a value.
+  defp quoted(tail) do
+    case String.split(tail, "\n", parts: 2) do
+      [_partial, rest] when rest != "" -> ":\n" <> rest
+      _ -> ""
+    end
+  end
+
+  @doc """
+  Subscribe the caller to `user_id`'s explicit workspaces' status changes:
+  `{:workspace_status, %{workspace_id:, name:, status:, error:}}`.
+  """
+  @spec subscribe(Ecto.UUID.t()) :: :ok | {:error, term()}
+  def subscribe(user_id) when is_binary(user_id),
+    do: Phoenix.PubSub.subscribe(Fountain.PubSub, topic(user_id))
+
+  defp topic(user_id), do: "workspaces:" <> user_id
+
+  @doc false
+  # Broadcast an explicit workspace's status as it now stands.
+  @spec publish_status(Workspace.t()) :: :ok
+  def publish_status(%Workspace{implicit: false, user_id: user_id} = workspace)
+      when is_binary(user_id) do
+    Phoenix.PubSub.broadcast(
+      Fountain.PubSub,
+      topic(user_id),
+      {:workspace_status,
+       %{
+         workspace_id: workspace.id,
+         name: workspace.name,
+         status: workspace.status,
+         error: workspace.error
+       }}
+    )
+
+    :ok
+  end
+
+  def publish_status(%Workspace{}), do: :ok
+
+  @doc """
+  The machine's transport relay owner on the sandbox behind `sandbox_id`
+  (`Fountain.Broker.TransportRelay`, which refuses a second owner): the
+  conversation on an implicit workspace's machine, as it always was, and the
+  workspace on an explicit one, so that every conversation in it, and the
+  setup that ran before any of them, share one relay.
+  """
+  @spec relay_owner(Ecto.UUID.t() | nil, String.t()) :: String.t()
+  def relay_owner(nil, conversation_id), do: conversation_id
+
+  def relay_owner(sandbox_id, conversation_id) when is_binary(sandbox_id) do
+    case Repo.one(from(s in Sandbox, where: s.id == ^sandbox_id, select: s.workspace_id)) do
+      nil ->
+        conversation_id
+
+      workspace_id ->
+        case machine_kind(%{workspace_id: workspace_id}) do
+          :explicit -> workspace_id
+          :implicit -> conversation_id
+        end
+    end
+  end
 
   @doc """
   Delete the workspaces `user_id` owns, for account deletion, inside its

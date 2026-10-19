@@ -128,7 +128,13 @@ defmodule Fountain.Conversations.Reattachment do
       end,
       fn ->
         step(state, "reattach_config_ca", fn ->
-          Egress.install_ca(state.broker, handle, state.conversation_id)
+          Egress.install_ca(
+            state.broker,
+            handle,
+            state.conversation_id,
+            # ownership: the server's own machine, established at its init.
+            Fountain.Workspaces.relay_owner(state.sandbox_id, state.conversation_id)
+          )
         end)
       end
     ]

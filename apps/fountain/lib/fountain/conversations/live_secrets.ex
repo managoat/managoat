@@ -4,7 +4,9 @@ defmodule Fountain.Conversations.LiveSecrets do
   secrets was written or deleted (#2548), so a brokered secret reaches a turn
   that is already running: each server rewrites its broker session's rules
   in place (`Fountain.Conversations.Egress.refresh_live/1`), and the
-  sandbox's next tunnel through the broker carries the new value.
+  sandbox's next tunnel through the broker carries the new value. An
+  explicit workspace's setup session, live while its provision on create
+  runs, is rewritten the same way (`Fountain.Workspaces.Network.refresh_live/3`).
 
   Best effort. A cast, through the cluster-wide registry; a conversation
   with no live server, or one whose server a registry miss hides, reads the
@@ -36,6 +38,12 @@ defmodule Fountain.Conversations.LiveSecrets do
         pid -> GenServer.cast(pid, :refresh_secrets)
       end
     end)
+
+    # An explicit workspace's conversations name its environment and vault
+    # (they are fixed by it), so the casts above reach them. Its provision on
+    # create runs before any of them, under a session of the workspace's own,
+    # which is rewritten here too (ADR 0097 step 5).
+    Fountain.Workspaces.Network.refresh_live(kind, source_id, user_id)
   end
 
   defp conversation_ids(kind, source_id, user_id) do

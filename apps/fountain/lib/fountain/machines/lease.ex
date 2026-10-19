@@ -834,6 +834,7 @@ defmodule Fountain.Machines.Lease do
     with {:ok, workspace} <- held_workspace(old_sandbox_id, epoch),
          {:ok, old} <- locked_sandbox(old_sandbox_id),
          :ok <- refuse_fenced(workspace, true),
+         :ok <- refuse_ownerless(workspace),
          :ok <- refuse_occupied(workspace, old),
          :ok <- refuse_reused_name(old, attrs),
          :ok <- retire_predecessor(old),
@@ -848,6 +849,7 @@ defmodule Fountain.Machines.Lease do
             transition: "provisioning",
             transition_reason: "rebuild",
             status: "provisioning",
+            error: nil,
             updated_at: now
           ]
         )
@@ -856,6 +858,13 @@ defmodule Fountain.Machines.Lease do
       {:ok, overlay(Repo.get!(Sandbox, next.id), workspace)}
     end
   end
+
+  # A workspace with no owner is one being deleted (`Workspaces.delete_workspace/2`
+  # takes it from its owner first) or one whose account went (#2329): no
+  # machine is built in it again. The fence's word, which every rebuild caller
+  # already answers.
+  defp refuse_ownerless(%Workspace{user_id: nil}), do: {:error, :fenced}
+  defp refuse_ownerless(%Workspace{}), do: :ok
 
   defp refuse_occupied(%Workspace{id: workspace_id}, %Sandbox{id: old_id}) do
     if Repo.exists?(

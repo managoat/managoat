@@ -63,6 +63,15 @@ defmodule FountainWeb.AdminLive.Broker do
 
   defp assign_overview(socket), do: refresh_overview(socket, :all)
 
+  # A conversation's session, or an explicit workspace's setup session, which
+  # has no conversation (ADR 0097).
+  defp session_owner(%{conversation_id: id}) when is_binary(id), do: String.slice(id, 0, 8)
+
+  defp session_owner(%{workspace_id: id}) when is_binary(id),
+    do: "workspace " <> String.slice(id, 0, 8)
+
+  defp session_owner(_session), do: "—"
+
   # `require_admin` runs once, at mount; a role or a session can be revoked
   # while the tab is open, so every read rechecks before it queries. The three
   # ineligible cases land where `FountainWeb.Live.Hooks` would have sent them
@@ -318,7 +327,7 @@ defmodule FountainWeb.AdminLive.Broker do
           empty="No sandbox holds a proxy token right now."
         >
           <:col :let={s} label="Conversation">
-            <span class="font-mono">{String.slice(s.conversation_id, 0, 8)}</span>
+            <span class="font-mono">{session_owner(s)}</span>
           </:col>
           <:col :let={s} label="Owner"><.owner user_id={s.user_id} email={s.email} /></:col>
           <:col :let={s} label="Unmatched host">{s.policy}</:col>

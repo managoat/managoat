@@ -154,7 +154,12 @@ defmodule Fountain.Machines.MachineBoundsTest do
     # a whole provision, rather than standing down and dropping its prompt
     # (ADR 0097 step 4, `Conversations.Rebuild`). Pinned under the provision
     # deadline below.
-    "busy_wait_ms: follow_wait_ms()"
+    "busy_wait_ms: follow_wait_ms()",
+    # An explicit workspace's provision on create, at its deadline, retires
+    # its machine with the watchdog's own wait and for the watchdog's reason
+    # (ADR 0097 step 5, `Workspaces.Provisioner`): the same accessor, so the
+    # value pinned above is the one it runs with.
+    "busy_wait_ms: ProvisionWatchdog.retire_wait_ms()"
   ]
 
   test "a rebuild's wait for the workspace sits inside the provision deadline" do

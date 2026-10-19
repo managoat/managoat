@@ -82,7 +82,11 @@ defmodule Fountain.Broker do
 
   One broker session per **conversation**, deleted when the conversation
   ends (ADR 0019 §11 as amended). The binding is on the token: a token
-  resolves to its own conversation's credentials and to nothing else.
+  resolves to its own conversation's credentials and to nothing else. The
+  one other owner is an explicit workspace's provision on create, which runs
+  before any conversation exists under a session of the workspace's own,
+  from its environment and vault, released when the setup ends
+  (`prepare_workspace/4`; ADR 0097, step 5).
 
   The session token lives six hours (`:broker_session_ttl_seconds`) and travels to the
   sandbox inside `HTTPS_PROXY`, which is why that variable is process-only
@@ -584,6 +588,32 @@ defmodule Fountain.Broker do
       when is_binary(conversation_id) and is_map(brokered) and is_map(bindings) do
     Native.refresh(conversation_id, brokered, bindings, opts)
   end
+
+  @doc """
+  Mint a workspace's session (ADR 0097, step 5): the broker rules an
+  explicit workspace's provision on create runs under, from the workspace's
+  own environment and vault, before any conversation exists. `opts` as
+  `prepare/4`, with `user_id:` required.
+  """
+  @spec prepare_workspace(String.t(), %{String.t() => String.t()}, bindings(), keyword()) ::
+          {:ok, session()} | {:error, term()}
+  def prepare_workspace(workspace_id, brokered, bindings, opts)
+      when is_binary(workspace_id) and is_map(brokered) and is_map(bindings) do
+    Native.prepare_workspace(workspace_id, brokered, bindings, opts)
+  end
+
+  @doc "`refresh/4` for a workspace's live sessions."
+  @spec refresh_workspace(String.t(), %{String.t() => String.t()}, bindings(), keyword()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def refresh_workspace(workspace_id, brokered, bindings, opts)
+      when is_binary(workspace_id) and is_map(brokered) and is_map(bindings) do
+    Native.refresh_workspace(workspace_id, brokered, bindings, opts)
+  end
+
+  @doc "Release a workspace's sessions: its tokens stop working at once."
+  @spec release_workspace(String.t()) :: :ok
+  def release_workspace(workspace_id) when is_binary(workspace_id),
+    do: Native.release_workspace(workspace_id)
 
   @doc """
   Release a conversation's session at the end of its life, so nothing

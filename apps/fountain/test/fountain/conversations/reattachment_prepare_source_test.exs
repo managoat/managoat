@@ -17,6 +17,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
 
     state = %{
       conversation_id: conv.id,
+      sandbox_id: conv.sandbox_id,
       user_id: conv.user_id,
       runtime_module: nil,
       callback_token: "t",
@@ -41,7 +42,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
       receive do: (:go -> :ok)
     end)
 
-    stub(Egress, :install_ca, fn _broker, _handle, _conv_id ->
+    stub(Egress, :install_ca, fn _broker, _handle, _conv_id, _relay_owner ->
       send(test_pid, {:ca, self()})
       receive do: (:go -> :ok)
     end)
@@ -61,10 +62,30 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
     assert Task.await(task) == :ok
   end
 
+  test "the relay is the conversation's on its own machine and the workspace's on a shared one",
+       ctx do
+    test_pid = self()
+    stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
+
+    stub(Egress, :install_ca, fn _, _, _, owner ->
+      send(test_pid, {:relay_owner, owner})
+      :ok
+    end)
+
+    assert :ok = Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+    assert_received {:relay_owner, owner}
+    assert owner == ctx.conv.id
+
+    sandbox = explicit_workspace!(Repo.get!(Fountain.Conversations.Sandbox, ctx.conv.sandbox_id))
+    assert :ok = Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+    assert_received {:relay_owner, owner}
+    assert owner == sandbox.workspace_id
+  end
+
   test "the wake's skills get the conversation's env, after the CA", ctx do
     test_pid = self()
     stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
-    stub(Egress, :install_ca, fn _, _, _ -> send(test_pid, :ca) && :ok end)
+    stub(Egress, :install_ca, fn _, _, _, _ -> send(test_pid, :ca) && :ok end)
 
     stub(Skills, :mount, fn _handle, _conv, _agent, sprite_env ->
       send(test_pid, {:skills, sprite_env})
@@ -79,7 +100,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
 
   test "a failed runtime config is logged but broker readiness refuses the wake", ctx do
     stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> {:error, :refused} end)
-    stub(Egress, :install_ca, fn _, _, _ -> {:error, {:broker, :ca_install_exit, 1, ""}} end)
+    stub(Egress, :install_ca, fn _, _, _, _ -> {:error, {:broker, :ca_install_exit, 1, ""}} end)
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
@@ -92,7 +113,7 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
 
   test "a failed env file write is the reattach's answer", ctx do
     stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
-    stub(Egress, :install_ca, fn _, _, _ -> :ok end)
+    stub(Egress, :install_ca, fn _, _, _, _ -> :ok end)
     stub(Provisioning, :write_env_file, fn _, _ -> {:error, :disk_full} end)
     reject(&Provisioning.prepare_runtime_sprite/7)
 

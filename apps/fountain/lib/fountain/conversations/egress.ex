@@ -446,18 +446,31 @@ defmodule Fountain.Conversations.Egress do
 
   def release_prepared(_result), do: :ok
 
-  @doc "Install broker trust and establish transport readiness; nothing without a session."
-  @spec install_ca(session(), Managoat.Sandbox.Handle.t(), String.t()) :: :ok | {:error, term()}
-  def install_ca(nil, _handle, _conversation_id), do: :ok
+  @doc """
+  Install broker trust and establish transport readiness; nothing without a
+  session.
 
-  def install_ca(session, handle, conversation_id) do
+  `relay_owner` names whom the machine's transport relay belongs to
+  (`Fountain.Broker.TransportRelay`, which refuses a second owner): the
+  conversation on an implicit workspace's machine, as it always was, and the
+  workspace on an explicit one, whose conversations share the relay as they
+  share the trust store (ADR 0097, step 5; `Fountain.Workspaces.relay_owner/2`).
+  The relay holds no token, so sharing it shares nothing a conversation's
+  own proxy credential does not already carry.
+  """
+  @spec install_ca(session(), Managoat.Sandbox.Handle.t(), String.t(), String.t() | nil) ::
+          :ok | {:error, term()}
+  def install_ca(session, handle, conversation_id, relay_owner \\ nil)
+  def install_ca(nil, _handle, _conversation_id, _relay_owner), do: :ok
+
+  def install_ca(session, handle, conversation_id, relay_owner) do
     # The relay verifies the broker endpoint's own certificate, which the
     # operator's ingress serves from a public or operator CA already in the
     # system bundle, never the broker CA installed here. So it starts beside
     # the CA install rather than after it: the two were 0.47 s and 0.6-0.7 s
     # one after the other on a fresh sprite (2026-10-17). Failures still
     # answer in the old order, the CA's first.
-    relay = start_transport(handle, conversation_id)
+    relay = start_transport(handle, relay_owner || conversation_id)
     result = Provisioning.install_broker_ca(handle, conversation_id)
 
     # Only a conversation's trust setup reaches this path. Broker health
@@ -484,14 +497,14 @@ defmodule Fountain.Conversations.Egress do
   # An exception in the relay task would reach the caller as a link exit, past
   # the rescue that fails a provision cleanly, so it is caught and re-raised
   # here with its own stacktrace.
-  defp start_transport(handle, conversation_id) do
+  defp start_transport(handle, owner) do
     context = :otel_ctx.get_current()
 
     Task.async(fn ->
       token = :otel_ctx.attach(context)
 
       try do
-        {:ok, Fountain.Broker.TransportRelay.ensure(handle, conversation_id)}
+        {:ok, Fountain.Broker.TransportRelay.ensure(handle, owner)}
       rescue
         exception -> {:raised, exception, __STACKTRACE__}
       after
