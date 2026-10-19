@@ -36,7 +36,7 @@ primary_region = "iad"
   # `image` line and let Fly build the Dockerfile in this checkout. The build
   # compiles the umbrella from source, so
   # prefer the image unless you have changes to run.
-  image = "ghcr.io/managoat/managoat:v0.37.1"
+  image = "ghcr.io/managoat/managoat:v0.37.2"
 
 # Migrations run at boot, inside the app's own start sequence, and the
 # endpoint does not listen until they finish. There is deliberately no
@@ -81,7 +81,7 @@ primary_region = "iad"
   # Register before you hand the URL to anybody. "true" keeps it open for
   # everyone, for good.
   REGISTRATION_ENABLED = "auto"
-  # Read only by images up to v0.37.1; newer images always promote the first
+  # Read only by images up to v0.37.2; newer images always promote the first
   # verified account and ignore it. Drop it once the pin is past.
   FIRST_USER_ADMIN = "true"
 
