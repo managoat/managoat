@@ -456,9 +456,27 @@ defmodule FountainWeb.WorkspaceControllerTest do
       assert %{"error" => "sandbox_provider_disabled", "message" => message} =
                api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(422)
 
-      assert message =~ "provider e2b"
-      assert Repo.get!(Workspace, ctx.data["id"]).status == "failed"
+      # The workspace's own provider, disabled since its create: refused
+      # before anything moves, with the workspace's advice.
+      assert message =~ "sandbox provider e2b"
+      assert message =~ "this workspace runs on it"
+      refute message =~ "agent"
+
+      assert %Workspace{status: "failed", error: "the environment's setup script exited 1"} =
+               Repo.get!(Workspace, ctx.data["id"])
+
+      assert [_only_the_failed_one] =
+               Repo.all(from s in Sandbox, where: s.workspace_id == ^ctx.data["id"])
+
       refute_received {:retried, _, _}
+      assert Audit.list_for_user(ctx.user.id, action_prefix: "workspace.retried") == []
+    end
+
+    test "the instance default provider is not refused for its credentials", ctx do
+      # As a launch and a create treat it (`resolve_sandbox_provider/1`): the
+      # test instance has no Sprites token, and the default still retries.
+      refute Fountain.SandboxProviders.enabled?(Fountain.SandboxProviders.default_provider())
+      assert api(ctx) |> post("/api/workspaces/#{ctx.data["id"]}/retry") |> json_response(202)
     end
 
     test "a full fleet is 503 fleet_full, and the workspace stays failed", ctx do
