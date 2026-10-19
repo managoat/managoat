@@ -149,6 +149,78 @@ defmodule FountainWeb.WorkspaceController do
     end
   end
 
+  operation(:rebuild,
+    summary: "Rebuild a workspace's machine",
+    description:
+      "Destroys the workspace's machine, with everything on its disk, and builds a new one " <>
+        "from its environment as it is now, under the same workspace. Save any work first: " <>
+        "GET /api/workspaces/{id}/diff reads it while the machine is ready. Every " <>
+        "conversation in the workspace keeps its transcript and stays in the workspace, " <>
+        "with its runtime session cleared: its agent starts fresh on its next prompt. " <>
+        "Answers 202 with status provisioning; the status moves to ready or failed, each a " <>
+        "workspace.status event. Refused with 409 turns_running while any conversation in " <>
+        "it has a running turn, unless interrupt is true, which ends those turns as " <>
+        "interrupted (transcripts kept). A rebuild while the workspace is provisioning is " <>
+        "409 rebuild_in_progress. An implicit workspace is 404, as on DELETE: it is a " <>
+        "conversation's own sandbox. The vault is not touched.",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    request_body:
+      {"Rebuild options", "application/json", Schemas.WorkspaceRebuildRequest, required: false},
+    responses: [
+      accepted: {"Workspace", "application/json", Schemas.WorkspaceResponse},
+      not_found: {"Not found", "application/json", Schemas.Error},
+      conflict:
+        {"A running turn (turns_running), or a rebuild in progress (rebuild_in_progress)",
+         "application/json", Schemas.Error},
+      service_unavailable:
+        {"Every sandbox slot in use (fleet_full), or the machine busy with another " <>
+           "operation (sandbox_unavailable)", "application/json", Schemas.Error}
+    ]
+  )
+
+  def rebuild(conn, %{"id" => id} = params) do
+    user = conn.assigns.current_user
+    interrupt? = params["interrupt"] in [true, "true"]
+
+    case Workspaces.get_workspace(id, user.id) do
+      %Fountain.Workspaces.Workspace{implicit: false} = workspace ->
+        opts = Audited.attribution(conn) ++ [interrupt: interrupt?]
+
+        case Workspaces.rebuild_workspace(workspace, opts) do
+          {:ok, workspace} ->
+            conn |> put_status(:accepted) |> render_one(workspace)
+
+          {:error, {:turns_running, ids}} ->
+            conn
+            |> put_status(:conflict)
+            |> json(%{
+              error: "turns_running",
+              message:
+                "a conversation in this workspace is running a turn; wait for it to end, " <>
+                  "or rebuild with interrupt: true to interrupt it",
+              conversation_ids: ids
+            })
+
+          {:error, :rebuild_in_progress} ->
+            conn
+            |> put_status(:conflict)
+            |> json(%{
+              error: "rebuild_in_progress",
+              message:
+                "this workspace's machine is being built; wait for its status to be ready " <>
+                  "or failed"
+            })
+
+          error ->
+            error
+        end
+
+      # An implicit workspace is a conversation's own sandbox, as on DELETE.
+      _none_or_implicit ->
+        {:error, :not_found}
+    end
+  end
+
   defp render_one(conn, workspace) do
     sandboxes = Workspaces.current_sandboxes([workspace])
     standing = Workspaces.staleness([workspace], sandboxes)

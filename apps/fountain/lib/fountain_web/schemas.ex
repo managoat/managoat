@@ -270,6 +270,25 @@ defmodule FountainWeb.Schemas do
     })
   end
 
+  defmodule WorkspaceRebuildRequest do
+    @moduledoc false
+    require OpenApiSpex
+
+    OpenApiSpex.schema(%{
+      title: "WorkspaceRebuildRequest",
+      type: :object,
+      properties: %{
+        interrupt: %Schema{
+          type: :boolean,
+          description:
+            "Interrupt every running turn in the workspace's conversations rather than be " <>
+              "refused with 409 turns_running. Each ends interrupted (reason " <>
+              "machine_destroyed), its transcript kept. Defaults to false."
+        }
+      }
+    })
+  end
+
   defmodule StreamWorkspaceStatus do
     @moduledoc false
     require OpenApiSpex
@@ -3021,6 +3040,13 @@ defmodule FountainWeb.Schemas do
           description:
             "Beside `error: \"insufficient_scope\"`: the key scope that is allowed " <>
               "the request, a `full` key such as one from `managoat auth login`."
+        },
+        conversation_ids: %Schema{
+          type: :array,
+          items: %Schema{type: :string, format: :uuid},
+          description:
+            "Beside `error: \"turns_running\"` on a workspace rebuild: the conversations " <>
+              "whose running turn refused it."
         },
         depth: %Schema{
           type: :integer,

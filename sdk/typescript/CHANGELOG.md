@@ -51,6 +51,12 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
   event is also sent when an edit to the environment moves its revision, and
   `Environment` carries `revision` too.
   Needs a Managoat server later than v0.37.2.
+- `managoat.workspaces.rebuild(nameOrId, { interrupt })`: destroy the
+  workspace's machine, with its disk, and set up a new one from the
+  environment as it is now, keeping every conversation and its transcript.
+  It resolves `provisioning`; follow it with `waitForReady`. The
+  `turns_running` and `rebuild_in_progress` codes on `ManagoatErrorCode`.
+  Needs a Managoat server later than v0.37.2.
 
 ### Changed
 

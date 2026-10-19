@@ -324,6 +324,30 @@ export class Workspaces {
   }
 
   /**
+   * Rebuild the workspace's machine from its environment as it is now: the
+   * machine is destroyed **with everything on its disk** and a new one is set
+   * up in its place. Save work first: `diff` (and `files`/`file`) read the
+   * machine while it is `ready`.
+   *
+   * Every conversation in the workspace keeps its transcript and stays in
+   * it, with its runtime session cleared, so its agent starts fresh on its
+   * next prompt. Resolves with the workspace, `provisioning`; `waitForReady`
+   * follows it to `ready` (and `stale` false) or `failed`.
+   *
+   * A running turn in any of its conversations refuses it with a
+   * `ManagoatError` of code `turns_running` (409, its `body.conversation_ids`
+   * naming them), unless `interrupt: true`, which ends those turns as
+   * interrupted with their transcripts kept. A rebuild while the workspace is
+   * provisioning is code `rebuild_in_progress` (409). An implicit workspace is
+   * a `NotFoundError`.
+   */
+  async rebuild(nameOrId: string, opts: { interrupt?: boolean } = {}): Promise<Workspace> {
+    return this.http.data<Workspace>("POST", `${this.path}/${await this.id(nameOrId)}/rebuild`, {
+      body: opts.interrupt ? { interrupt: true } : {},
+    });
+  }
+
+  /**
    * Read the workspace until its setup settles. Resolves with it when it is
    * `ready`; throws `WorkspaceFailedError` when it is `failed`, and a
    * `ManagoatError` with code `timeout` when `timeoutMs` passes first.

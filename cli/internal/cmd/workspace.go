@@ -86,11 +86,35 @@ their first prompt waits for it.`,
 	}
 	waitCmd.Flags().Duration("timeout", 30*time.Minute, "how long to wait")
 
+	rebuildCmd := &cobra.Command{
+		Use:   "rebuild <id-or-name>",
+		Short: "Rebuild a workspace's machine from its environment as it is now",
+		Long: `Rebuild a workspace's machine: destroy it, with everything on its disk,
+and set up a new one from the environment as it is now. Use it after editing
+the environment (` + "`managoat workspace show`" + ` says when the machine is stale).
+
+The disk is wiped. Save any work on it first, for example with
+` + "`GET /api/workspaces/<id>/diff`" + `.
+
+Every conversation in the workspace keeps its transcript and stays in it,
+with its runtime session cleared: its agent starts fresh on its next prompt.
+The command is refused while any conversation has a running turn, unless
+--interrupt, which interrupts those turns. With --wait it follows the setup
+and exits non-zero if it fails.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error { return workspaceRebuild(cmd, args[0]) },
+	}
+	rebuildCmd.Flags().Bool("interrupt", false, "interrupt running turns rather than be refused")
+	rebuildCmd.Flags().Bool("wait", false, "wait until the workspace is ready, and fail if its setup fails")
+	rebuildCmd.Flags().Duration("timeout", 30*time.Minute, "how long --wait waits")
+	rebuildCmd.Flags().Bool("json", false, "print the workspace as JSON")
+
 	wsCmd.AddCommand(
 		createCmd,
 		listCmd,
 		showCmd,
 		waitCmd,
+		rebuildCmd,
 		&cobra.Command{
 			Use:   "delete <id-or-name>",
 			Short: "Delete a workspace: terminate its conversations and destroy its machine",
@@ -258,7 +282,7 @@ func workspaceStaleLabel(ws map[string]any) string {
 	if fields := workspaceChangedFields(ws); len(fields) > 0 {
 		label += " (" + strings.Join(fields, ", ") + ")"
 	}
-	return label
+	return label + "; `managoat workspace rebuild` applies it, wiping the disk"
 }
 
 // workspaceMachineLabel says what the workspace's machine is doing: its own
@@ -274,6 +298,53 @@ func workspaceMachineLabel(ws map[string]any) string {
 		return sandbox + " (suspended; the next prompt wakes it)"
 	}
 	return fmt.Sprintf("%s (%s)", sandbox, status)
+}
+
+func workspaceRebuild(cmd *cobra.Command, target string) error {
+	f := cmd.Flags()
+	interrupt, _ := f.GetBool("interrupt")
+	wait, _ := f.GetBool("wait")
+	timeout, _ := f.GetDuration("timeout")
+	jsonOut, _ := f.GetBool("json")
+
+	c := activeClient()
+	id, err := resolveWorkspaceID(c, target)
+	if err != nil {
+		return err
+	}
+	body := map[string]any{}
+	if interrupt {
+		body["interrupt"] = true
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := c.Post("/workspaces/"+id+"/rebuild", body, &resp); err != nil {
+		if api.StatusCode(err) == 404 {
+			return fmt.Errorf("no workspace %s (an implicit workspace is a conversation's own sandbox and is not rebuilt)", id)
+		}
+		return explainAPIError(err)
+	}
+	ws := resp.Data
+	if !jsonOut {
+		fmt.Printf("workspace  ↻  %s (%s)  %s\n", output.ToString(ws["name"]), id, output.ToString(ws["status"]))
+	}
+	if wait {
+		final, err := waitForWorkspace(c, id, timeout, os.Stderr)
+		if final != nil {
+			ws = final
+		}
+		if err != nil {
+			if jsonOut {
+				_ = output.PrintJSON(ws)
+			}
+			return err
+		}
+	}
+	if jsonOut {
+		return output.PrintJSON(ws)
+	}
+	return nil
 }
 
 func workspaceWaitCmd(cmd *cobra.Command, target string) error {
@@ -422,6 +493,10 @@ func explainAPIError(err error) error {
 		if output.ToString(body["required_scope"]) == "full" {
 			hint = "This needs a full-scope key. A sandbox's own MANAGOAT_TOKEN is not one: among other things it cannot use workspaces, so a conversation started from inside a sandbox gets a sandbox of its own. Use a key from `managoat auth login`."
 		}
+	case "turns_running":
+		hint = "Wait for the turns to end, or pass --interrupt to interrupt them (their transcripts are kept)."
+	case "rebuild_in_progress":
+		hint = "The workspace's machine is being built: `managoat workspace wait` follows it."
 	case "source_in_use_by_workspace":
 		hint = "Delete the workspaces created from it first (`managoat workspace list`, then `managoat workspace delete`)."
 	case "invalid_sandbox_api_access":

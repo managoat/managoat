@@ -221,6 +221,7 @@ managoat workspace create <name> --environment <id-or-name> [--vault <id-or-name
 managoat workspace list [--implicit] [--json]
 managoat workspace show <id-or-name> [--json]
 managoat workspace wait <id-or-name> [--timeout 30m]
+managoat workspace rebuild <id-or-name> [--interrupt] [--wait] [--json]
 managoat workspace delete <id-or-name>
 
 managoat run <agent> --workspace <id-or-name> --cwd /home/sprite/app -p "..."
@@ -241,7 +242,17 @@ with `--cwd` to give each agent its own folder.
 `list` leaves out implicit workspaces, the one each conversation run without
 `--workspace` gets; `--implicit` shows them too. `show` prints the machine's
 state: its status, or that it is parked and the next prompt wakes it, or
-that it has none live and the next prompt builds one.
+that it has none live and the next prompt builds one. Both say when the
+machine is stale: the environment changed since it was built, with the names
+of the fields that changed (`list`'s `stale` column).
+
+`rebuild` applies an edited environment: it destroys the machine **with
+everything on its disk** and sets up a new one from the environment as it is
+now. Save work first; the workspace's `diff` route reads it while the machine
+is ready. Every conversation keeps its transcript and stays in the
+workspace, and its agent starts a fresh session on its next prompt. It is
+refused while a conversation has a running turn; `--interrupt` interrupts
+those turns instead. `--wait` follows the new setup like `create --wait`.
 
 `delete` terminates every conversation in the workspace, keeping their
 transcripts, and destroys the machine with its disk. It does not ask for
@@ -296,7 +307,8 @@ runs with, or a folder under that, created if missing. `--workspace` runs the co
 
 A turn that its machine cuts short exits non-zero: the lifetime ceiling
 parking a workspace's machine (`machine_parked`), or its machine being
-destroyed (`machine_destroyed`), for example by `managoat workspace delete`.
+destroyed (`machine_destroyed`), for example by `managoat workspace delete`
+or `managoat workspace rebuild --interrupt`.
 
 ### Long-running turns
 

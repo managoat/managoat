@@ -387,6 +387,8 @@ defmodule FountainWeb.Router do
     # create, list or delete them, and a conversation it starts gets a
     # sandbox of its own.
     resources "/workspaces", WorkspaceController, only: [:index, :show, :create, :delete]
+    # Rebuild its machine from its environment as it is now (#2986).
+    post "/workspaces/:id/rebuild", WorkspaceController, :rebuild
   end
 
   # No `:accepts_json`, for the same reason as the conversation stream below.

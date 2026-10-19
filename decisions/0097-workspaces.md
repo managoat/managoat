@@ -244,6 +244,16 @@ process.
   makes the machine lost (#3005). The prompt that found it, which never
   reached an agent, runs on the new sandbox under the turn number it was
   given.
+- **A rebuild on request** (`POST /api/workspaces/:id/rebuild`, #2986) is
+  the Sandbox lost transition done on purpose and at once, for an explicit
+  workspace whose environment was edited: the machine is replaced through
+  its owner, every live conversation follows it with its transcript kept and
+  its session cleared, the old machine and its disk are destroyed, and the
+  workspace's own provision builds the next from the environment as it is
+  then. A running turn refuses it (`409 turns_running`) unless the caller
+  passes `interrupt: true`, which ends those turns as the ceiling does; a
+  workspace already `provisioning` refuses it (`409 rebuild_in_progress`).
+  The vault is not touched.
 - **The max-lifetime ceiling** (`SANDBOX_MAX_LIFETIME_HOURS`, off by default)
   splits by kind. On an implicit workspace it destroys the machine, as
   today. On an explicit workspace it **parks** the machine: the disk and the
@@ -348,6 +358,10 @@ A caller who wants isolation launches without a `workspace_id`.
 - Children landing on the parent's workspace.
 - Moving a workspace to another environment, vault or provider.
 - Sharing a workspace between users.
+- Rebuilding an implicit workspace on request: it is a conversation's own
+  sandbox, so `POST /api/workspaces/:id/rebuild` answers `404`, as `DELETE`
+  does (#2986). An explicit workspace's rebuild is no longer refused: see
+  Lifecycle and History, 2026-10-19.
 
 ### Data
 
@@ -426,7 +440,7 @@ directory" or `cwd` when this is built.
 | Skills record keyed by runtime | Stays gone. Skills live in each conversation's config home; the machine's record is not needed for them |
 | Home checkpoint at park | Stays gone |
 | A home parked at the max-lifetime ceiling | Returns for explicit workspaces: the ceiling parks, and the machine has no hard lifetime |
-| Reset door (`DELETE /api/sandboxes/:id`) | Stays gone. Deleting the workspace, or creating another, is the reset |
+| Reset door (`DELETE /api/sandboxes/:id`) | Returns for explicit workspaces as `POST /api/workspaces/:id/rebuild` (#2986), which keeps the conversations and their transcripts; `DELETE /api/sandboxes/:id` stays gone, and an implicit workspace is reset by deleting its conversation |
 | `sandbox_id` attach | Stays refused; `workspace_id` replaces it |
 | A child landing on the parent's home | Stays gone. A child gets a sandbox of its own |
 | Cross-conversation disk, shared checkouts, shared memory files | Returns inside a workspace, as one trust boundary |
@@ -576,7 +590,8 @@ A PR sequence, each releasable alone:
   would pay the whole setup inside its first turn.
 - **Rebuilding eagerly after a loss.** It would spend a provision on a
   workspace nobody may come back to; the next prompt is the first moment
-  anyone needs the machine.
+  anyone needs the machine. A rebuild the caller asks for (#2986) is eager
+  because the caller has said it needs the machine.
 
 ## History
 
@@ -898,3 +913,31 @@ A PR sequence, each releasable alone:
   kind could disagree with it; `stale` compares the digests, so an edit that
   is reverted moves the revision but is not stale; and a machine with no
   record (built before this) is not stale, since nothing is known about it.
+- 2026-10-19 — A rebuild on request (#2986): `POST /api/workspaces/:id/rebuild`
+  replaces an explicit workspace's machine with one built from its
+  environment as it is now, keeping every conversation. It is the Sandbox
+  lost transition done on purpose and eagerly, through 3c's machinery split
+  in two: `Provision.replace/2` (`Machine.replace/2`) is `rebuild/3`'s
+  succession without its build, under one claim of the workspace's lease
+  (every live conversation moved in the commit, its runtime session cleared;
+  the old machine destroyed at the provider with the caller on its
+  `sandbox.destroyed`; every moved server told `machine_gone` with a
+  rebuild's note on its transcript), and the new `pending` row is then built
+  by the workspace's own provision (`Workspaces.Provisioner`), exactly as on
+  create, which records `built_from_revision`, so `stale` clears; each
+  conversation re-attaches on its next prompt, through the follow logic of
+  4b and #3007. Without `interrupt` a running turn refuses it, decided under
+  the machine's advisory lock in the succession's transaction, so nothing is
+  written (`409 turns_running`, naming the conversations); with it, the old
+  machine's running turns are ended first, as interrupted with
+  `machine_destroyed`, transcripts kept. Audited as `workspace.rebuilt` with
+  the caller; the vault is not touched. The Refused list and the Reset door
+  row are amended. Calls made here: an implicit workspace is `404`, as on
+  `DELETE`, not `422`; any workspace that is `provisioning` (its create, a
+  retry, a lazy rebuild or another rebuild) is `409 rebuild_in_progress`, so
+  two rebuilds at once run once and the second is told; the answer is `202`
+  with `provisioning`, the build running in the background; a machine
+  another operation holds (a park, a wake) is `503 sandbox_unavailable`,
+  and a full fleet `503 fleet_full`, both with nothing changed; and the
+  interrupted turns' reason is `machine_destroyed`, which clients already
+  read as a cut-off turn, rather than a new word.

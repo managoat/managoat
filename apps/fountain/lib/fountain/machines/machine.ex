@@ -684,6 +684,28 @@ defmodule Fountain.Machines.Machine do
   end
 
   @doc """
+  Replace the machine behind `sandbox_id` with a new `pending` one in its
+  workspace, every live conversation following: the succession of
+  `rebuild/3` without its build (`Fountain.Machines.Provision.replace/2`),
+  inline on the caller. The rebuild a caller asks for
+  (`Fountain.Workspaces.rebuild_workspace/2`, #2986), whose build is the
+  workspace's own provision. `:machine_busy` and `:stale` reach the caller as
+  `:machine_busy`: there is no server here to stand down.
+  """
+  @spec replace(String.t(), keyword()) :: {:ok, Sandbox.t()} | {:error, term()}
+  def replace(sandbox_id, opts) when is_binary(sandbox_id) and is_list(opts) do
+    if Repo.in_transaction?() do
+      {:error, :provider_transaction_open}
+    else
+      case Provision.replace(sandbox_id, opts) do
+        {:error, reason} when reason in [:stale, :superseded] -> {:error, :machine_busy}
+        {:error, :transaction_open} -> {:error, :provider_transaction_open}
+        other -> other
+      end
+    end
+  end
+
+  @doc """
   Build the machine behind `sandbox_id` with no conversation on it: the
   machine-level steps of `setup` (`Fountain.Machines.Setup`) as the pipeline
   of `Fountain.Machines.Provision.run/3`, inline on the caller.

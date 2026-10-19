@@ -550,6 +550,159 @@ defmodule Fountain.Workspaces do
   end
 
   @doc """
+  Rebuild an explicit workspace's machine on purpose, from its environment as
+  it is now (#2986): the "Sandbox lost" transition of ADR 0097, done eagerly.
+
+  `workspace` comes from the caller's scoped `get_workspace/2`; an implicit
+  one is `:not_found`, as for `delete_workspace/2`. In order:
+
+    1. Refused while the workspace is `provisioning` (its create, a retry, a
+       rebuild after a loss, or an earlier rebuild is still building), or
+       while a provision on create runs for it: `:rebuild_in_progress`.
+    2. The current machine is replaced through its owner
+       (`Fountain.Machines.Machine.replace/2`): with `interrupt: true` every
+       running turn on it is ended as interrupted first, and without it a
+       running turn refuses the rebuild, `{:turns_running, ids}`, with
+       nothing written. Every live conversation moves to the new machine
+       with its transcript kept and its runtime session cleared, and is
+       re-attached on its next prompt. The old machine is destroyed, its
+       disk with it, and the workspace goes `provisioning`.
+    3. The new machine is built by the workspace's own provision
+       (`Fountain.Workspaces.Provisioner`), as on create: it settles
+       `ready` or `failed`, each a `workspace.status` event, and records the
+       revision it was built from, so `stale` clears.
+
+  The vault is not touched. Audits `workspace.rebuilt` with the caller's
+  attribution, outside every transaction; the old machine's
+  `sandbox.destroyed` carries the caller too.
+  """
+  @spec rebuild_workspace(Workspace.t(), keyword()) ::
+          {:ok, Workspace.t()}
+          | {:error,
+             :not_found
+             | :rebuild_in_progress
+             | {:turns_running, [Ecto.UUID.t()]}
+             | :sandbox_unavailable
+             | :fleet_full
+             | :provider_transaction_open
+             | term()}
+  def rebuild_workspace(workspace, opts \\ [])
+
+  def rebuild_workspace(%Workspace{implicit: false, user_id: user_id} = workspace, opts)
+      when is_binary(user_id) do
+    cond do
+      Repo.in_transaction?() -> {:error, :provider_transaction_open}
+      rebuilding?(workspace) -> {:error, :rebuild_in_progress}
+      true -> do_rebuild(workspace, opts)
+    end
+  end
+
+  def rebuild_workspace(%Workspace{}, _opts), do: {:error, :not_found}
+
+  defp rebuilding?(%Workspace{id: id, status: status}),
+    do: status == "provisioning" or Fountain.Workspaces.Provisioner.running?(id)
+
+  defp do_rebuild(%Workspace{} = workspace, opts) do
+    attribution = [
+      actor: Keyword.get(opts, :actor, "self"),
+      request_ip: Keyword.get(opts, :request_ip)
+    ]
+
+    interrupt? = Keyword.get(opts, :interrupt, false) == true
+
+    # ownership: the workspace the caller's scoped fetch returned.
+    with %Sandbox{} = old <- current_sandbox(workspace),
+         {:ok, provider} <- provider_atom(workspace),
+         {:ok, name} <- Fountain.Conversations.mint_machine_name(provider, workspace.user_id, nil),
+         {:ok, %Sandbox{} = next} <-
+           Fountain.Machines.Machine.replace(
+             old.id,
+             attribution ++
+               [
+                 attrs: %{machine_name: name},
+                 interrupt: interrupt?,
+                 # A machine already ended (lost, or a failed setup) has
+                 # nothing left at the provider to destroy.
+                 provider:
+                   if(old.status in @terminal_statuses, do: :already_gone, else: :destroy),
+                 notice:
+                   "This workspace is being rebuilt from its environment. Send another " <>
+                     "prompt to continue — the transcript above is kept, but the disk was " <>
+                     "wiped and the agent starts a fresh session."
+               ]
+           ) do
+      Fountain.Audit.record(%{
+        user_id: workspace.user_id,
+        action: "workspace.rebuilt",
+        resource_type: "workspace",
+        resource_id: workspace.id,
+        actor: Keyword.fetch!(attribution, :actor),
+        request_ip: Keyword.fetch!(attribution, :request_ip),
+        metadata: %{
+          "name" => workspace.name,
+          "interrupt" => interrupt?,
+          "previous_sandbox_id" => old.id,
+          "sandbox_id" => next.id
+        }
+      })
+
+      case Fountain.Workspaces.Provisioner.start(workspace, next.id) do
+        {:ok, _pid} ->
+          :ok
+
+        {:error, reason} ->
+          # The reservation stands, as after a create whose task did not
+          # start: the reaper's pass over stuck rows fails it, and the next
+          # prompt retries.
+          Logger.error("workspace #{workspace.id}: rebuild did not start: #{inspect(reason)}")
+      end
+
+      {:ok, Repo.get(Workspace, workspace.id) || workspace}
+    else
+      nil -> {:error, :not_found}
+      {:error, reason} -> rebuild_refusal(workspace, reason)
+    end
+  end
+
+  defp provider_atom(%Workspace{provider: provider}) do
+    if provider in Fountain.SandboxProviders.known_providers(),
+      do: {:ok, String.to_existing_atom(provider)},
+      else: {:error, :sandbox_unavailable}
+  end
+
+  # The owner's refusals in the API's words. A machine somebody else holds is
+  # a rebuild in progress when the workspace says it is building, and
+  # otherwise another operation (a park, a wake) to wait out. A fenced
+  # machine is one being destroyed: by a delete of this workspace (which has
+  # already taken it from its owner, so it reads as gone), or by something
+  # else that ends with it terminal, after which a rebuild may run.
+  defp rebuild_refusal(%Workspace{id: id}, reason) do
+    current = Repo.get(Workspace, id)
+
+    case reason do
+      {:turns_running, _ids} = refusal ->
+        {:error, refusal}
+
+      :fleet_full ->
+        {:error, :fleet_full}
+
+      _ when is_nil(current) or is_nil(current.user_id) ->
+        {:error, :not_found}
+
+      reason
+      when reason in [:occupied, :machine_busy] or
+             (is_tuple(reason) and elem(reason, 0) == :not_rebuildable) ->
+        if current.status == "provisioning",
+          do: {:error, :rebuild_in_progress},
+          else: {:error, :sandbox_unavailable}
+
+      other ->
+        Logger.warning("workspace #{id}: not rebuilt: #{inspect(other)}")
+        {:error, :sandbox_unavailable}
+    end
+  end
+
+  @doc """
   Whether an explicit workspace of `user_id`'s names the environment or vault
   `source_id`: the reason its delete is refused, `409 source_in_use_by_workspace`
   (ADR 0097, Data). Read inside the delete's transaction

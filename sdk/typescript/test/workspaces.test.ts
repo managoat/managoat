@@ -74,6 +74,15 @@ function client(seen: Seen[], reads: (Workspace["status"] | number)[] = ["ready"
       });
     }
     if (method === "DELETE" && url.pathname === `/api/workspaces/${WS}`) return new Response(null, { status: 204 });
+    if (method === "POST" && url.pathname === `/api/workspaces/${WS}/rebuild`) {
+      if (!(body as Record<string, unknown>).interrupt)
+        return json(409, {
+          error: "turns_running",
+          message: "a conversation in this workspace is running a turn",
+          conversation_ids: ["conv-1"],
+        });
+      return json(202, { data: workspace("provisioning") });
+    }
     if (method === "GET" && url.pathname.startsWith(`/api/workspaces/${WS}/`))
       return json(200, { data: { path: "/home/sprite", entries: [], truncated: false } });
     if (method === "POST" && url.pathname === "/api/conversations") {
@@ -128,6 +137,27 @@ test("get and delete take a name or an id; an ambiguous name says so", async () 
   // someone else's trust boundary.
   await assert.rejects(c.workspaces.get("monorepo"), ResolutionError);
   await assert.rejects(c.run("go", { agent: "reposage", workspace: "monorepo" }), ResolutionError);
+});
+
+test("rebuild posts interrupt only when asked, and a running turn is code turns_running", async () => {
+  const seen: Seen[] = [];
+  const c = client(seen);
+  const error = await c.workspaces.rebuild("monorepo-box").catch((e: unknown) => e);
+  assert.ok(error instanceof ManagoatError);
+  assert.equal(error.status, 409);
+  assert.equal(error.code, "turns_running");
+  assert.deepEqual((error.body as { conversation_ids: string[] }).conversation_ids, ["conv-1"]);
+
+  const rebuilt = await c.workspaces.rebuild(WS, { interrupt: true });
+  assert.equal(rebuilt.status, "provisioning");
+  const posts = seen.filter((s) => s.method === "POST");
+  assert.deepEqual(
+    posts.map((s) => [s.path, s.body]),
+    [
+      [`/api/workspaces/${WS}/rebuild`, {}],
+      [`/api/workspaces/${WS}/rebuild`, { interrupt: true }],
+    ],
+  );
 });
 
 test("waitForReady follows provisioning to ready, reporting each change once", async () => {
