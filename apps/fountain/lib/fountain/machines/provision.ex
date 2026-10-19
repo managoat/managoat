@@ -815,11 +815,13 @@ defmodule Fountain.Machines.Provision do
   # conversation's server is setting up, with the prompt queued behind that,
   # or the receipt is young enough for a wake still bringing that server up
   # (a resume's whole bound, and a margin). An older receipt with no server
-  # setting up is one whose prompt is already gone.
-  @wake_window_ms Fountain.Machines.Machine.resume_timeout_ms() + 60_000
-
+  # setting up is one whose prompt is already gone. The window runs from a
+  # receipt's first acceptance, which a prompt re-woken after a loss carries
+  # (`MachineLoss`); such a prompt meeting a rebuild either follows the new
+  # machine or is reported by its failed wake, so neither is silent.
   defp in_flight?(conv_id, inserted_at, now) do
-    DateTime.diff(now, inserted_at, :millisecond) <= @wake_window_ms or
+    DateTime.diff(now, inserted_at, :millisecond) <=
+      Fountain.Machines.Machine.resume_timeout_ms() + 60_000 or
       Fountain.Conversations.ServerPhase.setting_up?(conv_id)
   end
 
