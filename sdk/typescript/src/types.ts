@@ -40,6 +40,7 @@ export type {
   VaultSecret,
   VaultSecretMetadataPatch,
   Workspace,
+  WorkspaceField,
   WorkspaceInput,
   WorkspaceStatusEvent,
   ConversationsChangedEvent,

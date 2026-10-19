@@ -6,13 +6,17 @@ defmodule FountainWeb.WorkspaceJSON do
 
   @live ~w(pending starting ready suspended)
 
-  def index(%{workspaces: workspaces, sandboxes: sandboxes}),
-    do: %{data: Enum.map(workspaces, &data(&1, Map.get(sandboxes, &1.id)))}
+  def index(%{workspaces: workspaces, sandboxes: sandboxes, standing: standing}),
+    do: %{
+      data:
+        Enum.map(workspaces, &data(&1, Map.get(sandboxes, &1.id), Map.fetch!(standing, &1.id)))
+    }
 
-  def show(%{workspace: workspace, sandbox: sandbox}), do: %{data: data(workspace, sandbox)}
+  def show(%{workspace: workspace, sandbox: sandbox, standing: standing}),
+    do: %{data: data(workspace, sandbox, standing)}
 
   @doc false
-  def data(%Workspace{} = w, sandbox) do
+  def data(%Workspace{} = w, sandbox, standing) do
     %{
       id: w.id,
       name: w.name,
@@ -26,6 +30,12 @@ defmodule FountainWeb.WorkspaceJSON do
       # is not one the workspace has.
       sandbox_id: if(sandbox_status(sandbox), do: sandbox.id),
       sandbox_status: sandbox_status(sandbox),
+      # Which environment revision the machine was built from, and whether it
+      # is behind (#2987): field names only, never a value.
+      revision: standing.revision,
+      built_from_revision: standing.built_from_revision,
+      stale: standing.stale,
+      changed_fields: standing.changed_fields,
       inserted_at: w.inserted_at,
       updated_at: w.updated_at
     }

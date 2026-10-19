@@ -177,12 +177,13 @@ func workspaceList(cmd *cobra.Command) error {
 			output.ShortID(output.ToString(w["id"])),
 			name,
 			dash(output.ToString(w["sandbox_status"])),
+			workspaceStaleCell(w),
 			output.ToString(w["sandbox_provider"]),
 			output.ShortID(output.ToString(w["environment_id"])),
 			output.ToString(w["inserted_at"]),
 		})
 	}
-	output.Table([]string{"status", "id", "name", "machine", "provider", "environment", "created"}, rows)
+	output.Table([]string{"status", "id", "name", "machine", "stale", "provider", "environment", "created"}, rows)
 	return nil
 }
 
@@ -209,12 +210,55 @@ func workspaceShow(cmd *cobra.Command, target string) error {
 	fmt.Printf("  machine:      %s\n", workspaceMachineLabel(ws))
 	fmt.Printf("  provider:     %s\n", output.ToString(ws["sandbox_provider"]))
 	fmt.Printf("  environment:  %s\n", dash(output.ToString(ws["environment_id"])))
+	if built := output.ToString(ws["built_from_revision"]); built != "" {
+		fmt.Printf("  built from:   revision %s (now %s)\n", built, dash(output.ToString(ws["revision"])))
+	}
+	if stale := workspaceStaleLabel(ws); stale != "" {
+		fmt.Printf("  stale:        %s\n", stale)
+	}
 	fmt.Printf("  vault:        %s\n", dash(output.ToString(ws["vault_id"])))
 	if b, _ := ws["implicit"].(bool); b {
 		fmt.Printf("  implicit:     true (ends with its conversation)\n")
 	}
 	fmt.Printf("  created:      %s\n", output.ToString(ws["inserted_at"]))
 	return nil
+}
+
+// workspaceChangedFields is the names of the environment's fields that
+// changed since the workspace's machine was built (#2987). Names only: the
+// server never sends a value.
+func workspaceChangedFields(ws map[string]any) []string {
+	raw, _ := ws["changed_fields"].([]any)
+	fields := make([]string, 0, len(raw))
+	for _, f := range raw {
+		fields = append(fields, output.ToString(f))
+	}
+	return fields
+}
+
+// workspaceStaleCell is the list's stale column: the changed fields, or a
+// dash for a machine that matches its environment.
+func workspaceStaleCell(ws map[string]any) string {
+	if stale, _ := ws["stale"].(bool); !stale {
+		return "—"
+	}
+	if fields := workspaceChangedFields(ws); len(fields) > 0 {
+		return strings.Join(fields, ",")
+	}
+	return "yes"
+}
+
+// workspaceStaleLabel says, for `show`, that the machine is behind its
+// environment and which fields moved, or nothing when it is not.
+func workspaceStaleLabel(ws map[string]any) string {
+	if stale, _ := ws["stale"].(bool); !stale {
+		return ""
+	}
+	label := "yes: the environment changed since the machine was built"
+	if fields := workspaceChangedFields(ws); len(fields) > 0 {
+		label += " (" + strings.Join(fields, ", ") + ")"
+	}
+	return label
 }
 
 // workspaceMachineLabel says what the workspace's machine is doing: its own

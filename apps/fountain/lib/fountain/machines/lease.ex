@@ -155,7 +155,12 @@ defmodule Fountain.Machines.Lease do
   # has to be invisible if the operation has been superseded, for the same
   # reason the finalize does.
   #
-  @writable ~w(status transition transition_reason terminated_at last_resumed_at provider_meta)a
+  # `built_from_revision` and `built_from_digests` (#2987) are the same kind:
+  # what the environment was when this provision read it, written with the
+  # provision's own stamp so a superseded attempt records nothing.
+  #
+  @writable ~w(status transition transition_reason terminated_at last_resumed_at provider_meta
+               built_from_revision built_from_digests)a
 
   # The two of them that live on the workspace (ADR 0097). The rest are the
   # machine's own and stay on the sandbox.
@@ -814,7 +819,9 @@ defmodule Fountain.Machines.Lease do
   `{:error, changeset}`, after the old row's retirement, which the caller's
   transaction must therefore roll back: any `{:error, _}` is fatal to it.
 
-  `attrs` names the new machine: `:machine_name` (required) and `:agent_id`.
+  `attrs` names the new machine: `:machine_name` (required) and `:agent_id`,
+  and what it is built from, `:built_from_revision` and `:built_from_digests`
+  (#2987, `Fountain.Workspaces.Staleness.built_from/1`).
   """
   @spec succeed(Ecto.UUID.t(), epoch(), map()) ::
           {:ok, Sandbox.t()}
@@ -905,7 +912,13 @@ defmodule Fountain.Machines.Lease do
   end
 
   defp insert_successor(%Workspace{} = workspace, %Sandbox{} = old, attrs) do
-    %Sandbox{}
+    # What the successor is built from (#2987), when the caller read its
+    # environment: not a column a request can reach, so set beside the
+    # changeset rather than cast by it.
+    %Sandbox{
+      built_from_revision: Map.get(attrs, :built_from_revision),
+      built_from_digests: Map.get(attrs, :built_from_digests)
+    }
     |> Sandbox.changeset(%{
       machine_name: Map.get(attrs, :machine_name),
       agent_id: Map.get(attrs, :agent_id, old.agent_id),

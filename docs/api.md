@@ -819,8 +819,9 @@ not replace a conversation's history, which is what a client reconciles
 from after a reconnect.
 
 It also carries a `workspace.status` event whenever one of the caller's
-[workspaces](#workspaces) changes status, with data
-`{workspace_id, name, status, error}`. The event has no id and is not
+[workspaces](#workspaces) changes status, or an edit to a ready one's
+environment moves its revision, with data `{workspace_id, name, status, error,
+revision, built_from_revision, stale, changed_fields}`. The event has no id and is not
 replayed after a reconnect, and `?streams=` does not filter it. A client that
 reconnects reads the workspace again with `GET /api/workspaces/{id}`.
 [Follow every conversation on one stream](guides/http-api.md#follow-every-conversation-on-one-stream)
@@ -871,9 +872,22 @@ changes when a lost machine is rebuilt, so keep the workspace's id, not the
 sandbox's. `implicit` is `true` for a conversation's own workspace, which has
 no name and ends with its conversation; `DELETE` answers `404` for one.
 
+A workspace also says whether its machine is behind its environment, since an
+edit to the environment does not change a machine already built:
+
+| Field | Says |
+|---|---|
+| `revision` | The environment's current revision. It changes on every edit of a field a machine is built from: `repositories`, `packages`, `setup_script`, `setup_timeout_seconds`, `env_vars`, `networking_type` and `networking_config`. Editing `name`, `metadata` or a secret leaves it alone; secrets reach a running machine without a rebuild. |
+| `built_from_revision` | The revision the current machine was built from, or `null` when there is no live machine or it was built before Managoat recorded this. |
+| `stale` | `true` when at least one of those fields differs from what the machine was built from. An edit that was then reverted moves `revision` but is not stale. |
+| `changed_fields` | The names of the fields that differ, such as `["packages", "env_vars"]`. Only names: no value is ever sent, `env_vars` included. |
+
 Each change of `status` on a workspace you created is a `workspace.status`
-event on [the account event stream](#every-conversation-on-one-stream). It is
-live only, so read the workspace after a reconnect.
+event on [the account event stream](#every-conversation-on-one-stream), and so
+is every edit that moves the `revision` of a ready workspace's environment.
+The event carries the four fields above, so a client can show "rebuild
+needed" without polling. It is live only, so read the workspace after a
+reconnect.
 
 | Refusal | When |
 |---|---|

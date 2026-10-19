@@ -334,6 +334,29 @@ func TestACPCreateConversationCarriesTheWorkspace(t *testing.T) {
 
 // The refusals a workspace adds keep the server's words and gain the flag
 // that gets past them; any other error is left exactly as it was.
+// A workspace whose machine is behind its environment says so in list and
+// show, by field name (#2987); one that matches says nothing.
+func TestWorkspaceStaleLabels(t *testing.T) {
+	stale := map[string]any{"stale": true, "changed_fields": []any{"setup_script", "env_vars"}}
+	if got := workspaceStaleCell(stale); got != "setup_script,env_vars" {
+		t.Errorf("list cell = %q", got)
+	}
+	if got := workspaceStaleLabel(stale); !strings.Contains(got, "setup_script, env_vars") {
+		t.Errorf("show label = %q", got)
+	}
+	fresh := map[string]any{"stale": false, "changed_fields": []any{}}
+	if got := workspaceStaleCell(fresh); got != "—" {
+		t.Errorf("list cell for a matching machine = %q", got)
+	}
+	if got := workspaceStaleLabel(fresh); got != "" {
+		t.Errorf("show label for a matching machine = %q", got)
+	}
+	// An older server sends neither field.
+	if got := workspaceStaleCell(map[string]any{}); got != "—" {
+		t.Errorf("list cell without the fields = %q", got)
+	}
+}
+
 func TestExplainAPIError(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

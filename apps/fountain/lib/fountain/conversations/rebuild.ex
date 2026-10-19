@@ -184,6 +184,8 @@ defmodule Fountain.Conversations.Rebuild do
       actor: "system:conversation_server",
       conversation_id: conv.id,
       attrs: %{machine_name: name, agent_id: conv.agent_id},
+      # What this server's pipeline builds from (#2987).
+      environment: ctx.env,
       # A terminal row: whoever retired it destroyed its machine, or the
       # reaper's pass over terminal rows does.
       provider: if(old.status in @terminal_statuses, do: :already_gone, else: :destroy),

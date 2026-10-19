@@ -44,6 +44,12 @@ apart by a missing `kind` has to switch on it instead. See **Changed**.
 - `sandbox_provider_disabled` and `insufficient_scope`, the code of every
   refusal for a key's scope, on `ManagoatErrorCode`.
 - The `AccountEvent`, `AccountLogEvent` and `ConversationsChangedEvent` types.
+- `Workspace` and `WorkspaceStatusEvent` carry `revision` (the environment's
+  current revision), `built_from_revision` (the one its machine was built
+  from), `stale` and `changed_fields`, the names of the environment's fields
+  that changed since, typed as the new `WorkspaceField`. A `workspace.status`
+  event is also sent when an edit to the environment moves its revision.
+  Needs a Managoat server later than v0.37.2.
 
 ### Changed
 

@@ -57,6 +57,38 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       assert Repo.get(Workspace, old.workspace_id).status == "ready"
     end
 
+    test "records the environment revision each machine is built from (#2987)", _ctx do
+      user = insert_verified_user()
+      env = insert_env(user_id: user.id, setup_script: "true")
+      agent = insert_agent(user_id: user.id, environment_id: env.id)
+
+      first =
+        insert_sandbox(user_id: user.id, environment_id: env.id, status: "pending")
+        |> explicit_workspace!()
+
+      conv = insert_conversation(user_id: user.id, agent: agent, sandbox: first)
+      stub_happy_sprite()
+
+      # A fresh provision.
+      {pid, _ref, :alive} = start_server(conv)
+      assert Repo.reload!(first).built_from_revision == env.revision
+      GenServer.stop(pid)
+
+      # The machine is lost and the environment edited; the rebuild records
+      # the revision it read.
+      {:ok, edited} = Fountain.Environments.update_environment(env, %{setup_script: "make"})
+
+      {1, _} =
+        Repo.update_all(from(s in Sandbox, where: s.id == ^first.id), set: [status: "terminated"])
+
+      {:ok, conv} = Conversations.update_conversation(Repo.reload!(conv), %{status: "pending"})
+
+      {pid, _ref, :alive} = start_server(conv)
+      next = Repo.get!(Sandbox, :sys.get_state(pid).sandbox_id)
+      assert next.id != first.id
+      assert next.built_from_revision == edited.revision
+    end
+
     test "a server restarted with no wake asking does not build a machine", _ctx do
       # A crash restart replays the child spec, with no prompt: the
       # conversation is `idle`, not marked by a wake.

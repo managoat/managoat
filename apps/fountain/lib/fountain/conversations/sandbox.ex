@@ -93,6 +93,14 @@ defmodule Fountain.Conversations.Sandbox do
     field :transition, :string
     field :transition_reason, :string
     belongs_to :environment, Environment
+    # What the machine was built from (#2987): the environment's `revision`
+    # when its provision read it, and a keyed digest of each provision-time
+    # field then (`Fountain.Workspaces.Staleness`), never a value. Written by
+    # the owner with the provision's own stamp (`Fountain.Machines.Provision`),
+    # so absent from `changeset/2`. Nil on a machine built before this was
+    # recorded, or from no environment.
+    field :built_from_revision, Ecto.UUID
+    field :built_from_digests, :map
     # The identity the disk was materialized from, with the environment:
     # env vars, packages, repos and setup scripts are written at provision.
     # Nilified when the agent or vault is deleted, like a conversation's own

@@ -78,6 +78,7 @@ export type {
   VaultInput,
   VaultSecretMetadataPatch,
   Workspace,
+  WorkspaceField,
   WorkspaceInput,
   WorkspaceStatusEvent,
   ConversationsChangedEvent,

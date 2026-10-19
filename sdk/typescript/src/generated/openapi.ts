@@ -1073,7 +1073,7 @@ export interface paths {
         };
         /**
          * Stream every conversation's events (SSE)
-         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error}`) is sent when one of the caller's workspaces changes status; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
+         * @description One `text/event-stream` carrying the log events of every conversation the caller owns, including conversations that finish before discovery, each payload the shape of `GET /api/conversations/:id/stream` plus `conversation_id`. A `conversations` event (data `{reason: changed}`) is sent, debounced, when the list changes — created, titled, read, deleted, finished — and the stream follows a new conversation on its own; the client re-lists. `Last-Event-ID` replays what was missed across all owned conversations, including finished ones. Without a cursor, only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); `?blocks=true` adds server-parsed blocks. A `workspace.status` event (data `{workspace_id, name, status, error, revision, built_from_revision, stale, changed_fields}`) is sent when one of the caller's workspaces changes status, and, for a ready one, after every edit that moves its environment's revision; it carries no id and is not replayed, so a client that reconnects re-reads its workspaces. Heartbeats every 15 s; closes after 60 s idle so the client reconnects. The first byte is a `: connected` comment.
          */
         get: operations["FountainWeb.EventsController.stream"];
         put?: never;
@@ -3402,11 +3402,25 @@ export interface components {
         };
         /**
          * StreamWorkspaceStatus
-         * @description A `workspace.status` frame on the events SSE stream: one of the caller's workspaces changed status. Sent live only, with no event id, so it is not replayed after a reconnect; read GET /api/workspaces/{id} for the state.
+         * @description A `workspace.status` frame on the events SSE stream: one of the caller's explicit workspaces changed status, or an edit to its environment changed how its machine stands against it (stale, changed_fields). Sent live only, with no event id, so it is not replayed after a reconnect; read GET /api/workspaces/{id} for the state.
          */
         StreamWorkspaceStatus: {
+            /**
+             * Format: uuid
+             * @description The environment revision the current machine was built from. Null when it has no live machine, or one built before this was recorded.
+             */
+            built_from_revision: string | null;
+            /** @description The names of the environment's fields that differ from what the machine was built from. Names only: no value, env_vars' included, is ever given. */
+            changed_fields: ("repositories" | "packages" | "setup_script" | "setup_timeout_seconds" | "env_vars" | "networking_type" | "networking_config")[];
             error: string | null;
             name: string | null;
+            /**
+             * Format: uuid
+             * @description The environment's current revision. It changes on every edit of a field the machine is built from (repositories, packages, setup_script, setup_timeout_seconds, env_vars, networking_type, networking_config), and not for its name, metadata or secrets. Null with no environment.
+             */
+            revision: string | null;
+            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. */
+            stale: boolean;
             /** @enum {string} */
             status: "provisioning" | "ready" | "failed";
             /** Format: uuid */
@@ -3604,6 +3618,13 @@ export interface components {
          * @description A machine the caller keeps (ADR 0097): set up once from an environment and a vault, then any agent launched into it with workspace_id, each conversation in a config home and working directory of its own. Its environment, vault and provider are fixed at create. An implicit workspace is the one a conversation launched without workspace_id gets for its own sandbox, and ends with it.
          */
         Workspace: {
+            /**
+             * Format: uuid
+             * @description The environment revision the current machine was built from. Null when it has no live machine, or one built before this was recorded.
+             */
+            built_from_revision: string | null;
+            /** @description The names of the environment's fields that differ from what the machine was built from. Names only: no value, env_vars' included, is ever given. */
+            changed_fields: ("repositories" | "packages" | "setup_script" | "setup_timeout_seconds" | "env_vars" | "networking_type" | "networking_config")[];
             /** Format: uuid */
             environment_id: string | null;
             /** @description Why the provision failed, when status is failed: the failing step and the end of what it printed, redacted like the transcript. Null otherwise. A prompt into a conversation in a failed workspace retries the provision. */
@@ -3618,6 +3639,11 @@ export interface components {
             name: string | null;
             /**
              * Format: uuid
+             * @description The environment's current revision. It changes on every edit of a field the machine is built from (repositories, packages, setup_script, setup_timeout_seconds, env_vars, networking_type, networking_config), and not for its name, metadata or secrets. Null with no environment.
+             */
+            revision: string | null;
+            /**
+             * Format: uuid
              * @description The machine the workspace has now, or null when it has none live (lost, or a failed provision). Not a handle to keep: a machine lost at its provider is rebuilt under a new id.
              */
             sandbox_id: string | null;
@@ -3625,6 +3651,8 @@ export interface components {
             sandbox_provider: string;
             /** @description Its current machine's own status (pending, starting, ready or suspended): suspended while parked, which the next prompt wakes. Null when it has none live: lost at its provider, or a failed provision, and the next prompt builds the next. */
             sandbox_status: string | null;
+            /** @description True when at least one field the machine was built from has changed since (changed_fields). An edit that was reverted moves revision but is not stale. False with no live machine, or with no record of what it was built from. */
+            stale: boolean;
             /**
              * @description The provision's outcome: provisioning while its machine is being set up (on create, on a retry, or on a rebuild after a loss), then ready or failed. A park does not move it; sandbox_status does. Each change is a workspace.status event on GET /api/events/stream.
              * @enum {string}

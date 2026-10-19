@@ -110,6 +110,7 @@ defmodule Fountain.Workspaces.Provisioner do
 
       Machine.set_up(sandbox_id, setup,
         network: inputs.network,
+        environment: inputs.environment,
         actor: "system:workspace_setup",
         # The machine's clock (the idle bound, the ceiling) starts when it is
         # ready, not when its setup began (ADR 0097: a ready workspace with no

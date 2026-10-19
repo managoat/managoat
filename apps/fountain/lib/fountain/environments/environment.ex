@@ -24,6 +24,10 @@ defmodule Fountain.Environments.Environment do
 
   schema "environments" do
     field :inference_revision, Ecto.UUID, read_after_writes: true
+    # Replaced by a trigger on every update that changes a provision-time
+    # field (`Fountain.Workspaces.Staleness.fields/0`), and only then: a
+    # sandbox records the one it was built from (#2987). Never cast.
+    field :revision, Ecto.UUID, read_after_writes: true
     field :name, :string
     field :packages, :map, default: %{}
     field :env_vars, :map, default: %{}

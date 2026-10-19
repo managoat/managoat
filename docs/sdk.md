@@ -418,8 +418,15 @@ many you keep. Delete the ones you are done with. Read
 [About workspaces](concepts/workspaces.md) and
 [Run several agents on one machine](guides/agents-in-one-workspace.md).
 
+A workspace says whether its machine is behind its environment: `stale`, and
+`changed_fields`, the names (never the values) of the environment's fields
+that changed since the machine was built, typed as `WorkspaceField[]`, beside
+`revision` and `built_from_revision`.
+
 `events()` also carries a `workspace.status` frame, `{workspace_id, name,
-status, error}`, when one of your workspaces changes status, as it carries the
+status, error, revision, built_from_revision, stale, changed_fields}`, when
+one of your workspaces changes status or an edit to a ready one's environment
+moves its revision, as it carries the
 `conversations` change notice, `{reason}`. Neither is a log event, and
 neither is replayed after a reconnect. The SDK sets each one's `kind` to its
 event name, so a switch on `kind` tells all four apart and narrows the type:

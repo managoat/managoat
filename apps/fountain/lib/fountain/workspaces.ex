@@ -48,7 +48,9 @@ defmodule Fountain.Workspaces do
 
   alias Fountain.Conversations.Conversation
   alias Fountain.Conversations.Sandbox
+  alias Fountain.Environments.Environment
   alias Fountain.Repo
+  alias Fountain.Workspaces.Staleness
   alias Fountain.Workspaces.Workspace
 
   @terminal_statuses ~w(terminated failed)
@@ -742,8 +744,91 @@ defmodule Fountain.Workspaces do
   end
 
   @doc """
+  How each of `workspaces` stands against its environment as it is now
+  (`Fountain.Workspaces.Staleness`, #2987), given `sandboxes`, each one's
+  current sandbox (`current_sandboxes/1`). One query for the environments,
+  each used only where its owner is the workspace's.
+  """
+  @spec staleness([Workspace.t()], %{Ecto.UUID.t() => Sandbox.t()}) ::
+          %{Ecto.UUID.t() => Staleness.t()}
+  def staleness(workspaces, sandboxes) when is_list(workspaces) and is_map(sandboxes) do
+    envs = environments_of(workspaces)
+
+    Map.new(workspaces, fn %Workspace{} = w ->
+      env =
+        case Map.get(envs, w.environment_id) do
+          %Environment{user_id: user_id} = env when user_id == w.user_id -> env
+          _ -> nil
+        end
+
+      {w.id, Staleness.of(Map.get(sandboxes, w.id), env)}
+    end)
+  end
+
+  # ownership: each environment is used above only for a workspace of its
+  # own owner.
+  defp environments_of(workspaces) do
+    case workspaces |> Enum.map(& &1.environment_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() do
+      [] -> %{}
+      ids -> from(e in Environment, where: e.id in ^ids) |> Repo.all() |> Map.new(&{&1.id, &1})
+    end
+  end
+
+  @doc """
+  Tell the account's clients how each of its ready explicit workspaces on
+  `env` now stands, after an edit that moved the environment's `revision`
+  (`Fountain.Environments.update_environment/3`, #2987): one
+  `workspace.status` event per such workspace whose machine is live, with
+  `stale` and `changed_fields` as `GET /api/workspaces/:id` gives them. Sent
+  for every such edit, so a client also hears an edit that is reverted.
+
+  Three queries however many workspaces share the environment (the
+  workspaces, their current sandboxes and the environment as it is now) and
+  one local broadcast each, all on the owner's one topic. An implicit
+  workspace is not told: its conversation's own stream reports its machine.
+  Best effort and outside every transaction: a fault is logged and the edit
+  stands.
+  """
+  @spec environment_changed(Environment.t()) :: :ok
+  def environment_changed(%Environment{id: env_id, user_id: user_id}) when is_binary(user_id) do
+    workspaces =
+      Repo.all(
+        from(w in Workspace,
+          where:
+            w.user_id == ^user_id and w.environment_id == ^env_id and not w.implicit and
+              w.status == "ready"
+        )
+      )
+
+    if workspaces != [] do
+      sandboxes = current_sandboxes(workspaces)
+      standing = staleness(workspaces, sandboxes)
+
+      for %Workspace{id: id} = workspace <- workspaces, live?(Map.get(sandboxes, id)) do
+        publish_status(workspace, Map.fetch!(standing, id))
+      end
+    end
+
+    :ok
+  rescue
+    error in [Postgrex.Error, DBConnection.ConnectionError] ->
+      Logger.warning(
+        "environment #{env_id}: its workspaces were not told of the edit: " <>
+          Exception.message(error)
+      )
+
+      :ok
+  end
+
+  def environment_changed(%Environment{}), do: :ok
+
+  defp live?(%Sandbox{status: status}), do: status not in @terminal_statuses
+  defp live?(_none), do: false
+
+  @doc """
   Subscribe the caller to `user_id`'s explicit workspaces' status changes:
-  `{:workspace_status, %{workspace_id:, name:, status:, error:}}`.
+  `{:workspace_status, %{workspace_id:, name:, status:, error:, revision:,
+  built_from_revision:, stale:, changed_fields:}}`.
   """
   @spec subscribe(Ecto.UUID.t()) :: :ok | {:error, term()}
   def subscribe(user_id) when is_binary(user_id),
@@ -752,10 +837,16 @@ defmodule Fountain.Workspaces do
   defp topic(user_id), do: "workspaces:" <> user_id
 
   @doc false
-  # Broadcast an explicit workspace's status as it now stands.
-  @spec publish_status(Workspace.t()) :: :ok
-  def publish_status(%Workspace{implicit: false, user_id: user_id} = workspace)
+  # Broadcast an explicit workspace's status as it now stands, with how its
+  # machine stands against its environment (#2987): read here unless the
+  # caller has it already.
+  @spec publish_status(Workspace.t(), Staleness.t() | nil) :: :ok
+  def publish_status(workspace, standing \\ nil)
+
+  def publish_status(%Workspace{implicit: false, user_id: user_id} = workspace, standing)
       when is_binary(user_id) do
+    standing = standing || standing_of(workspace)
+
     Phoenix.PubSub.broadcast(
       Fountain.PubSub,
       topic(user_id),
@@ -764,14 +855,23 @@ defmodule Fountain.Workspaces do
          workspace_id: workspace.id,
          name: workspace.name,
          status: workspace.status,
-         error: workspace.error
+         error: workspace.error,
+         revision: standing.revision,
+         built_from_revision: standing.built_from_revision,
+         stale: standing.stale,
+         changed_fields: standing.changed_fields
        }}
     )
 
     :ok
   end
 
-  def publish_status(%Workspace{}), do: :ok
+  def publish_status(%Workspace{}, _standing), do: :ok
+
+  defp standing_of(%Workspace{id: id} = workspace) do
+    workspaces = [workspace]
+    workspaces |> staleness(current_sandboxes(workspaces)) |> Map.fetch!(id)
+  end
 
   @doc """
   The machine's transport relay owner on the sandbox behind `sandbox_id`
