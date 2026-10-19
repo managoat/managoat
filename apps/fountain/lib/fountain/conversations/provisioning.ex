@@ -675,7 +675,7 @@ defmodule Fountain.Conversations.Provisioning do
     result =
       Retry.with_backoff(
         fn ->
-          case Sandbox.exec(handle, "bash", ["-lc", cmd],
+          case Sandbox.exec(handle, "bash", ["-c", login_script(cmd)],
                  env: sprite_env,
                  stderr_to_stdout: true,
                  timeout: 600_000
@@ -841,6 +841,57 @@ defmodule Fountain.Conversations.Provisioning do
       nil
   end
 
+  # The steps whose output is the user's to read (a package install, a clone,
+  # the setup script) run their command in a login shell, as they always have:
+  # that is what puts the sandbox's own PATH and the image's language
+  # variables on it (`NVM_DIR`, on a sprite). But a step's output is what its
+  # command printed, not what the startup files printed on the way in (#3026).
+  # A sprite's `~/.profile` sources its `~/.bashrc`, which runs `bind`
+  # unguarded, and bash warns "line editing not enabled" for that in any
+  # shell that is not interactive: two lines at the top of every step, and two
+  # of the lines a failed setup script's error quotes.
+  #
+  # So the login shell reads its startup files with stderr on /dev/null, and
+  # gets it back, from fd 9 where it waited, before the command's first line.
+  # Bash reads `BASH_ENV` after a non-interactive login shell's profiles and
+  # before the `-c` command, so a `BASH_ENV` file does that. It then puts back
+  # the `BASH_ENV` the environment had, sourcing it as bash would have, or
+  # unsets it, so that no shell the command starts reads ours.
+  #
+  # Bash skips `BASH_ENV` in posix mode (`POSIXLY_CORRECT`, `SHELLOPTS`, a
+  # profile's `set -o posix`), and a profile can set `BASH_ENV` itself; either
+  # would leave the command's own stderr on /dev/null. The same line as the
+  # command's first therefore puts stderr back too if fd 9 is still open. It
+  # cannot do it alone: bash parses the whole first command before running
+  # any of it, so a syntax error there would go to /dev/null.
+  #
+  # The command still runs in the login shell itself, as `bash -lc` ran it:
+  # the same `$0`, arguments and line numbers, the profiles' functions and
+  # unexported variables. What a startup file prints on stdout still shows;
+  # what it prints on stderr, its own errors included, does not.
+  @login_shell ~S"""
+  login_shell() {
+    local startup rc
+    startup=$(mktemp) || return 1
+    {
+      echo 'exec 2>&9 9>&-'
+      if [ -n "${BASH_ENV-}" ]; then
+        printf 'BASH_ENV=%q\n. "$BASH_ENV"\n' "$BASH_ENV"
+      else
+        echo 'unset BASH_ENV'
+      fi
+    } >"$startup"
+    BASH_ENV=$startup bash -lc "{ : >&9; } 2>/dev/null && exec 2>&9 9>&-; $1" 9>&2 2>/dev/null
+    rc=$?
+    rm -f -- "$startup"
+    return "$rc"
+  }
+  """
+
+  @doc false
+  # The shell for `bash -c` that runs `cmd` in `@login_shell`.
+  def login_script(cmd), do: @login_shell <> "login_shell " <> shell_quote(cmd) <> "\n"
+
   # The setup step ends when the user's script exits, not when the exec's
   # output pipe closes (#2558). A process the script leaves running — a dev
   # server, a keepalive loop, a `sleep` it killed the parent of — inherits that
@@ -855,7 +906,7 @@ defmodule Fountain.Conversations.Provisioning do
   # loop polls every 0.1 s so the step still ends within that of the script.
   @stream_wrapper ~S"""
   out=$(mktemp) || exit 1
-  bash -lc "$1" >"$out" 2>&1 </dev/null &
+  login_shell "$1" >"$out" 2>&1 </dev/null &
   pid=$!
   sent=0
   send_new() {
@@ -882,7 +933,7 @@ defmodule Fountain.Conversations.Provisioning do
   """
 
   @doc false
-  def stream_wrapper, do: @stream_wrapper
+  def stream_wrapper, do: @login_shell <> @stream_wrapper
 
   def run_setup_script(_handle, nil, _sprite_env, _conv_id), do: :ok
   def run_setup_script(_handle, %{setup_script: ""}, _sprite_env, _conv_id), do: :ok
@@ -955,7 +1006,7 @@ defmodule Fountain.Conversations.Provisioning do
       Sandbox.exec(
         handle,
         "bash",
-        ["-c", prelude <> @stream_wrapper, name, script],
+        ["-c", prelude <> stream_wrapper(), name, script],
         [stderr_to_stdout: true, on_output: sink] ++ opts
       )
 

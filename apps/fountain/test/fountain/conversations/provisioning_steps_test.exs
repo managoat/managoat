@@ -79,6 +79,27 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
     end
   end
 
+  # A HOME laid out like a sprite's (#3026): ~/.profile sources ~/.bashrc,
+  # which runs `bind` unguarded, sets the image's language variable and
+  # defines a function.
+  defp sprite_home(home) do
+    File.mkdir_p!(Path.join(home, ".local/bin"))
+
+    File.write!(Path.join(home, ".profile"), ~S"""
+    if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi
+    if [ -d "$HOME/.local/bin" ]; then PATH="$HOME/.local/bin:$PATH"; fi
+    """)
+
+    File.write!(Path.join(home, ".bashrc"), ~S"""
+    bind '"\e[A": history-search-backward'
+    bind '"\e[B": history-search-forward'
+    export NVM_DIR=/opt/nvm
+    from_bashrc() { echo ok; }
+    """)
+
+    home
+  end
+
   # The stage events of one stage as `{state, meta}` pairs, in order.
   defp stages(conv_id, stage) do
     Fountain.Repo.all(
@@ -235,6 +256,43 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
                    where: e.conversation_id == ^conv.id and e.kind == "output"
                  )
                )
+    end
+
+    # #3026: a sprite's ~/.profile sources a ~/.bashrc that runs `bind`, and
+    # every non-interactive login shell warned about it at the top of the
+    # step's output. The wrapper is run by a real bash, in a HOME laid out
+    # like a sprite's.
+    @tag :tmp_dir
+    test "the output is the script's, not the startup files' warnings", %{tmp_dir: home} do
+      conv = insert_conversation()
+      sprite_home(home)
+
+      stub(Managoat.Sandbox, :exec, fn _handle, "bash", args, opts ->
+        {output, code} =
+          System.cmd("bash", args, env: [{"HOME", home} | opts[:env]], stderr_to_stdout: true)
+
+        {:ok, output, code}
+      end)
+
+      # What the login shell gave the script before is still there: the
+      # profile's variable, its function, its PATH entry, no arguments, and a
+      # stderr of its own. The startup hook is gone from what it starts.
+      script = ~S"""
+      echo "nvm=$NVM_DIR args=$# fn=$(from_bashrc) path=${PATH%%:*}"
+      echo "env=[${BASH_ENV-unset}] child=[$(bash -c 'echo "${BASH_ENV-unset}"')]"
+      echo oops >&2
+      exit 3
+      """
+
+      assert {:error, {:setup_exit, 3, tail}} =
+               Provisioning.run_setup_script(handle(), %{setup_script: script}, [], conv.id)
+
+      expected =
+        "nvm=/opt/nvm args=0 fn=ok path=#{home}/.local/bin\n" <>
+          "env=[unset] child=[unset]\noops\n"
+
+      assert tail == expected
+      assert Enum.map_join(setup_output(conv.id), & &1.data) == expected
     end
 
     # #2550: output reaches the log while the script runs, as whole lines, not
@@ -611,6 +669,79 @@ defmodule Fountain.Conversations.ProvisioningStepsTest do
 
     test "a runtime that is not ACP-driven installs nothing" do
       assert :ok = Provisioning.prepare_acp_adapter(handle(), "legacy", [])
+    end
+  end
+
+  describe "login_script/1" do
+    # The clone's shell (#3026): the command's own stderr stays on stderr, and
+    # only the startup files' is dropped.
+    @tag :tmp_dir
+    test "runs the command in a login shell, without the startup files' stderr",
+         %{tmp_dir: home} do
+      sprite_home(home)
+      err = Path.join(home, "err")
+      script = Provisioning.login_script(~S[echo "out $NVM_DIR"; echo "it's err" >&2; exit 5])
+
+      assert {"out /opt/nvm\n", 5} ==
+               System.cmd("bash", ["-c", "exec 2>\"$ERR\"\n" <> script],
+                 env: [{"HOME", home}, {"ERR", err}]
+               )
+
+      assert File.read!(err) == "it's err\n"
+    end
+
+    # Bash skips BASH_ENV in posix mode, which a tenant's env can turn on; the
+    # command's stderr must not go to /dev/null with it.
+    @tag :tmp_dir
+    test "keeps the command's stderr in posix mode", %{tmp_dir: home} do
+      sprite_home(home)
+      script = Provisioning.login_script("echo out; echo err >&2; exit 4")
+
+      assert {"out\nerr\n", 4} ==
+               System.cmd("bash", ["-c", script],
+                 env: [{"HOME", home}, {"POSIXLY_CORRECT", "1"}],
+                 stderr_to_stdout: true
+               )
+    end
+
+    # A syntax error in the first command is reported, not swallowed with the
+    # startup files' stderr, at the line it was always reported at.
+    @tag :tmp_dir
+    test "reports a syntax error in the script's first command", %{tmp_dir: home} do
+      sprite_home(home)
+      script = Provisioning.login_script("if true; then\necho x\n")
+
+      assert {out, 2} =
+               System.cmd("bash", ["-c", script], env: [{"HOME", home}], stderr_to_stdout: true)
+
+      assert out =~ "syntax error"
+      refute out =~ "bind"
+    end
+
+    # The environment's own BASH_ENV is still read by the login shell and
+    # still reaches the shells the command starts.
+    @tag :tmp_dir
+    test "keeps the environment's BASH_ENV", %{tmp_dir: home} do
+      sprite_home(home)
+      user_env = Path.join(home, "user_env")
+      File.write!(user_env, "from_user_env() { echo user; }\n")
+      script = Provisioning.login_script(~S[from_user_env; bash -c 'echo "child $BASH_ENV"'])
+
+      assert {"user\nchild #{user_env}\n", 0} ==
+               System.cmd("bash", ["-c", script],
+                 env: [{"HOME", home}, {"BASH_ENV", user_env}],
+                 stderr_to_stdout: true
+               )
+    end
+
+    @tag :tmp_dir
+    test "without it, the same HOME warns: the fixture is a sprite's", %{tmp_dir: home} do
+      sprite_home(home)
+
+      assert {out, 0} =
+               System.cmd("bash", ["-lc", "true"], env: [{"HOME", home}], stderr_to_stdout: true)
+
+      assert out =~ "bind: warning: line editing not enabled"
     end
   end
 end

@@ -119,6 +119,8 @@ defmodule Fountain.Conversations.ProvisioningTest do
 
       assert_received {:script, script}
       assert script =~ "git -c http.proxyAuthMethod=basic clone --depth 50"
+      # In the login shell without the startup files' stderr (#3026).
+      assert String.starts_with?(script, "login_shell() {")
     end
 
     # A sprite answers 503 ("service temporarily unavailable, please retry")
