@@ -18,7 +18,10 @@ defmodule Fountain.Conversations.PromptDelivery do
 
   alias Fountain.Conversations.{ConversationServer, Turn}
 
-  @carried [:client_request_id, :response_timing, :prompt_receipt_id]
+  # `:withdrawn_turn` is the number of the turn a prompt was withdrawn from
+  # when its machine was lost (`MachineLoss`): a report that it did not run
+  # again ends that turn for the client following it.
+  @carried [:client_request_id, :response_timing, :prompt_receipt_id, :withdrawn_turn]
 
   @type travelling :: keyword()
   @type wake_prompt :: nil | String.t() | {String.t(), travelling()}
@@ -46,6 +49,7 @@ defmodule Fountain.Conversations.PromptDelivery do
        when is_integer(time) and path in ["cold", "warm", "wake"], do: true
 
   defp carriable?(:prompt_receipt_id, value) when is_binary(value), do: true
+  defp carriable?(:withdrawn_turn, value) when is_integer(value) and value > 0, do: true
 
   defp carriable?(_key, _value), do: false
 

@@ -831,4 +831,15 @@ A PR sequence, each releasable alone:
   without one, where the wake's retire used to add a `replaced` notice that
   contradicted it. The same failure existed for a plain conversation before
   workspaces; it recovered only once the server stopped for another reason,
-  such as the idle park.
+  such as the idle park. Calls made here: a prompt whose re-run cannot be
+  admitted is reported with a `turn` `failed` stage under the withdrawn turn's
+  number (`reason: "machine_lost"`, retryable), because a client that saw the
+  turn start no longer reads `wake` stages; a turn the machine's destroy had
+  already ended (a co-tenant prompted in the same instant) is reported as not
+  run rather than run again under the next number; a conversation gets at
+  most one automatic rebuild in ten minutes, after which a lost machine is
+  retired and the turn fails as before, so a provider that keeps losing what
+  it builds cannot loop billable provisions; and a server that finds its
+  machine gone while attaching (a workspace launch onto a `ready` machine
+  nobody knew was lost) retires it the same quiet way and hands the prompt it
+  was started for to the rebuild.

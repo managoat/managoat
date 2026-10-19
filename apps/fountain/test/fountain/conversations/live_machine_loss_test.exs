@@ -55,20 +55,28 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
     :ok
   end
 
-  # The servers this test started, by conversation, stopped before the
-  # database owner goes.
+  # The servers this test started, and the hand-off's tasks (which watch a
+  # prompt until a turn takes it), stopped before the database owner goes.
   defp stop_servers do
     for {_id, pid, _type, _mods} <-
           DynamicSupervisor.which_children(Fountain.ConversationSupervisor),
         is_pid(pid) do
-      ref = Process.monitor(pid)
-      DynamicSupervisor.terminate_child(Fountain.ConversationSupervisor, pid)
+      stop(pid, &DynamicSupervisor.terminate_child(Fountain.ConversationSupervisor, &1))
+    end
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        2_000 -> Process.demonitor(ref, [:flush])
-      end
+    for pid <- Task.Supervisor.children(Fountain.TaskSupervisor) do
+      stop(pid, &Task.Supervisor.terminate_child(Fountain.TaskSupervisor, &1))
+    end
+  end
+
+  defp stop(pid, terminate) do
+    ref = Process.monitor(pid)
+    terminate.(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      2_000 -> Process.demonitor(ref, [:flush])
     end
   end
 
@@ -168,6 +176,15 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
     |> Conversations._unsafe_list_log_events()
     |> Enum.filter(&(&1.kind == "stage" and &1.stage == stage))
     |> Enum.map(&{&1.state, Jason.decode!(&1.data)})
+  end
+
+  defp failed_stage(conv_id, stage),
+    do: Enum.find(stages(conv_id, stage), &match?({"failed", _}, &1))
+
+  defp receipts?(conv_id) do
+    Repo.exists?(
+      from r in Fountain.Conversations.PromptReceipt, where: r.conversation_id == ^conv_id
+    )
   end
 
   defp turns(conv_id) do
@@ -325,6 +342,214 @@ defmodule Fountain.Conversations.LiveMachineLossTest do
       assert Process.alive?(server)
       assert Repo.reload!(old).status == "ready"
       assert [%Turn{status: "failed"}] = turns(conv.id)
+    end
+  end
+
+  describe "the hand-off's edges" do
+    setup do
+      user = insert_verified_user()
+      agent = insert_agent(user_id: user.id)
+      old = insert_sandbox(user_id: user.id, agent_id: agent.id, status: "ready")
+      {:ok, user: user, agent: agent, old: old}
+    end
+
+    test "the prompt's images and client_request_id travel to the re-run, and the trail says why",
+         ctx do
+      conv = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      _server = live_server(conv)
+      lose_machine(ctx.old.machine_name)
+      images = [%{media_type: "image/png", data: "not-really-a-png"}]
+
+      capture_log(fn ->
+        assert :ok =
+                 ConversationServer.send_prompt(conv.id, "look", images,
+                   client_request_id: "req-3005"
+                 )
+
+        moved_off(conv, ctx.old)
+        assert_receive {:spawned, _name}, 10_000
+      end)
+
+      assert [%Turn{turn_number: 1, client_request_id: "req-3005"} = turn] = turns(conv.id)
+      assert Conversations._unsafe_list_turn_images(turn.id) == images
+
+      assert [%{metadata: %{"turn_number" => 1, "reason" => "machine_lost"}}] =
+               Fountain.Audit.list_for_user(ctx.user.id,
+                 action_prefix: "conversation.turn.withdrawn"
+               )
+
+      refute receipts?(conv.id)
+    end
+
+    test "a rebuild that cannot run ends the withdrawn turn for its client", ctx do
+      conv = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      _server = live_server(conv)
+      lose_machine(ctx.old.machine_name)
+      stub(Fountain.Quotas, :check_fleet_ceiling, fn _opts -> {:error, :fleet_full} end)
+      reject(&Managoat.Sandbox.Sprites.create/2)
+
+      capture_log(fn ->
+        assert :ok = ConversationServer.send_prompt(conv.id, "hello", [], client_request_id: "r1")
+        eventually(fn -> failed_stage(conv.id, "turn") end)
+      end)
+
+      assert {"failed", ended} = failed_stage(conv.id, "turn")
+      assert ended["turn_number"] == 1
+      assert ended["reason"] == "machine_lost"
+      assert ended["client_request_id"] == "r1"
+      assert ended["retryable"] == true
+      assert turns(conv.id) == []
+      assert Repo.reload!(ctx.old).status == "terminated"
+      refute receipts?(conv.id)
+    end
+
+    test "a turn the machine's destroy already ended is reported, not run again", ctx do
+      # Two conversations prompted at once on one lost machine: the other's
+      # destroy ends this turn before this server withdraws it.
+      explicit_workspace!(ctx.old)
+      conv = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      _server = live_server(conv)
+      lose_machine(ctx.old.machine_name)
+      once = :counters.new(1, [])
+      old_id = ctx.old.id
+
+      stub(Managoat.Sandbox.Sprites, :get, fn _handle ->
+        if :counters.get(once, 1) == 0 do
+          :counters.add(once, 1, 1)
+          Fountain.Machines.Admission.end_turns_on(old_id, "machine_destroyed")
+        end
+
+        {:error, :not_found}
+      end)
+
+      reject(&Managoat.Sandbox.Sprites.create/2)
+
+      capture_log(fn ->
+        assert :ok = ConversationServer.send_prompt(conv.id, "hello", [])
+        eventually(fn -> failed_stage(conv.id, "wake") end)
+      end)
+
+      assert [%Turn{turn_number: 1, status: "interrupted"}] = turns(conv.id)
+
+      assert {"failed", %{"reason" => "machine_lost", "retryable" => true}} =
+               failed_stage(conv.id, "wake")
+
+      assert Repo.reload!(ctx.old).status == "terminated"
+      assert Repo.reload!(conv).sandbox_id == ctx.old.id
+      refute receipts?(conv.id)
+    end
+
+    test "a machine lost again within the window is retired without a second automatic rebuild",
+         ctx do
+      conv = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      _server = live_server(conv)
+      lose_machine(ctx.old.machine_name)
+      test = self()
+      creates = :counters.new(1, [])
+      lost = :ets.new(:lost_machines, [:public])
+      :ets.insert(lost, {ctx.old.machine_name})
+
+      stub(Managoat.Sandbox.Sprites, :create, fn name, _opts ->
+        :counters.add(creates, 1, 1)
+        {:ok, Managoat.Sandbox.Sprites.build_handle(name)}
+      end)
+
+      # Every machine answers while it is built, and is gone once the prompt
+      # has tried to start an adapter on it.
+      stub(Managoat.Sandbox.Sprites, :get, fn handle ->
+        if :ets.lookup(lost, handle.name) == [],
+          do: {:ok, %{status: :running, raw: %{}}},
+          else: {:error, :not_found}
+      end)
+
+      stub(Managoat.Sandbox.Sprites, :spawn, fn handle, _cmd, _args, _opts ->
+        :ets.insert(lost, {handle.name})
+        send(test, {:spawn_failed, handle.name})
+        {:error, {:provider, :sprites, %Sprites.Error.APIError{status: 404}}}
+      end)
+
+      capture_log(fn ->
+        assert :ok = ConversationServer.send_prompt(conv.id, "hello", [])
+
+        # The rebuilt machine is lost as soon as the prompt reaches it, so it
+        # is retired almost as soon as it is ready.
+        next =
+          eventually(fn ->
+            case Repo.reload!(conv).sandbox_id do
+              id when id != ctx.old.id -> Repo.get!(Sandbox, id)
+              _ -> nil
+            end
+          end)
+
+        assert_receive {:spawn_failed, name}, 10_000
+        assert name == next.machine_name
+
+        eventually(fn -> Repo.reload!(next).status == "terminated" end)
+        eventually(fn -> match?([%Turn{status: "failed"}], turns(conv.id)) end)
+        eventually(fn -> is_nil(ConversationServer.whereis(conv.id)) end)
+      end)
+
+      assert :counters.get(creates, 1) == 1
+    end
+
+    test "the wake's retire of a lost machine stops a co-tenant quietly, leaving it one note",
+         ctx do
+      explicit_workspace!(ctx.old)
+      a = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      b = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      server_b = live_server(b)
+      ref_b = Process.monitor(server_b)
+      lose_machine(ctx.old.machine_name)
+
+      capture_log(fn ->
+        # `a` has no server: its prompt takes the wake, which probes, retires
+        # the machine and rebuilds it.
+        assert :ok = ConversationServer.send_prompt(a.id, "hello", [])
+        moved_off(a, ctx.old)
+        assert_receive {:DOWN, ^ref_b, :process, _, _}, 5_000
+        eventually(fn -> Repo.reload!(b).sandbox_id != ctx.old.id end)
+      end)
+
+      assert [{"done", note}] =
+               Enum.filter(stages(b.id, "sandbox"), &match?({_, %{"message" => _}}, &1))
+
+      assert note["reason"] == "rebuilt"
+    end
+
+    test "a server that finds its machine gone while attaching hands its prompt to the rebuild",
+         ctx do
+      conv = setup_conversation(ctx.user, ctx.agent, ctx.old)
+      lose_machine(ctx.old.machine_name)
+      name = ctx.old.machine_name
+
+      # The provider's round trip, which the queued prompt arrives within.
+      stub(Managoat.Sandbox.Sprites, :get, fn handle ->
+        if handle.name == name do
+          Process.sleep(100)
+          {:error, :not_found}
+        else
+          {:ok, %{status: :running, raw: %{}}}
+        end
+      end)
+
+      capture_log(fn ->
+        # As a workspace launch onto a `ready` machine starts one.
+        {:ok, _} =
+          Fountain.Conversations.Wake.start_conversation_server(
+            conv,
+            ctx.old.id,
+            @fake,
+            "hello",
+            []
+          )
+
+        {_moved, next} = moved_off(conv, ctx.old)
+        assert_receive {:spawned, spawned}, 10_000
+        assert spawned == next.machine_name
+      end)
+
+      assert [%Turn{turn_number: 1, prompt: "hello"}] = turns(conv.id)
+      assert Repo.reload!(ctx.old).status == "terminated"
     end
   end
 end

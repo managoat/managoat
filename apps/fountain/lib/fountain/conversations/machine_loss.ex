@@ -1,6 +1,6 @@
 defmodule Fountain.Conversations.MachineLoss do
   @moduledoc """
-  A live server that finds its machine gone at the provider (#3005; ADR 0097,
+  A server that finds its machine gone at the provider (#3005; ADR 0097,
   "Sandbox lost").
 
   A conversation's server stays up between turns, holding its machine's
@@ -18,7 +18,7 @@ defmodule Fountain.Conversations.MachineLoss do
   wake's probe and the reattach already treat as definitive; a transient
   error, or a 404 from the exec endpoint while the machine itself still
   answers, fails the turn as before, and the machine is left alone. When the
-  machine is gone, `hand_off/2`:
+  machine is gone, `hand_off/3`:
 
     1. withdraws the turn (`Machines.Machine.end_turn/3`, `:withdraw`). Its
        adapter never started, so its prompt never reached an agent, and it
@@ -35,28 +35,66 @@ defmodule Fountain.Conversations.MachineLoss do
        machine retired and rebuilds it in the conversation's workspace, as it
        does for a prompt to a conversation with no server (#2993): every live
        conversation of the workspace follows the new machine with its
-       transcript kept and its session cleared, and the prompt runs there. A
-       wake that fails reports the prompt as not run, as a background wake
-       does.
+       transcript kept and its session cleared, and the prompt runs there.
 
-  The turn is withdrawn before the machine is retired, because the destroy
-  ends every turn still running on the machine. A co-tenant's turn admitted
-  in between is ended that way, as `interrupted`; its own server then finds
-  nothing to withdraw, and its prompt runs as the next turn instead. Either
-  way the prompt runs, because its adapter never started.
+  **A prompt that does not run again is reported, on its turn.** A client
+  saw the withdrawn turn start, so a `wake` `failed` alone does not reach it
+  (the SDK and the CLI stop reading those once their turn has started). Until
+  a turn takes the prompt, its receipt is watched (`watch/3`): a wake that
+  fails, a rebuild that stops before admitting it, or a refusal of it, is
+  reported as not run with a `turn` `failed` stage under the withdrawn turn's
+  number, reason `machine_lost` (`Wake.report_unrun_prompt/3`, through the
+  `:withdrawn_turn` the prompt carries).
+
+  Two limits keep the hand-off honest:
+
+    * **A turn already ended is not run again.** The destroy of a lost machine
+      ends every turn still running on it, so a co-tenant's turn admitted in
+      the instant before its own server withdraws it is already `interrupted`
+      (`machine_destroyed`) when that server gets there. Its client has seen
+      the turn end; running the prompt again under the next number would
+      answer a turn nobody is waiting on. Such a prompt is reported as not
+      run, retryably.
+    * **One automatic rebuild per conversation in ten minutes.** A machine
+      that is gone again within that time (a provider that keeps losing what
+      it builds) is retired and the turn fails as it always did, so the next
+      rebuild waits for the next prompt rather than looping on billable
+      provisions.
+
+  `requeue/1` is the reattach's half: a server that finds its machine gone
+  before it has attached (a workspace launch onto a `ready` machine nobody
+  knew was lost) hands the prompt it was started for to the same rebuild.
   """
 
   require Logger
   require OpenTelemetry.Tracer
 
+  import Ecto.Query, only: [from: 2]
+
   alias Fountain.Conversations
-  alias Fountain.Conversations.{PromptDelivery, PromptReceipt, Termination, Wake}
+
+  alias Fountain.Conversations.{
+    ConversationServer,
+    PromptDelivery,
+    PromptReceipt,
+    Termination,
+    TurnMachine,
+    Wake
+  }
+
   alias Fountain.Machines.Machine
+  alias Fountain.Repo
 
   # How long the hand-off waits for the stopping server before it wakes the
   # conversation. The server stops on the next message it reads, so this is
   # a bound on a mailbox, not on any provider call.
   @stop_wait_ms 30_000
+
+  # How often the watch re-reads the prompt's receipt while a server holds it.
+  @watch_poll_ms 1_000
+
+  # At most one automatic rebuild per conversation in this window.
+  @hand_off_window_s 600
 
   @doc """
   Whether the provider says the machine behind `handle` does not exist. Only
@@ -71,15 +109,29 @@ defmodule Fountain.Conversations.MachineLoss do
   Hand the prompt of `turn`, whose adapter did not start on a machine
   `gone?/1` has just found gone, to that machine's rebuild, and stop the
   server `state` is. See the moduledoc. Called in the server's own process,
-  as its failed launch's last act.
+  as its failed launch's last act, with the failure's `detail`.
   """
-  @spec hand_off(map(), Fountain.Conversations.Turn.t()) :: :ok
-  def hand_off(%{conversation_id: conv_id, sandbox_id: sandbox_id}, turn) do
-    Logger.warning(
-      "conv #{conv_id}: machine #{sandbox_id} is gone at the provider; " <>
-        "rebuilding it for turn #{turn.turn_number}'s prompt"
-    )
+  @spec hand_off(map(), Fountain.Conversations.Turn.t(), String.t()) :: :ok
+  def hand_off(%{conversation_id: conv_id, sandbox_id: sandbox_id} = state, turn, detail) do
+    if handed_off_recently?(state) do
+      Logger.warning(
+        "conv #{conv_id}: machine #{sandbox_id} is gone at the provider again; " <>
+          "retiring it, and leaving the rebuild to the next prompt"
+      )
 
+      TurnMachine.fail_before_start(turn, conv_id, sandbox_id, detail)
+      retire_and_stop(sandbox_id, conv_id)
+    else
+      Logger.warning(
+        "conv #{conv_id}: machine #{sandbox_id} is gone at the provider; " <>
+          "rebuilding it for turn #{turn.turn_number}'s prompt"
+      )
+
+      withdraw_and_rewake(state, turn)
+    end
+  end
+
+  defp withdraw_and_rewake(%{conversation_id: conv_id, sandbox_id: sandbox_id}, turn) do
     # Read before the withdrawal, which deletes them with the turn.
     # ownership: the server's own turn.
     images = Conversations._unsafe_list_turn_images(turn.id)
@@ -89,15 +141,34 @@ defmodule Fountain.Conversations.MachineLoss do
     meta =
       PromptReceipt.accept(
         conv_id,
-        PromptDelivery.travelling(client_request_id: turn.client_request_id)
+        PromptDelivery.travelling(
+          client_request_id: turn.client_request_id,
+          withdrawn_turn: turn.turn_number
+        )
       )
 
-    _ = Machine.end_turn(turn, :withdraw, sandbox_id: sandbox_id)
+    withdrawn = Machine.end_turn(turn, :withdraw, sandbox_id: sandbox_id)
 
     # The turn never started; close the span its launch opened.
     OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, "machine lost"))
     OpenTelemetry.Tracer.end_span()
 
+    retire_and_stop(sandbox_id, conv_id)
+
+    case withdrawn do
+      {:ok, _turn} ->
+        rewake(self(), conv_id, turn.prompt, meta, images)
+
+      # Ended already (the machine's destroy ended it), or the conversation
+      # moved or ended: its client has seen the turn end. Not run again.
+      _not_withdrawn ->
+        Wake.report_unrun_prompt(conv_id, :machine_lost, Keyword.delete(meta, :withdrawn_turn))
+    end
+
+    :ok
+  end
+
+  defp retire_and_stop(sandbox_id, conv_id) do
     case retire(sandbox_id, conv_id, "system:conversation_server") do
       {:ok, _} ->
         :ok
@@ -106,9 +177,21 @@ defmodule Fountain.Conversations.MachineLoss do
         Logger.warning("conv #{conv_id}: lost machine not retired: #{inspect(reason)}")
     end
 
-    rewake(self(), conv_id, turn.prompt, meta, images)
     GenServer.cast(self(), {:machine_gone, sandbox_id, "reclaimed", "lost", nil})
-    :ok
+  end
+
+  # ownership: the server's own conversation, under its owner's id.
+  defp handed_off_recently?(%{conversation_id: conv_id, user_id: user_id}) do
+    since = DateTime.add(DateTime.utc_now(), -@hand_off_window_s, :second)
+
+    Repo.exists?(
+      from(e in Fountain.Audit.Event,
+        where:
+          e.user_id == ^user_id and e.action == "conversation.turn.withdrawn" and
+            e.inserted_at >= ^since and
+            fragment("?->>'conversation_id' = ?", e.metadata, ^conv_id)
+      )
+    )
   end
 
   @doc """
@@ -132,33 +215,109 @@ defmodule Fountain.Conversations.MachineLoss do
     )
   end
 
+  @doc """
+  Hand the prompts queued for this server, which has just found its machine
+  gone before attaching, to the machine's rebuild, as `hand_off/3` does once
+  the server is down. Called in the server's own process, before it stops.
+  No turn was opened for them, so there is nothing to withdraw.
+  """
+  @spec requeue(String.t()) :: :ok
+  def requeue(conv_id) do
+    receive do
+      {:"$gen_cast", {:initial_prompt, prompt, images}} ->
+        requeue_one(conv_id, prompt, images, [])
+        requeue(conv_id)
+
+      {:"$gen_cast", {:initial_prompt, prompt, images, meta}} ->
+        requeue_one(conv_id, prompt, images, meta)
+        requeue(conv_id)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp requeue_one(conv_id, prompt, images, meta) do
+    rewake(
+      self(),
+      conv_id,
+      prompt,
+      PromptReceipt.accept(conv_id, PromptDelivery.travelling(meta)),
+      images
+    )
+  end
+
   # After the server is down, or the wake would hand the prompt straight back
   # to it. In a task: the server is the process that is stopping.
   defp rewake(server, conv_id, prompt, meta, images) do
     {:ok, _pid} =
       Task.Supervisor.start_child(Fountain.TaskSupervisor, fn ->
-        ref = Process.monitor(server)
-
-        receive do
-          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
-        after
-          @stop_wait_ms -> Process.demonitor(ref, [:flush])
-        end
-
-        # ownership: the stopping server's own conversation.
-        case Wake.wake_conversation(conv_id, {prompt, meta}, images) do
-          {:ok, _conv} ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning(
-              "conv #{conv_id}: rebuild after a lost machine failed: #{inspect(reason)}"
-            )
-
-            Wake.report_unrun_prompt(conv_id, reason, meta)
+        if stopped?(server) do
+          wake(conv_id, prompt, meta, images)
+        else
+          Wake.report_unrun_prompt(conv_id, :machine_busy, meta)
         end
       end)
 
     :ok
   end
+
+  defp stopped?(server) do
+    ref = Process.monitor(server)
+
+    receive do
+      {:DOWN, ^ref, :process, _pid, _reason} -> true
+    after
+      @stop_wait_ms ->
+        Process.demonitor(ref, [:flush])
+        false
+    end
+  end
+
+  # ownership: the stopped server's own conversation.
+  defp wake(conv_id, prompt, meta, images) do
+    case Wake.wake_conversation(conv_id, {prompt, meta}, images) do
+      {:ok, _conv} ->
+        watch(conv_id, meta, System.monotonic_time(:millisecond) + watch_ms())
+
+      {:error, reason} ->
+        Logger.warning("conv #{conv_id}: rebuild after a lost machine failed: #{inspect(reason)}")
+        Wake.report_unrun_prompt(conv_id, reason, meta)
+    end
+  end
+
+  # Until a turn takes the prompt (admission resolves its receipt) or it is
+  # reported (so does the report). A server that stops still holding it (a
+  # rebuild refused, or one that failed before admitting it) reports it here.
+  defp watch(conv_id, meta, deadline) do
+    receipt = meta[:prompt_receipt_id]
+
+    cond do
+      not PromptReceipt.pending?(conv_id, receipt) ->
+        :ok
+
+      System.monotonic_time(:millisecond) > deadline ->
+        :ok
+
+      server = ConversationServer.whereis(conv_id) ->
+        ref = Process.monitor(server)
+
+        receive do
+          {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+        after
+          @watch_poll_ms -> Process.demonitor(ref, [:flush])
+        end
+
+        watch(conv_id, meta, deadline)
+
+      true ->
+        Wake.report_unrun_prompt(conv_id, :machine_lost, meta)
+    end
+  end
+
+  # The longest a rebuild can hold the prompt before admitting it: the
+  # provision's deadline, after waiting out a co-tenant's rebuild.
+  defp watch_ms,
+    do:
+      Fountain.Conversations.ProvisionWatchdog.deadline_ms() +
+        Fountain.Conversations.Rebuild.follow_wait_ms()
 end

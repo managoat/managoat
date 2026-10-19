@@ -174,7 +174,9 @@ turns. The next prompt to that conversation then finds it gone, and the same
 rebuild happens: the prompt runs on the new machine, under the turn number it
 was given. Managoat counts a machine as lost only when the provider says it
 does not exist. Any other provider error fails that one turn and leaves the
-machine alone.
+machine alone. A conversation gets one such automatic rebuild in ten minutes.
+If the new machine is lost again inside that time, the turn fails, and the
+next prompt rebuilds it.
 
 A workspace's `sandbox_id` names its current machine, and changes on a
 rebuild. Address the workspace, not the sandbox.

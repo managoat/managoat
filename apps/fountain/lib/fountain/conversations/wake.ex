@@ -743,7 +743,30 @@ defmodule Fountain.Conversations.Wake do
       prompt_receipt_id: meta[:prompt_receipt_id]
     })
 
+    end_withdrawn_turn(conv_id, reason, meta)
     Fountain.Conversations.PromptReceipt.resolve(conv_id, meta[:prompt_receipt_id])
+  end
+
+  # A prompt withdrawn from a turn whose machine was lost (#3005,
+  # `MachineLoss`): its client saw that turn start, and the SDK and the CLI
+  # stop reading `wake` stages once their turn has started, so the turn's own
+  # stage says it is over. By number: the row is gone, and a stage naming its
+  # id would point at nothing.
+  defp end_withdrawn_turn(conv_id, reason, meta) do
+    case meta[:withdrawn_turn] do
+      number when is_integer(number) ->
+        Conversations.publish_stage(conv_id, "turn", "failed", %{
+          turn_number: number,
+          reason: "machine_lost",
+          detail: failed_wake_reason(reason),
+          retryable: retryable_wake_failure?(reason),
+          exit_code: nil,
+          client_request_id: meta[:client_request_id]
+        })
+
+      _ ->
+        :ok
+    end
   end
 
   defp failed_wake_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
@@ -752,7 +775,8 @@ defmodule Fountain.Conversations.Wake do
 
   # The ones a retry of the same prompt can succeed on without the caller
   # changing anything: the provider or the fleet was busy.
-  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy)a
+  # `machine_lost`: the next prompt rebuilds the machine (ADR 0097).
+  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy machine_lost)a
 
   defp retryable_wake_failure?(reason) when is_atom(reason),
     do: reason in @retryable_wake_failures

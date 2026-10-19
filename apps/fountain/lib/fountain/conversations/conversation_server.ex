@@ -696,22 +696,11 @@ defmodule Fountain.Conversations.ConversationServer do
           retryable: false
         })
 
-        # A destroy, through the owner (ADR 0058 stage 7b), with the provider
-        # step skipped: this server has just asked and been told the machine
-        # does not exist, which is exactly what `provider: :already_gone` is
-        # for. `terminating_conversation_id: nil` keeps it forced — a home
-        # whose disk is gone is not a machine to keep for the conversation
-        # standing in front of it.
-        Termination._unsafe_destroy_machine(sandbox.id,
-          actor: "system:conversation_server",
-          destroy_reason: :provider_gone,
-          reason: "reattach_not_found",
-          terminating_conversation_id: nil,
-          provider: :already_gone
-        )
-
-        # Don't mark the conversation failed — the user can still send a
-        # prompt and auto-wake will spin a fresh sandbox.
+        # Retired through its owner with the provider step skipped, quietly
+        # (`MachineLoss.retire/3`). The conversation is not failed: the prompt
+        # this server was started for, if any, goes to the machine's rebuild.
+        MachineLoss.retire(sandbox.id, conv.id, "system:conversation_server")
+        MachineLoss.requeue(conv.id)
         {:stop, :normal, state}
 
       {:error, reason} ->
@@ -1654,7 +1643,7 @@ defmodule Fountain.Conversations.ConversationServer do
     Logger.error("conv #{state.conversation_id}: spawn failed: #{detail}")
 
     if MachineLoss.gone?(state.handle),
-      do: MachineLoss.hand_off(state, turn),
+      do: MachineLoss.hand_off(state, turn, detail),
       else: TurnMachine.fail_before_start(turn, state.conversation_id, state.sandbox_id, detail)
 
     %{state | current_turn: nil, turn_session_retry: nil, turn_provider_failure: nil}
