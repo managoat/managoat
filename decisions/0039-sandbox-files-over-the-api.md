@@ -54,9 +54,11 @@ What shapes the answer:
   proxy. A read channel out of the box is one the proxy does not sit in
   front of.
 
-A sandbox belongs to exactly one conversation
-([0073](0073-one-sandbox-per-conversation.md)), so the files a read returns
-are that conversation's alone.
+A sandbox of an implicit workspace belongs to exactly one conversation
+([0073](0073-one-sandbox-per-conversation.md), [0097](0097-workspaces.md)),
+so the files a read returns are that conversation's alone. An explicit
+workspace's machine is shared by every conversation launched into it, and
+its files are all of theirs (decision 11).
 
 ## Decision
 
@@ -174,6 +176,16 @@ are that conversation's alone.
     launch only what the owner configured. A refused attempt still leaves an
     audit row with `actor: "sprite"` ([0013](0013-audit-trail.md)).
 
+11. **Also addressed by workspace** ([0097](0097-workspaces.md), Files).
+    `GET /api/workspaces/:id/files`, `/file`, `/diff` and `/git-status` are
+    the same four reads of the workspace's current machine, full scope only,
+    with the same admission, bounds and never-resume rule. On an explicit
+    workspace's shared machine a relative path resolves from `/home/sprite`,
+    and the confinement roots are `/home/sprite` and the working directory of
+    every live conversation on it; redaction already covers every
+    conversation on the machine. The `/api/sandboxes/:id` routes stay, and
+    on such a machine read it the same way.
+
 ## Consequences
 
 - The apps get a file tree, a file, a status and a diff through four SDK
@@ -235,3 +247,4 @@ are that conversation's alone.
 - 2026-10-15 — Admitted reads held in ETS instead of `sandbox_reads` rows (single node); the table dropped by migration `20261017120000`.
 - 2026-10-15 — "Never a wake" narrowed to what Managoat parked; a provider's own sleep may be woken by a read (#2395).
 - 2026-10-17 — Context names the `admin` scope added since; the `full`/`sprite` reasoning is unchanged.
+- 2026-10-18 — Amended by [0097](0097-workspaces.md) step 5c: the reads are also addressed by workspace, and on an explicit workspace's shared machine resolve from `/home/sprite` with every live conversation's working directory as a root (decision 11); "a sandbox belongs to exactly one conversation" holds for implicit workspaces only.

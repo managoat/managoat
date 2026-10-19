@@ -646,7 +646,8 @@ reports it as `cwd`, the default included. A create request that resumes a
 conversation through `channel_id` may omit `cwd` or name the one it runs in;
 another returns `422 validation_failed` too. Codex's own sandbox lets the
 agent write to this directory, and the [file routes](#files-git-status-and-git-diff)
-resolve a relative path from it. The CLI takes it as `--cwd` on `managoat run`
+resolve a relative path from it, except on an explicit workspace's machine, which several
+conversations share and where a relative path resolves from `/home/sprite`. The CLI takes it as `--cwd` on `managoat run`
 and `managoat acp`.
 
 ### Set reasoning effort and fast mode

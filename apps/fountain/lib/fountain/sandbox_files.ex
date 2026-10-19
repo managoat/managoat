@@ -27,7 +27,10 @@ defmodule Fountain.SandboxFiles do
 
   Every path is confined to the sandbox home (`/home/sprite`) or the
   conversation's working directory (its launch's `cwd`, else the runtime's
-  default, `Fountain.Conversations.ConfigHome.cwd/1`) — including the one
+  default, `Fountain.Conversations.ConfigHome.cwd/1`), or on an explicit
+  workspace's shared machine, the home or the working directory of any live
+  conversation on it, with a relative path resolved from the home (ADR
+  0097) — including the one
   the caller never names, the repository root `git rev-parse --show-toplevel`
   finds by walking up. A root outside those is `not_a_repository`, not a
   listing of it.
@@ -48,7 +51,7 @@ defmodule Fountain.SandboxFiles do
   `Fountain.Conversations.get_sandbox/2`; ownership is theirs to establish.
   """
 
-  import Ecto.Query, only: [from: 2]
+  import Ecto.Query, only: [from: 2, select: 3, where: 3]
 
   alias Fountain.Conversations
   alias Fountain.Conversations.Conversation
@@ -168,17 +171,46 @@ defmodule Fountain.SandboxFiles do
   The directories a path may live under: the sandbox home and the
   conversation's working directory (by default the same for claude and
   codex, `/tmp/…` for gemini; a launch may name its own `cwd`).
+
+  On an explicit workspace's machine, which several conversations share
+  (ADR 0097, Files), the home and the working directory of every live
+  conversation on it.
   """
   @spec roots(Sandbox.t()) :: [String.t()]
-  def roots(%Sandbox{} = sandbox), do: Enum.uniq([@home, cwd(sandbox)])
+  def roots(%Sandbox{} = sandbox) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> Enum.uniq([@home | live_cwds(sandbox)])
+      :implicit -> Enum.uniq([@home, cwd(sandbox)])
+    end
+  end
+
+  # ownership: the caller fetched `sandbox` tenant-scoped; its conversations
+  # are the same tenant's.
+  defp live_cwds(%Sandbox{} = sandbox) do
+    sandbox
+    |> on_machine()
+    |> where([c], not is_nil(c.runtime) and c.status not in ["terminated", "failed"])
+    |> select([c], %{runtime: c.runtime, cwd: c.cwd})
+    |> Repo.all()
+    |> Enum.map(&Fountain.Conversations.ConfigHome.cwd/1)
+  end
 
   @doc """
   Where a relative path resolves from — the working directory of the
   conversation on this disk (one per machine since #2676): its launch's
-  `cwd`, else its runtime's default, else its agent's runtime's.
+  `cwd`, else its runtime's default, else its agent's runtime's. On an
+  explicit workspace's machine, which has no one conversation's directory,
+  `/home/sprite` (ADR 0097, Files).
   """
   @spec cwd(Sandbox.t()) :: String.t()
   def cwd(%Sandbox{} = sandbox) do
+    case Fountain.Workspaces.machine_kind(sandbox) do
+      :explicit -> @home
+      :implicit -> conversation_cwd(sandbox)
+    end
+  end
+
+  defp conversation_cwd(%Sandbox{} = sandbox) do
     case conversation_layout(sandbox) do
       %{runtime: _} = conv ->
         Fountain.Conversations.ConfigHome.cwd(conv)
@@ -622,12 +654,41 @@ defmodule Fountain.SandboxFiles do
   defp physical_root_script do
     ~S"""
     inside=
+    home=
+    first=1
     while [ "$#" -ge 2 ]; do
       r=$1
       logical=${2#sandbox:}
       shift 2
-      r=$(cd -- "$r" 2>/dev/null && pwd -P && printf '.') || continue
-      r=${r%$'\n.'}
+      if r=$(cd -- "$r" 2>/dev/null && pwd -P && printf '.'); then
+        r=${r%$'\n.'}
+      else
+        r=
+      fi
+      # The first root is the home, whether or not it resolves: one that does
+      # not is no root, and nothing lies under it. Any other is a working
+      # directory, and is a root only where it physically lies: under the
+      # home, or under /tmp for one that names /tmp. A working directory
+      # replaced by a symlink to somewhere else (another process on a shared
+      # machine can make one) does not carry the read there. `/tmp` is read
+      # in the execution namespace as it is named, so an adapter that mapped
+      # it elsewhere would refuse such roots rather than widen them.
+      if [ -n "$first" ]; then
+        first=
+        home=$r
+        [ -n "$r" ] || continue
+      else
+        [ -n "$r" ] || continue
+        case $logical in
+          /tmp|/tmp/*) base=$(cd /tmp 2>/dev/null && pwd -P) || continue ;;
+          # With no home, nothing lies under it ("$base"/* would be "/*").
+          *) [ -n "$home" ] || continue; base=$home ;;
+        esac
+        case $r in
+          "$base"|"$base"/*) ;;
+          *) continue ;;
+        esac
+      fi
       case $physical in
         "$r"|"$r"/*) confined_path="$logical${physical#"$r"}"; inside=1; break ;;
       esac
@@ -964,10 +1025,23 @@ defmodule Fountain.SandboxFiles do
     |> Enum.sort_by(&byte_size/1, :desc)
   end
 
-  defp registered_values(%Sandbox{id: sandbox_id}) do
-    from(c in Conversation, where: c.sandbox_id == ^sandbox_id, select: c.id)
+  # Every conversation on the machine, and on an explicit workspace's every
+  # conversation of the workspace: one moved to a rebuilt machine by its wake
+  # can be running there a moment before its row names it (ADR 0097).
+  defp registered_values(%Sandbox{} = sandbox) do
+    sandbox
+    |> on_machine()
+    |> select([c], c.id)
     |> Repo.all()
     |> Enum.flat_map(&Redaction.lookup/1)
+  end
+
+  # ownership: the caller fetched `sandbox` tenant-scoped; its workspace's
+  # conversations are the same tenant's.
+  defp on_machine(%Sandbox{id: id, workspace_id: workspace_id} = sandbox) do
+    if is_binary(workspace_id) and Fountain.Workspaces.machine_kind(sandbox) == :explicit,
+      do: from(c in Conversation, where: c.sandbox_id == ^id or c.workspace_id == ^workspace_id),
+      else: from(c in Conversation, where: c.sandbox_id == ^id)
   end
 
   defp identity_values(%Sandbox{environment_id: nil, vault_id: nil}), do: []
