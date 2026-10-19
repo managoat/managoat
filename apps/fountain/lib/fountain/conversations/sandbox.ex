@@ -57,41 +57,39 @@ defmodule Fountain.Conversations.Sandbox do
     # ADR 0058 stage 9a moved the intent onto the `destroying` stamp above.
     # Stage 9b-i stopped reading them and 9b-ii dropped the columns.
     # `applied_skills`, the record of the skills the machine's skills root
-    # carried, moved to the conversation with config homes (ADR 0097 step 1):
-    # skills live in a conversation's own config home. The column stays
-    # unmapped for a release so a rolling-back release still reads it, and
-    # a later migration drops it.
-    # **A copy, since ADR 0097 step 3b.** The owner's lease and in-flight state
-    # are on the sandbox's workspace (`Fountain.Workspaces.Workspace`), and
-    # every reader goes through `Fountain.Machines.Lease` (`get/1`,
-    # `machines/0`, `lock_machine/2`), whose structs carry the workspace's
-    # values in these four fields. `Lease` still writes the workspace's onto
-    # them in the same transaction, so a rollback to the release before finds
-    # them current; they are dropped a release later.
+    # carried, moved to the conversation with config homes (ADR 0097 step 1)
+    # and was dropped a release later (#3000).
     #
-    # The machine owner's lease and its in-flight state (ADR 0058).
-    # `lease_epoch` is monotonic and never reused; `lease_node` names the
-    # process of this boot that holds the machine (ADR 0072); `transition` and
+    # **Read from the workspace, not stored here (ADR 0097, step 3).** The
+    # machine owner's lease and its in-flight state (ADR 0058) are on the
+    # sandbox's workspace (`Fountain.Workspaces.Workspace`): `lease_epoch` is
+    # monotonic and never reused, `lease_node` names the process of this boot
+    # that holds the machine (ADR 0072), and `transition` and
     # `transition_reason` are the durable intent behind a provider round trip.
-    # The three `lease_*` columns are written only by
-    # `Fountain.Machines.Lease`, and every state write an owner makes is a
-    # compare-and-set on the epoch. All five are deliberately absent from
-    # `changeset/2` — an owner's write is not something a caller's attrs may
-    # reach.
+    # The sandbox's own copies were written for a rollback through one release
+    # and dropped after it (#3000), so these four are virtual: only a struct
+    # read through `Fountain.Machines.Lease` (`get/1`, `machines/0`,
+    # `lock_machine/2`, and what `cas_update/4` answers) carries them. A row
+    # loaded any other way (`Repo.get/2`, a bare `:sandbox` preload) has the
+    # defaults below, which read as "no lease, no transition", so every reader
+    # of them loads the row through `Lease`. `transition` is about the
+    # workspace's current sandbox (`Lease`'s moduledoc): a retired sandbox
+    # beside a live successor reads none, and a sandbox with no workspace (a
+    # row retired before ADR 0097) reads the defaults.
     #
-    # `transition` has **two writers**, and the second is the point of stage
-    # 9a. A *fence* stamps `destroying`, holding no lease —
+    # Every write goes through `Fountain.Machines.Lease`, and every state
+    # write an owner makes is a compare-and-set on the epoch. `transition` has
+    # **two writers**, and the second is the point of stage 9a. A *fence*
+    # stamps `destroying`, holding no lease —
     # `Lifecycle.do_fence_sandbox_for_teardown/2`, through
-    # `Machines.Destroy.stamp_intent!/2` rather than `changeset/2`. (Until
-    # stage 9b the fence wrote two columns beside the stamp, in the same
-    # commit; 9b-ii dropped them.) A fence is by definition written by somebody
-    # who does not own the machine; the protocol's own stamp, one step later
-    # and under its epoch, restates it with the destroy's reason. Nothing
-    # writes any other transition from outside `Machines`.
-    field :lease_epoch, :integer, default: 0
-    field :lease_node, :string
-    field :transition, :string
-    field :transition_reason, :string
+    # `Machines.Destroy.stamp_intent!/2`. A fence is by definition written by
+    # somebody who does not own the machine; the protocol's own stamp, one step
+    # later and under its epoch, restates it with the destroy's reason.
+    # Nothing writes any other transition from outside `Machines`.
+    field :lease_epoch, :integer, default: 0, virtual: true
+    field :lease_node, :string, virtual: true
+    field :transition, :string, virtual: true
+    field :transition_reason, :string, virtual: true
     belongs_to :environment, Environment
     # What the machine was built from (#2987): the environment's `revision`
     # when its provision read it, and a keyed digest of each provision-time

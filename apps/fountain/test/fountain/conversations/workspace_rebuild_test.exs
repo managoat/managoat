@@ -42,7 +42,7 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       {pid, _ref, :alive} = start_server(conv)
 
       state = :sys.get_state(pid)
-      next = Repo.get!(Sandbox, state.sandbox_id)
+      next = Fountain.Machines.Lease.get(state.sandbox_id)
 
       assert next.id != old.id
       assert next.workspace_id == old.workspace_id
@@ -149,7 +149,7 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       moved = Repo.reload!(conv)
       assert moved.sandbox_id != old.id
       assert moved.status == "failed"
-      assert Repo.get!(Sandbox, moved.sandbox_id).status == "failed"
+      assert Fountain.Machines.Lease.get(moved.sandbox_id).status == "failed"
 
       assert Enum.any?(
                Conversations._unsafe_list_log_events(conv.id),
@@ -174,7 +174,7 @@ defmodule Fountain.Conversations.WorkspaceRebuildTest do
       moved = Repo.reload!(conv)
       assert moved.sandbox_id != old.id
       assert moved.status == "failed"
-      assert Repo.get!(Sandbox, moved.sandbox_id).status == "failed"
+      assert Fountain.Machines.Lease.get(moved.sandbox_id).status == "failed"
     end
 
     test "a co-tenant moved by the rebuild is told on its own transcript", _ctx do

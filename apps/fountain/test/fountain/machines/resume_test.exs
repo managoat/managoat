@@ -49,7 +49,7 @@ defmodule Fountain.Machines.ResumeTest do
 
   defp opts(extra \\ []), do: Keyword.merge([actor: "system:wake"], extra)
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   defp events(ctx, action), do: Audit.list_for_user(ctx.user.id, action_prefix: action)
 
@@ -211,7 +211,7 @@ defmodule Fountain.Machines.ResumeTest do
       expect(Managoat.Sandbox, :resume, fn %Handle{provider: :sprites, name: ^name} = handle ->
         # Read *during* the provider call: the intent is on the row and the
         # status is not, which is the ordering the whole protocol is about.
-        mid = Repo.reload!(ctx.sandbox)
+        mid = Fountain.Machines.Lease.get(ctx.sandbox.id)
         send(test, {:mid_call, mid.status, mid.transition, mid.lease_node})
         {:ok, handle}
       end)
@@ -248,7 +248,7 @@ defmodule Fountain.Machines.ResumeTest do
       stub(Managoat.Sandbox, :resume, fn handle -> {:ok, handle} end)
 
       expect(Fountain.Audit, :record, fn attrs ->
-        send(test, {:audited_at, Repo.reload!(ctx.sandbox).status})
+        send(test, {:audited_at, Fountain.Machines.Lease.get(ctx.sandbox.id).status})
         Mimic.call_original(Fountain.Audit, :record, [attrs])
       end)
 
@@ -570,7 +570,7 @@ defmodule Fountain.Machines.ResumeTest do
       test = self()
 
       expect(Managoat.Sandbox, :resume, fn handle ->
-        mid = Repo.reload!(ctx.sandbox)
+        mid = Fountain.Machines.Lease.get(ctx.sandbox.id)
 
         send(
           test,
@@ -654,7 +654,7 @@ defmodule Fountain.Machines.ResumeTest do
       assert_receive {:second, {:error, :fleet_full}}
 
       assert Repo.reload!(other).status == "suspended"
-      assert is_nil(Repo.reload!(other).transition)
+      assert is_nil(Fountain.Machines.Lease.get(other.id).transition)
     end
   end
 
@@ -1057,7 +1057,7 @@ defmodule Fountain.Machines.ResumeTest do
           end
 
           refute_receive :in_provider, 200
-          assert Repo.get!(Sandbox, tenant.sandbox.id).status == "ready"
+          assert Fountain.Machines.Lease.get(tenant.sandbox.id).status == "ready"
 
           assert [_one] = Audit.list_for_user(tenant.user.id, action_prefix: "sandbox.resumed")
         after

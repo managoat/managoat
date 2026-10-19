@@ -27,13 +27,13 @@ defmodule Fountain.Machines.LeaseTest do
     test "a claim takes the next epoch and a release keeps it", ctx do
       assert {:ok, 1} = Lease.claim(ctx.sandbox.id)
 
-      held = Repo.get!(Sandbox, ctx.sandbox.id)
+      held = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert held.lease_epoch == 1
       assert held.lease_node == Lease.holder(self())
 
       assert :ok = Lease.release(ctx.sandbox.id, 1)
 
-      released = Repo.get!(Sandbox, ctx.sandbox.id)
+      released = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert released.lease_epoch == 1
       refute released.lease_node
 
@@ -47,11 +47,11 @@ defmodule Fountain.Machines.LeaseTest do
       # The one definition of "somebody holds this machine". What makes it
       # trustworthy is that `claim/2` refuses exactly when this says true, so
       # the readers and the claimant cannot disagree.
-      refute Lease.live?(Repo.get!(Sandbox, ctx.sandbox.id))
+      refute Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id))
 
       holder = spawn(fn -> receive do: (:stop -> :ok) end)
       {:ok, 1} = Lease.claim(ctx.sandbox.id, holder: holder)
-      held = Repo.get!(Sandbox, ctx.sandbox.id)
+      held = Fountain.Machines.Lease.get(ctx.sandbox.id)
 
       assert held.lease_node == Lease.holder(holder)
       assert Lease.live?(held)
@@ -75,7 +75,7 @@ defmodule Fountain.Machines.LeaseTest do
       # A released lease keeps its epoch and has no holder.
       {:ok, 1} = Lease.claim(ctx.sandbox.id)
       :ok = Lease.release(ctx.sandbox.id, 1)
-      refute Lease.live?(Repo.get!(Sandbox, ctx.sandbox.id))
+      refute Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id))
     end
 
     test "supersede: takes the lease from that one live holder", ctx do
@@ -98,7 +98,7 @@ defmodule Fountain.Machines.LeaseTest do
 
       # Everything the superseded holder writes from here is invisible.
       assert {:error, :stale} = Lease.cas_update(ctx.sandbox.id, 1, %{status: "failed"})
-      assert Repo.get!(Sandbox, ctx.sandbox.id).lease_node == Lease.holder(self())
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_node == Lease.holder(self())
     end
 
     test "the boot sweep clears leases but preserves destroy and resume intent", ctx do
@@ -130,22 +130,22 @@ defmodule Fountain.Machines.LeaseTest do
       # suites committed and left behind are swept too.
       assert Lease.sweep_boot() >= 2
 
-      cleared = Repo.get!(Sandbox, old.id)
+      cleared = Fountain.Machines.Lease.get(old.id)
       assert {cleared.lease_node, cleared.transition} == {nil, nil}
       assert cleared.lease_epoch == 3, "the epoch never goes back"
 
       # A destroy is a durable request, not an operation in flight.
-      kept = Repo.get!(Sandbox, destroying.id)
+      kept = Fountain.Machines.Lease.get(destroying.id)
 
       assert {kept.lease_node, kept.transition, kept.transition_reason} ==
                {nil, "destroying", "teardown"}
 
       # This boot's own lease is left alone.
-      assert Repo.get!(Sandbox, mine.id).transition == "parking"
-      assert Repo.get!(Sandbox, mine.id).lease_node == Lease.holder(self())
+      assert Fountain.Machines.Lease.get(mine.id).transition == "parking"
+      assert Fountain.Machines.Lease.get(mine.id).lease_node == Lease.holder(self())
 
-      assert Repo.get!(Sandbox, bare.id).transition == "resuming"
-      assert Repo.get!(Sandbox, ctx.sandbox.id).lease_epoch == 0
+      assert Fountain.Machines.Lease.get(bare.id).transition == "resuming"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch == 0
       assert Lease.sweep_boot() == 0
     end
 
@@ -158,8 +158,10 @@ defmodule Fountain.Machines.LeaseTest do
       selected =
         Repo.one(
           from s in Sandbox,
+            join: w in Fountain.Workspaces.Workspace,
+            on: w.id == s.workspace_id,
             where: s.id == ^ctx.sandbox.id,
-            select: %{id: s.id, lease_node: s.lease_node}
+            select: %{id: s.id, lease_node: w.lease_node}
         )
 
       assert Lease.live?(selected)
@@ -191,33 +193,33 @@ defmodule Fountain.Machines.LeaseTest do
 
       assert parked.status == "suspended"
       refute parked.transition
-      assert Repo.get!(Sandbox, ctx.sandbox.id).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "a stale epoch writes nothing at all", ctx do
       assert {:ok, 1} = Lease.claim(ctx.sandbox.id)
-      before = Repo.get!(Sandbox, ctx.sandbox.id)
+      before = Fountain.Machines.Lease.get(ctx.sandbox.id)
 
       # Epoch 0 is the default on every row and epoch 1 is the first a claim
       # ever hands out, so 0 is superseded here as well as never held. The
       # never-held half is its own test below; this one is the ordinary
       # overtaken-owner case.
       assert {:error, :stale} = Lease.cas_update(ctx.sandbox.id, 0, %{status: "failed"})
-      assert Repo.get!(Sandbox, ctx.sandbox.id) == before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id) == before
 
       assert {:error, :lost} = Lease.release(ctx.sandbox.id, 0)
-      assert Repo.get!(Sandbox, ctx.sandbox.id) == before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id) == before
     end
 
     test "epoch 0 is not a lease anybody took", ctx do
-      before = Repo.get!(Sandbox, ctx.sandbox.id)
+      before = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert before.lease_epoch == 0
 
       # Every row starts at epoch 0 with no holder. Refused before the query:
       # claims start at 1.
       assert {:error, :lost} = Lease.release(ctx.sandbox.id, 0)
       assert {:error, :stale} = Lease.cas_update(ctx.sandbox.id, 0, %{status: "ready"})
-      assert Repo.get!(Sandbox, ctx.sandbox.id) == before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id) == before
 
       # And the machine is still claimable, which is the point.
       assert {:ok, 1} = Lease.claim(ctx.sandbox.id)
@@ -232,7 +234,7 @@ defmodule Fountain.Machines.LeaseTest do
       # un-retire a row, and `:retired` says so rather than `:stale`, which
       # would send the owner looking for a takeover that never happened.
       assert {:error, :retired} = Lease.cas_update(ctx.sandbox.id, epoch, %{status: "ready"})
-      assert Repo.get!(Sandbox, ctx.sandbox.id).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
 
       # Terminal to terminal still goes through, exactly as it does through
       # `update_sandbox/2`, and a write that never names a status is untouched
@@ -251,7 +253,8 @@ defmodule Fountain.Machines.LeaseTest do
       # into the row so `taken_epoch?/1` is pinned on its own — `held_by/2`'s
       # holder columns mask it on every reachable row, which is exactly how a
       # defence-in-depth guard gets deleted in a refactor with nothing red.
-      Repo.update_all(from(x in Sandbox, where: x.id == ^ctx.sandbox.id),
+      Repo.update_all(
+        from(w in Fountain.Workspaces.Workspace, where: w.id == ^ctx.sandbox.workspace_id),
         set: [
           lease_epoch: 0,
           lease_node: Lease.holder(self())
@@ -260,7 +263,7 @@ defmodule Fountain.Machines.LeaseTest do
 
       assert {:error, :lost} = Lease.release(ctx.sandbox.id, 0)
       assert {:error, :stale} = Lease.cas_update(ctx.sandbox.id, 0, %{status: "ready"})
-      assert Repo.get!(Sandbox, ctx.sandbox.id).status == "pending"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "pending"
     end
 
     test "a terminal status carries its own terminated_at", ctx do
@@ -306,7 +309,7 @@ defmodule Fountain.Machines.LeaseTest do
 
     test "a caller's own bug is an answer, not a raise", ctx do
       assert {:ok, epoch} = Lease.claim(ctx.sandbox.id)
-      before = Repo.get!(Sandbox, ctx.sandbox.id)
+      before = Fountain.Machines.Lease.get(ctx.sandbox.id)
 
       # A duplicate key in a keyword list reaches Ecto as two `SET status =`
       # clauses and raises `Ecto.QueryError` from inside the transaction.
@@ -333,7 +336,7 @@ defmodule Fountain.Machines.LeaseTest do
         assert call.(id) == {:error, {:invalid, :sandbox_id}}
       end
 
-      assert Repo.get!(Sandbox, ctx.sandbox.id) == before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id) == before
     end
 
     test "a transition reason is free text, not a 255-byte column", ctx do
@@ -351,7 +354,7 @@ defmodule Fountain.Machines.LeaseTest do
 
     test "cas_update refuses a value or a key the owner may not write", ctx do
       assert {:ok, epoch} = Lease.claim(ctx.sandbox.id)
-      before = Repo.get!(Sandbox, ctx.sandbox.id)
+      before = Fountain.Machines.Lease.get(ctx.sandbox.id)
 
       refusals = [
         {%{status: "exploded"}, {:invalid, :status}},
@@ -372,7 +375,7 @@ defmodule Fountain.Machines.LeaseTest do
         assert Lease.cas_update(ctx.sandbox.id, epoch, attrs) == {:error, reason}
       end
 
-      assert Repo.get!(Sandbox, ctx.sandbox.id) == before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id) == before
     end
 
     test "an enclosing transaction is refused by every function", ctx do
@@ -389,7 +392,7 @@ defmodule Fountain.Machines.LeaseTest do
                  :unchanged
                end)
 
-      assert Repo.get!(Sandbox, ctx.sandbox.id).lease_epoch == 0
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch == 0
     end
 
     test "an enclosing transaction is permitted where a caller opts in", ctx do
@@ -414,7 +417,7 @@ defmodule Fountain.Machines.LeaseTest do
       # Committed, because the transaction above committed. The refusal half is
       # in `resume_test.exs`, where a quota that says no rolls the stamp back
       # with it.
-      assert Repo.get!(Sandbox, ctx.sandbox.id).transition == "resuming"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "resuming"
     end
 
     test "opting in does not extend to the functions that take the lock", ctx do
@@ -514,7 +517,7 @@ defmodule Fountain.Machines.LeaseTest do
 
             # Advanced by exactly one: the loser saw the winner's row, not the
             # row as it was before the winner ran.
-            assert Repo.get!(Sandbox, tenant.sandbox.id).lease_epoch == 1
+            assert Fountain.Machines.Lease.get(tenant.sandbox.id).lease_epoch == 1
           after
             for claimant <- claimants, do: Task.shutdown(claimant, :brutal_kill)
           end
@@ -582,8 +585,8 @@ defmodule Fountain.Machines.LeaseTest do
         tenant = committed_tenant()
 
         try do
-          fault_on(tenant.sandbox.id)
-          before = Repo.get!(Sandbox, tenant.sandbox.id)
+          fault_on(tenant.sandbox.workspace_id)
+          before = Fountain.Machines.Lease.get(tenant.sandbox.id)
 
           # A cancelled statement is an answer, not an exception the owner has
           # to rescue at every call site (the #2309 shape).
@@ -595,7 +598,7 @@ defmodule Fountain.Machines.LeaseTest do
           # Worth little on its own — the trigger is BEFORE UPDATE, so the row
           # could not have changed either way. Kept because it would catch a
           # later rewrite that moves the fault after a first write.
-          assert Repo.get!(Sandbox, tenant.sandbox.id) == before
+          assert Fountain.Machines.Lease.get(tenant.sandbox.id) == before
 
           drop_fault()
 
@@ -678,11 +681,11 @@ defmodule Fountain.Machines.LeaseTest do
 
   # Scoped to the one row: a trigger that raised for every sandbox would fail
   # whatever else the suite is doing to the table.
-  defp fault_on(sandbox_id) do
+  defp fault_on(workspace_id) do
     Repo.query!("""
     CREATE OR REPLACE FUNCTION fountain_lease_fault() RETURNS trigger AS $fn$
     BEGIN
-      IF NEW.id = '#{sandbox_id}'::uuid THEN
+      IF NEW.id = '#{workspace_id}'::uuid THEN
         RAISE EXCEPTION 'canceling statement due to statement timeout'
           USING ERRCODE = '57014';
       END IF;
@@ -692,13 +695,13 @@ defmodule Fountain.Machines.LeaseTest do
     """)
 
     Repo.query!("""
-    CREATE TRIGGER fountain_lease_fault BEFORE UPDATE ON sandboxes
+    CREATE TRIGGER fountain_lease_fault BEFORE UPDATE ON workspaces
     FOR EACH ROW EXECUTE FUNCTION fountain_lease_fault()
     """)
   end
 
   defp drop_fault do
-    Repo.query!("DROP TRIGGER IF EXISTS fountain_lease_fault ON sandboxes")
+    Repo.query!("DROP TRIGGER IF EXISTS fountain_lease_fault ON workspaces")
     Repo.query!("DROP FUNCTION IF EXISTS fountain_lease_fault()")
   end
 end

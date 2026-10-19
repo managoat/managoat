@@ -91,7 +91,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
       assert :ok = Workspaces.release_ended(ctx.sandbox.id)
 
       refute workspace(ctx.sandbox)
-      assert Repo.reload!(ctx.sandbox).workspace_id == nil
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).workspace_id == nil
       assert Repo.reload!(ctx.conv).workspace_id == nil
     end
 
@@ -106,7 +106,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
 
       capture_log(fn -> assert :ok = Termination.terminate_conversation(ctx.conv.id) end)
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       refute workspace(ctx.sandbox)
     end
 
@@ -220,7 +220,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
       assert :ok = Termination.terminate_conversation(ctx.conv.id)
 
       assert Repo.reload!(ctx.conv).status == "terminated"
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
       assert workspace(ctx.sandbox)
       refute_receive :destroyed, 200
     end
@@ -288,7 +288,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
         end)
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
       assert %Turn{status: "interrupted"} = Repo.reload!(turn)
 
       assert [event] =
@@ -308,7 +308,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
         end)
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       # The conversation stays, so its workspace does too: the next prompt
       # builds its next machine there.
       assert Repo.reload!(ctx.conv).status == "idle"
@@ -327,7 +327,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
         end)
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
   end
 
@@ -436,7 +436,7 @@ defmodule Fountain.WorkspaceLifecycleTest do
                  actor: "system:conversation_server"
                )
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "an idle park waits for a co-tenant that is mid-wake", ctx do

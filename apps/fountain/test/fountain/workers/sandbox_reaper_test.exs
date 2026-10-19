@@ -239,7 +239,7 @@ defmodule Fountain.Workers.SandboxReaperTest do
         capture_log(fn -> assert {1, 0, 0, _} = SandboxReaper.sweep_abandoned_sandboxes() end)
       end)
 
-      reloaded = Repo.reload(sandbox)
+      reloaded = Fountain.Machines.Lease.get(sandbox.id)
       assert reloaded.status == "suspended"
       refute reloaded.terminated_at
       assert destroyed_names() == []
@@ -481,12 +481,12 @@ defmodule Fountain.Workers.SandboxReaperTest do
       {user, sandbox, _conv} = fenced_sandbox()
       assert active_sandbox_count(user.id) == 1
       sandbox = age_fence(sandbox, 60)
-      assert Repo.reload(sandbox).transition == "destroying"
+      assert Fountain.Machines.Lease.get(sandbox.id).transition == "destroying"
       live_provider([sandbox.machine_name])
 
       capture_log(fn -> assert {1, 0} = SandboxReaper.sweep_fenced_teardowns() end)
 
-      reloaded = Repo.reload(sandbox)
+      reloaded = Fountain.Machines.Lease.get(sandbox.id)
       assert %{status: "terminated", terminated_at: %DateTime{}} = reloaded
       assert is_nil(reloaded.transition)
       assert is_nil(reloaded.transition_reason)
@@ -820,7 +820,7 @@ defmodule Fountain.Workers.SandboxReaperTest do
       assert destroyed_names() == [first.machine_name]
       assert Repo.reload(first).status == "terminated"
 
-      deferred = Repo.reload(second)
+      deferred = Fountain.Machines.Lease.get(second.id)
       assert deferred.status == "ready"
       assert deferred.transition == "destroying"
     end

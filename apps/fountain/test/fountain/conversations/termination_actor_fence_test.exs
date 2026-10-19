@@ -37,14 +37,14 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
        ctx do
     expect(Managoat.Sandbox, :close_stdin, fn :adapter ->
       refute Repo.in_transaction?()
-      assert Repo.reload!(ctx.sandbox).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
       :ok
     end)
 
     expect(Managoat.Sandbox, :destroy, fn handle ->
       assert handle == ctx.handle
       refute Repo.in_transaction?()
-      assert Repo.reload!(ctx.sandbox).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
       assert active_sandbox_count(ctx.user.id) == 1
       assert {:error, :sandbox_unavailable} = admit(ctx)
       :ok
@@ -53,7 +53,7 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
     assert {:stop, :normal, :ok, stopped} = terminate(ctx, {:terminate_conv, []})
     assert stopped.current_command == nil
     assert Repo.reload!(ctx.conv).status == "terminated"
-    assert Repo.reload!(ctx.sandbox).status == "terminated"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     assert active_sandbox_count(ctx.user.id) == 0
     assert [event] = events(ctx)
     assert event.actor == "self"
@@ -66,7 +66,7 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
     assert {:reply, {:error, :unknown_call}, unchanged} = terminate(ctx, :terminate_conv)
     assert unchanged == ctx.state
     assert Repo.reload!(ctx.conv).status == "idle"
-    assert Repo.reload!(ctx.sandbox).status == "ready"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
     assert events(ctx) == []
   end
 
@@ -92,8 +92,8 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
 
     assert unchanged == ctx.state
     assert Repo.reload!(ctx.conv).status == "idle"
-    refute Repo.reload!(ctx.sandbox).transition == "destroying"
-    refute Repo.reload!(replacement).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
+    refute Fountain.Machines.Lease.get(replacement.id).transition == "destroying"
   end
 
   for cleanup <- [:destroy] do
@@ -126,8 +126,8 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
       assert Repo.reload!(ctx.conv).sandbox_id == replacement.id
       assert Repo.reload!(ctx.conv).status == "running"
       assert Repo.reload!(replacement).status == "ready"
-      refute Repo.reload!(replacement).transition == "destroying"
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      refute Fountain.Machines.Lease.get(replacement.id).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert termination_stages(ctx) == []
     end
   end
@@ -142,7 +142,7 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
              terminate(ctx, {:terminate_conv, []})
 
     assert Repo.reload(ctx.conv) == nil
-    assert Repo.reload!(ctx.sandbox).status == "terminated"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     assert termination_stages(ctx) == []
   end
 
@@ -155,7 +155,7 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
 
     assert unchanged == ctx.state
     assert Repo.reload!(ctx.conv).status == "idle"
-    refute Repo.reload!(ctx.sandbox).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
   end
 
   test "a missing machine returns refusal without closing the adapter", ctx do
@@ -184,7 +184,8 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
     replacement = insert_sandbox(user_id: ctx.user.id, status: "ready")
 
     expect(Managoat.Sandbox, :close_stdin, fn :adapter ->
-      assert Repo.reload!(ctx.sandbox).transition == "destroying", "the fence had not committed"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying",
+             "the fence had not committed"
 
       {:ok, _} =
         Conversations.update_conversation(ctx.conv, %{
@@ -203,17 +204,17 @@ defmodule Fountain.Conversations.TerminationActorFenceTest do
     assert {:stop, :normal, {:error, :sandbox_unavailable}, _} =
              terminate(ctx, {:terminate_conv, []})
 
-    assert Repo.reload!(ctx.sandbox).status == "terminated"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     assert Repo.reload!(replacement).status == "ready"
-    refute Repo.reload!(replacement).transition == "destroying"
+    refute Fountain.Machines.Lease.get(replacement.id).transition == "destroying"
     assert Repo.reload!(ctx.conv).sandbox_id == replacement.id
   end
 
   test "a provider error still retires the fenced row for reconciliation", ctx do
     expect(Managoat.Sandbox, :destroy, fn _ -> {:error, :unavailable} end)
     assert {:stop, :normal, :ok, _} = terminate(ctx, {:terminate_conv, []})
-    assert Repo.reload!(ctx.sandbox).status == "terminated"
-    assert is_nil(Repo.reload!(ctx.sandbox).transition)
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
+    assert is_nil(Fountain.Machines.Lease.get(ctx.sandbox.id).transition)
   end
 
   defp terminate(ctx, message),

@@ -20,7 +20,7 @@ defmodule Fountain.Conversations.TeardownFenceTest do
 
     expect(Audit, :record, fn attrs ->
       refute Repo.in_transaction?()
-      assert Repo.reload!(ctx.home).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.home.id).transition == "destroying"
       Mimic.call_original(Audit, :record, [attrs])
     end)
 
@@ -118,7 +118,7 @@ defmodule Fountain.Conversations.TeardownFenceTest do
                Lifecycle.fence_sandbox_for_teardown(ctx.home)
              end)
 
-    refute Repo.reload!(ctx.home).transition == "destroying"
+    refute Fountain.Machines.Lease.get(ctx.home.id).transition == "destroying"
     assert events(ctx) == []
   end
 

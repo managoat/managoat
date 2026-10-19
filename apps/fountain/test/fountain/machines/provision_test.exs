@@ -55,7 +55,7 @@ defmodule Fountain.Machines.ProvisionTest do
   defp opts(extra \\ []),
     do: Keyword.merge([actor: "system:conversation_server", environment: nil], extra)
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   defp events(ctx, action), do: Audit.list_for_user(ctx.user.id, action_prefix: action)
 
@@ -119,7 +119,11 @@ defmodule Fountain.Machines.ProvisionTest do
     :ok
   end
 
-  defp handle(ctx), do: %Handle{provider: :sprites, name: Repo.reload!(ctx.sandbox).machine_name}
+  defp handle(ctx),
+    do: %Handle{
+      provider: :sprites,
+      name: Fountain.Machines.Lease.get(ctx.sandbox.id).machine_name
+    }
 
   # A machine that is created without complaint. Returns the handle the protocol
   # will hand the pipeline.
@@ -1056,7 +1060,7 @@ defmodule Fountain.Machines.ProvisionTest do
 
           # One machine, and the row is the winner's.
           refute_receive {:created, _name}, 200
-          assert Repo.get!(Sandbox, tenant.sandbox.id).status == "ready"
+          assert Fountain.Machines.Lease.get(tenant.sandbox.id).status == "ready"
         after
           discard(tenant)
         end

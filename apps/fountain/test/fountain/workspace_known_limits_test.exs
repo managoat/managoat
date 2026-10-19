@@ -460,7 +460,7 @@ defmodule Fountain.WorkspaceKnownLimitsTest do
                  Rebuild.failed(ctx.state, ctx.conv, {:create, :boom}, %{reason: "boom"})
       end)
 
-      failed = Repo.reload!(ctx.moved_to)
+      failed = Fountain.Machines.Lease.get(ctx.moved_to.id)
       assert failed.status == "failed"
       assert failed.transition_reason =~ "create"
       refute failed.transition_reason =~ "provision_raised"

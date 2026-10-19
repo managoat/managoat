@@ -316,7 +316,10 @@ defmodule Fountain.Workspaces do
 
   @doc """
   The sandbox each of `workspaces` has now: its live one, else its newest,
-  or none for a workspace that has never had one. One query for the lot.
+  or none for a workspace that has never had one. One query for the lot,
+  through `Fountain.Machines.Lease.machines/0`, so each carries its
+  workspace's lease and transition (a launch into the workspace refuses a
+  `destroying` one).
   """
   @spec current_sandboxes([Workspace.t()]) :: %{Ecto.UUID.t() => Sandbox.t()}
   def current_sandboxes([]), do: %{}
@@ -324,7 +327,7 @@ defmodule Fountain.Workspaces do
   def current_sandboxes(workspaces) when is_list(workspaces) do
     ids = Enum.map(workspaces, & &1.id)
 
-    from(s in Sandbox,
+    from(s in Fountain.Machines.Lease.machines(),
       where: s.workspace_id in ^ids,
       distinct: s.workspace_id,
       order_by: [
@@ -1384,18 +1387,19 @@ defmodule Fountain.Workspaces do
   Run by `Fountain.Machines.BootSweep` on every boot, before anything can
   claim a lease, and once by `20261018210000_add_machine_lease_to_workspaces`.
   A migration runs once, and a rollback to a release before ADR 0097 followed
-  by this one again leaves sandboxes it made with no workspace, conversations
-  it moved with a stale `workspace_id`, and stamps it wrote on the sandbox
-  row only. Idempotent: on a deployment that never rolled back it writes
+  by this one again leaves sandboxes it made with no workspace and
+  conversations it moved with a stale `workspace_id`. (Since the sandbox's
+  lease columns were dropped, #3000, such a rollback needs that drop's `down`
+  first.) Idempotent: on a deployment that never rolled back it writes
   nothing.
 
   The fill is `20261018190100`'s, plus a live sandbox with no user (account
   deletion nilifies `sandboxes.user_id`), which gets an ownerless workspace so
   its owner still has a lease to take. The repoint touches only conversations
-  on a live sandbox: a terminal one's pointer is history. The stamps such a
-  release wrote on a sandbox row are carried to its workspace by
-  `Fountain.Machines.Lease.sweep_boot/0`, in the transaction that then sweeps
-  them, so the two can never be split by a failure between them.
+  on a live sandbox: a terminal one's pointer is history. Nothing is carried
+  from the sandbox row any more: it has no lease columns
+  (`20261019150100_drop_sandbox_lease_columns` carried them once, before
+  dropping them).
 
   One transaction under a ten-second `lock_timeout`, like the migrations: a
   stray session holding one of these rows makes the boot log a failure rather

@@ -42,7 +42,7 @@ defmodule Fountain.Machines.ParkTest do
     Keyword.merge([actor: "system:sandbox_reaper", reason: :idle], extra)
   end
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   defp events(ctx, action), do: Audit.list_for_user(ctx.user.id, action_prefix: action)
 
@@ -199,7 +199,7 @@ defmodule Fountain.Machines.ParkTest do
         # Everything before step 6, read from the row the way another node
         # would read it: no transaction, no lock, no struct we brought.
         refute Repo.in_transaction?()
-        send(test, {:mid_park, Repo.reload!(home)})
+        send(test, {:mid_park, Fountain.Machines.Lease.get(home.id)})
         :ok
       end)
 
@@ -251,7 +251,7 @@ defmodule Fountain.Machines.ParkTest do
       stub(Audit, :record, fn attrs ->
         if attrs[:action] == "sandbox.suspended" do
           refute Repo.in_transaction?()
-          send(test, {:at_audit, Repo.reload!(ctx.sandbox)})
+          send(test, {:at_audit, Fountain.Machines.Lease.get(ctx.sandbox.id)})
         end
 
         Mimic.call_original(Audit, :record, [attrs])

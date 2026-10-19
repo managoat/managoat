@@ -280,7 +280,7 @@ defmodule Fountain.Machines.AdmissionTest do
 
       assert turns(ctx.conv) == [], "the owner admitted a turn its caller had been told 503 about"
       assert Repo.reload!(ctx.conv).status == "idle"
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "and a caller still waiting when the park finishes is refused by the parked machine",
@@ -328,7 +328,7 @@ defmodule Fountain.Machines.AdmissionTest do
       Task.await(park)
 
       assert turns(ctx.conv) == []
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "a ready machine with an idle lease admits as before (the positive control)", ctx do
@@ -487,7 +487,7 @@ defmodule Fountain.Machines.AdmissionTest do
             assert_receive {:park, {:error, :machine_occupied}}, 5_000
             Task.await(park)
             assert Repo.reload!(sandbox).status == "ready"
-            assert is_nil(Repo.reload!(sandbox).lease_node)
+            assert is_nil(Fountain.Machines.Lease.get(sandbox.id).lease_node)
           after
             Task.shutdown(park, :brutal_kill)
           end
@@ -918,10 +918,10 @@ defmodule Fountain.Machines.AdmissionTest do
       # A cotenant's resume, park or destroy claims and releases the lease,
       # which is what moves the epoch. Done directly: the epoch moving is the
       # whole of what those operations do to this write's view of the machine.
-      epoch_before = Repo.reload!(ctx.sandbox).lease_epoch
+      epoch_before = Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch
       {:ok, epoch} = Lease.claim(ctx.sandbox.id)
       :ok = Lease.release(ctx.sandbox.id, epoch)
-      assert Repo.reload!(ctx.sandbox).lease_epoch > epoch_before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch > epoch_before
 
       assert {:ok, %Turn{status: "completed"}} =
                Machine.end_turn(ctx.turn, {:finish, "completed", []}, sandbox_id: ctx.sandbox.id)
@@ -936,15 +936,15 @@ defmodule Fountain.Machines.AdmissionTest do
       # cannot attach to the turn's session is the write that has to land.
       assert Fountain.Conversations.ConversationServer.whereis(ctx.conv.id) == nil
       stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
-      epoch_before = Repo.reload!(ctx.sandbox).lease_epoch
+      epoch_before = Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch
 
       quietly(fn ->
         assert {:ok, :parked} =
                  Park.run(ctx.sandbox.id, actor: "system:sandbox_reaper", reason: :idle)
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
-      assert Repo.reload!(ctx.sandbox).lease_epoch > epoch_before
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).lease_epoch > epoch_before
 
       assert {:ok, %Turn{status: "interrupted", orphaned_at: %DateTime{}}, _conv} =
                Machine.end_turn(ctx.turn, {:orphan, "attach_failed"}, sandbox_id: ctx.sandbox.id)

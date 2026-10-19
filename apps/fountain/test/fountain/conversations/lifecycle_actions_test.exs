@@ -161,7 +161,7 @@ defmodule Fountain.Conversations.LifecycleActionsTest do
 
       assert Lifecycle.park(ctx.conv.id, ctx.sandbox.id, handle(), :idle) == :ok
 
-      assert Repo.reload(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
       assert Repo.reload(ctx.conv).status == "idle"
 
       assert [{"done", meta}] = stages(ctx.conv.id, "sandbox")
@@ -196,7 +196,7 @@ defmodule Fountain.Conversations.LifecycleActionsTest do
       assert Lifecycle.park(ctx.conv.id, ctx.sandbox.id, handle(), :idle) ==
                {:error, :machine_occupied}
 
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
       assert Repo.reload!(ctx.conv).status == "running"
       assert stages(ctx.conv.id, "sandbox") == []
     end
@@ -228,7 +228,7 @@ defmodule Fountain.Conversations.LifecycleActionsTest do
 
       assert_received :destroyed
 
-      reloaded = Repo.reload(ctx.sandbox)
+      reloaded = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert reloaded.status == "terminated"
       assert reloaded.terminated_at
       assert Repo.reload(ctx.conv).status == "idle"
@@ -252,7 +252,7 @@ defmodule Fountain.Conversations.LifecycleActionsTest do
 
       assert Lifecycle.destroy(ctx.conv.id, ctx.sandbox.id, nil, :idle) == :ok
 
-      assert Repo.reload(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert [{"done", meta}] = stages(ctx.conv.id, "sandbox")
       assert meta["message"] == Lifecycle.reclaim_message(:idle)
       # The provider tag falls back with the handle.

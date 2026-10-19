@@ -165,7 +165,7 @@ defmodule FountainWeb.WorkspaceControllerTest do
 
     test "a failed workspace carries its error, and a lost machine reads as none", ctx do
       data = create!(ctx)
-      sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+      sandbox = Fountain.Machines.Lease.get(data["sandbox_id"])
       {:ok, _} = update_sandbox(sandbox, %{status: "failed"})
 
       {1, _} =
@@ -231,7 +231,7 @@ defmodule FountainWeb.WorkspaceControllerTest do
   describe "DELETE /api/workspaces/:id" do
     test "ends its conversations and destroys its machine", ctx do
       data = create!(ctx)
-      sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+      sandbox = Fountain.Machines.Lease.get(data["sandbox_id"])
       {:ok, sandbox} = update_sandbox(sandbox, %{status: "ready"})
       agent = insert_agent(user_id: ctx.user.id)
 
@@ -403,7 +403,9 @@ defmodule FountainWeb.WorkspaceControllerTest do
   describe "POST /api/conversations with workspace_id" do
     setup ctx do
       data = create!(ctx)
-      {:ok, _} = update_sandbox(Repo.get!(Sandbox, data["sandbox_id"]), %{status: "ready"})
+
+      {:ok, _} =
+        update_sandbox(Fountain.Machines.Lease.get(data["sandbox_id"]), %{status: "ready"})
 
       stub(Fountain.Conversations, :register_server, fn _sandbox_id, _spec ->
         {:ok, spawn(fn -> Process.sleep(:infinity) end)}

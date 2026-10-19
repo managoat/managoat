@@ -240,35 +240,5 @@ defmodule Fountain.WorkspacesTest do
       assert Repo.get!(Conversation, conv.id).workspace_id == new_ws.id
       assert Repo.get!(Conversation, stale.id).workspace_id == old_ws.id
     end
-
-    test "a stamp written on the sandbox row only is carried by the lease sweep, the epoch never lowered" do
-      user = insert_verified_user()
-      ws = insert_workspace(user_id: user.id)
-      ws |> Ecto.Changeset.change(lease_epoch: 9) |> Repo.update!()
-
-      sandbox =
-        insert_sandbox(user_id: user.id, workspace_id: ws.id, status: "ready")
-        |> Ecto.Changeset.change(
-          lease_epoch: 3,
-          transition: "destroying",
-          transition_reason: "idle"
-        )
-        |> Repo.update!()
-
-      done_ws = insert_workspace(user_id: user.id)
-
-      insert_sandbox(user_id: user.id, workspace_id: done_ws.id, status: "terminated")
-      |> Ecto.Changeset.change(transition: "destroying")
-      |> Repo.update!()
-
-      assert {0, 0} = Workspaces._unsafe_reconcile_live()
-      Fountain.Machines.Lease.sweep_boot()
-
-      assert %Workspace{lease_epoch: 9, transition: "destroying", transition_reason: "idle"} =
-               Repo.reload!(ws)
-
-      assert %Workspace{transition: nil} = Repo.reload!(done_ws)
-      assert Repo.reload!(sandbox).transition == "destroying"
-    end
   end
 end

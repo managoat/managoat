@@ -44,7 +44,7 @@ defmodule Fountain.Machines.DestroyTest do
 
   defp events(ctx, action), do: Audit.list_for_user(ctx.user.id, action_prefix: action)
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   # An owner outliving its test would hold a checked-in sandbox connection and
   # stay registered under an id the next test may reuse (as in `machine_test.exs`).
@@ -125,7 +125,7 @@ defmodule Fountain.Machines.DestroyTest do
           result =
             Mimic.call_original(Lifecycle, :fence_sandbox_for_teardown, [sandbox, fence_opts])
 
-          send(test, {:after_fence, Repo.reload!(ctx.sandbox)})
+          send(test, {:after_fence, Fountain.Machines.Lease.get(ctx.sandbox.id)})
           result
         end)
 
@@ -154,7 +154,7 @@ defmodule Fountain.Machines.DestroyTest do
         # Everything before step 5, read from the row the way another node
         # would read it: no transaction, no lock, no struct we brought.
         refute Repo.in_transaction?()
-        send(test, {:mid_destroy, Repo.reload!(ctx.sandbox)})
+        send(test, {:mid_destroy, Fountain.Machines.Lease.get(ctx.sandbox.id)})
         :ok
       end)
 
@@ -206,7 +206,7 @@ defmodule Fountain.Machines.DestroyTest do
       stub(Audit, :record, fn attrs ->
         if attrs[:action] == "sandbox.destroyed" do
           refute Repo.in_transaction?()
-          send(test, {:at_audit, Repo.reload!(ctx.sandbox)})
+          send(test, {:at_audit, Fountain.Machines.Lease.get(ctx.sandbox.id)})
         end
 
         Mimic.call_original(Audit, :record, [attrs])
@@ -521,7 +521,7 @@ defmodule Fountain.Machines.DestroyTest do
         abandon_mid_destroy(ctx)
 
         {:ok, _} =
-          update_sandbox(Repo.reload!(ctx.sandbox), %{status: unquote(terminal)})
+          update_sandbox(Fountain.Machines.Lease.get(ctx.sandbox.id), %{status: unquote(terminal)})
 
         assert row(ctx).transition == "destroying", "the reaper-shaped row was not built"
 
@@ -548,7 +548,8 @@ defmodule Fountain.Machines.DestroyTest do
       # carries no epoch, and it says nothing about `transition`.
       abandon_mid_destroy(ctx)
 
-      {:ok, _} = update_sandbox(Repo.reload!(ctx.sandbox), %{status: "terminated"})
+      {:ok, _} =
+        update_sandbox(Fountain.Machines.Lease.get(ctx.sandbox.id), %{status: "terminated"})
 
       swept = row(ctx)
       assert swept.status == "terminated"

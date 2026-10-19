@@ -96,7 +96,7 @@ defmodule Fountain.Conversations.ActorStatusBindingTest do
   for stale? <- [false, true] do
     test "successful provider attach with stale binding #{stale?}", ctx do
       stale? = unquote(stale?)
-      sandbox = Repo.get!(Fountain.Conversations.Sandbox, ctx.conv.sandbox_id)
+      sandbox = Fountain.Machines.Lease.get(ctx.conv.sandbox_id)
       Repo.update!(Ecto.Changeset.change(sandbox, status: "ready"))
       conv = Repo.update!(Ecto.Changeset.change(ctx.conv, status: "running"))
       turn = insert_turn(conv, status: "running", acp_prompt_id: 4)

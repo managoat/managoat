@@ -92,7 +92,7 @@ defmodule FountainWeb.PromptWakeTest do
     refute_received {:"$gen_cast", {:initial_prompt, _, _, _}}
     assert_receive {:"$gen_cast", {:initial_prompt, "continue", [], _timing}}, 3_000
     refute_received :wake_failed
-    assert Repo.get!(Fountain.Conversations.Sandbox, conv.sandbox_id).status == "ready"
+    assert Fountain.Machines.Lease.get(conv.sandbox_id).status == "ready"
   end
 
   test "an interrupt reconnects to a running turn", ctx do

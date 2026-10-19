@@ -4,8 +4,8 @@ defmodule Fountain.RemovedRunnerProviderTest do
   that still name it: sandboxes whose provider is `runner`, and agents pinned
   to it. The columns are plain strings, so loading such a row cannot raise the
   way an `Ecto.Enum` would; these tests pin that every read of one keeps
-  working, that nothing new can name the provider, that its routes are gone,
-  and what `20261014153100_retire_runner_rows` does to the rows it touches.
+  working, that nothing new can name the provider, and that its routes are
+  gone. `RetireRunnerRowsMigrationTest` covers the migration.
   """
   use FountainWeb.ConnCase, async: true
 
@@ -14,18 +14,9 @@ defmodule Fountain.RemovedRunnerProviderTest do
 
   alias Fountain.Accounts
   alias Fountain.Agents
-  alias Fountain.Agents.Agent
   alias Fountain.Conversations
   alias Fountain.Conversations.Sandbox
   alias Fountain.Repo
-  alias Fountain.Repo.Migrations.RetireRunnerRows, as: Migration
-
-  unless Code.ensure_loaded?(Migration) do
-    Code.require_file(
-      "../../priv/repo/migrations/20261014153100_retire_runner_rows.exs",
-      __DIR__
-    )
-  end
 
   # Writes a value the changesets no longer accept, the way the previous
   # release left it in the table.
@@ -65,7 +56,7 @@ defmodule Fountain.RemovedRunnerProviderTest do
     end
 
     test "the context reads load them", %{user: user, sandbox: sandbox} do
-      assert %Sandbox{provider: "runner"} = Repo.get!(Sandbox, sandbox.id)
+      assert %Sandbox{provider: "runner"} = Fountain.Machines.Lease.get(sandbox.id)
       assert Enum.any?(Conversations.list_sandboxes(user.id), &(&1.id == sandbox.id))
     end
 
@@ -125,67 +116,5 @@ defmodule Fountain.RemovedRunnerProviderTest do
 
     assert conn |> authed_with_key(raw) |> get("/api/runners") |> response(404)
     assert conn |> authed_with_key(raw) |> get("/api/runners/ws") |> response(404)
-  end
-
-  describe "20261014153100_retire_runner_rows" do
-    test "unpins agents, terminates live runner sandboxes and leaves the rest" do
-      user = insert_verified_user()
-      pinned = insert_agent(user_id: user.id)
-      pinned = force(Agent, pinned.id, sandbox_provider: "runner")
-      e2b = insert_agent(user_id: user.id)
-      e2b = force(Agent, e2b.id, sandbox_provider: "e2b")
-
-      live = insert_sandbox(user_id: user.id, status: "ready")
-
-      live =
-        force(Sandbox, live.id,
-          provider: "runner",
-          transition: "suspending",
-          transition_reason: "idle",
-          updated_at: ~U[2026-08-01 00:00:00Z]
-        )
-
-      parked = insert_sandbox(user_id: user.id, status: "suspended")
-      parked = force(Sandbox, parked.id, provider: "runner")
-
-      ended = insert_sandbox(user_id: user.id, status: "ready")
-
-      ended =
-        force(Sandbox, ended.id,
-          provider: "runner",
-          status: "failed",
-          terminated_at: ~U[2026-07-01 00:00:00Z]
-        )
-
-      sprite = insert_sandbox(user_id: user.id, status: "ready")
-
-      Ecto.Migration.Runner.run(
-        Repo,
-        Repo.config(),
-        20_261_014_153_100,
-        Migration,
-        :forward,
-        :up,
-        :up,
-        log: false
-      )
-
-      assert Repo.reload!(pinned).sandbox_provider == nil
-      assert Repo.reload!(e2b).sandbox_provider == "e2b"
-
-      live = Repo.reload!(live)
-      assert live.provider == "runner"
-      assert live.status == "terminated"
-      assert live.terminated_at == ~U[2026-08-01 00:00:00Z]
-      assert live.transition == nil
-      assert live.transition_reason == nil
-
-      assert %Sandbox{status: "terminated"} = Repo.reload!(parked)
-
-      assert %Sandbox{status: "failed", terminated_at: ~U[2026-07-01 00:00:00Z]} =
-               Repo.reload!(ended)
-
-      assert %Sandbox{provider: "sprites", status: "ready"} = Repo.reload!(sprite)
-    end
   end
 end

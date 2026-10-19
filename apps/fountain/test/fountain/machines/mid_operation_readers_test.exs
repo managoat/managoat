@@ -186,7 +186,7 @@ defmodule Fountain.Machines.MidOperationReadersTest do
                  Machine.ensure_up(ctx.sandbox.id, actor: "system:wake")
                end)
 
-      assert is_nil(Repo.reload!(ctx.sandbox).transition),
+      assert is_nil(Fountain.Machines.Lease.get(ctx.sandbox.id).transition),
              "the owner left the abandoned stamp on the row it just handed out"
     end
 
@@ -242,7 +242,7 @@ defmodule Fountain.Machines.MidOperationReadersTest do
       assert {:error, :sandbox_unavailable} =
                capture_answer(fn -> Wake.wake_conversation(conv.id, "hello") end)
 
-      assert Repo.reload!(ctx.sandbox).status == "pending",
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "pending",
              "the machine being provisioned was replaced anyway"
     end
 

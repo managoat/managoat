@@ -43,7 +43,7 @@ defmodule Fountain.Conversations.TerminationFallbackTest do
         {:at_provider,
          %{
            in_transaction?: Repo.in_transaction?(),
-           fenced: Repo.reload!(ctx.sandbox)
+           fenced: Fountain.Machines.Lease.get(ctx.sandbox.id)
          }}
       )
 
@@ -61,7 +61,7 @@ defmodule Fountain.Conversations.TerminationFallbackTest do
     refute observed.fenced.transition_reason == "reset"
     assert observed.fenced.status == "ready"
 
-    retired = Repo.reload!(ctx.sandbox)
+    retired = Fountain.Machines.Lease.get(ctx.sandbox.id)
     assert retired.status == "terminated"
     assert retired.terminated_at
     assert is_nil(retired.transition)
@@ -89,7 +89,7 @@ defmodule Fountain.Conversations.TerminationFallbackTest do
 
     assert {:error, :sandbox_unavailable} = terminate(ctx)
     assert Repo.reload!(ctx.conv).status == "terminated"
-    assert Repo.reload!(ctx.sandbox).status == "ready"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
     assert events(ctx, "conversation.terminated") == []
   end
 
@@ -104,11 +104,11 @@ defmodule Fountain.Conversations.TerminationFallbackTest do
     expect(Managoat.Sandbox, :destroy, fn _ -> {:error, :unavailable} end)
 
     assert :ok = terminate(ctx)
-    assert Repo.reload!(ctx.sandbox).status == "terminated"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     # Retired: the finalize takes the stamp off. The fence columns stayed on a
     # retired row as evidence until ADR 0058 stage 9b; the audit trail is the
     # evidence now.
-    assert is_nil(Repo.reload!(ctx.sandbox).transition)
+    assert is_nil(Fountain.Machines.Lease.get(ctx.sandbox.id).transition)
     assert [_] = events(ctx, "sandbox.teardown_requested")
     assert [_] = events(ctx, "sandbox.destroyed")
     assert [_] = events(ctx, "conversation.terminated")
@@ -118,7 +118,7 @@ defmodule Fountain.Conversations.TerminationFallbackTest do
     Repo.update!(Ecto.Changeset.change(ctx.sandbox, status: "failed"))
     assert :ok = terminate(ctx)
     assert Repo.reload!(ctx.conv).status == "terminated"
-    assert Repo.reload!(ctx.sandbox).status == "failed"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "failed"
     assert events(ctx, "sandbox.teardown_requested") == []
   end
 

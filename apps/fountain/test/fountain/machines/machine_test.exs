@@ -308,7 +308,7 @@ defmodule Fountain.Machines.MachineTest do
       assert Machine.whereis(ctx.sandbox.id) == owner
       assert %Occupancy{} = Machine.who_is_here(ctx.sandbox.id)
 
-      assert Fountain.Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     end
 
     test "an owner that cannot be started refuses rather than writing anyway", ctx do
@@ -334,8 +334,8 @@ defmodule Fountain.Machines.MachineTest do
       assert log =~ "machine_unreachable"
       assert log =~ "no_capacity"
 
-      assert Fountain.Repo.reload!(ctx.sandbox).status == "ready"
-      refute Fountain.Repo.reload!(ctx.sandbox).transition
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
+      refute Fountain.Machines.Lease.get(ctx.sandbox.id).transition
     end
   end
 

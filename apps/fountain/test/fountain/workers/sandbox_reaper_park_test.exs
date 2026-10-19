@@ -93,7 +93,7 @@ defmodule Fountain.Workers.SandboxReaperParkTest do
     end)
   end
 
-  defp row(ctx), do: Repo.reload!(ctx.sandbox)
+  defp row(ctx), do: Fountain.Machines.Lease.get(ctx.sandbox.id)
 
   defp suspended_events(ctx),
     do: Fountain.Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.suspended")
@@ -141,7 +141,7 @@ defmodule Fountain.Workers.SandboxReaperParkTest do
       test = self()
 
       expect(Managoat.Sandbox, :suspend, fn %Handle{} ->
-        send(test, {:mid_park, Repo.reload!(ctx.sandbox)})
+        send(test, {:mid_park, Fountain.Machines.Lease.get(ctx.sandbox.id)})
         :ok
       end)
 

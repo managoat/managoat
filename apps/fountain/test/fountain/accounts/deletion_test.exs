@@ -75,7 +75,7 @@ defmodule Fountain.Accounts.DeletionTest do
       capture_log(fn -> assert {:ok, _} = Deletion.delete_user(user) end)
 
       refute Repo.get(Fountain.Workspaces.Workspace, ws.id)
-      assert %Sandbox{user_id: nil, workspace_id: nil} = Repo.get!(Sandbox, sandbox.id)
+      assert %Sandbox{user_id: nil, workspace_id: nil} = Fountain.Machines.Lease.get(sandbox.id)
     end
 
     test "the tenant's data encryption key" do

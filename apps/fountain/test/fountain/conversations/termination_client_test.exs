@@ -64,7 +64,7 @@ defmodule Fountain.Conversations.TerminationClientTest do
 
       refute_received {:termination_request, _, _}
       assert Repo.reload!(ctx.conv).status == "idle"
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
       assert events(ctx) == []
     end
   end

@@ -311,7 +311,7 @@ defmodule Fountain.Machines.Binding do
   """
   @spec clear_abandoned_transition(Ecto.UUID.t()) :: non_neg_integer()
   def clear_abandoned_transition(sandbox_id) when is_binary(sandbox_id) do
-    # On the machine's workspace, and copied onto the sandbox (ADR 0097, step
+    # On the machine's workspace (ADR 0097, step
     # 3b), in the registration's transaction.
     Lease.put_transition!(sandbox_id, nil, nil)
   end

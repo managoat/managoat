@@ -205,7 +205,7 @@ defmodule Fountain.Factory do
   hide the state a test is trying to build. The owner's own write refuses both.
   """
   def update_sandbox(%Sandbox{id: id}, attrs) do
-    current = Repo.get!(Sandbox, id)
+    current = Fountain.Machines.Lease.get(id)
     changeset = Sandbox.changeset(current, attrs)
 
     changeset =
@@ -306,11 +306,10 @@ defmodule Fountain.Factory do
 
   @doc """
   Set a machine's lease columns (`lease_epoch`, `lease_node`, `transition`,
-  `transition_reason`) as a test fixture: on its workspace, where the owner
-  reads them (ADR 0097), and on the sandbox's own copy, as
-  `Fountain.Machines.Lease` keeps it. A sandbox with no workspace has only its
-  own written. Any other key in `attrs` is written to the sandbox. Returns the
-  sandbox as `Lease.get/1` reads it.
+  `transition_reason`) as a test fixture: on its workspace, the one place
+  they are kept (ADR 0097, #3000). A sandbox with no workspace has nowhere
+  to hold them, so naming one for it raises. Any other key in `attrs` is
+  written to the sandbox. Returns the sandbox as `Lease.get/1` reads it.
   """
   #
   # Given a struct, like `Ecto.Changeset.change/2` it writes only the keys whose
@@ -329,9 +328,12 @@ defmodule Fountain.Factory do
     {lease, rest} =
       Keyword.split(attrs, [:lease_epoch, :lease_node, :transition, :transition_reason])
 
-    sandbox = Repo.get!(Sandbox, id)
+    sandbox = Fountain.Machines.Lease.get(id)
 
-    if lease != [] and sandbox.workspace_id do
+    if lease != [] do
+      if is_nil(sandbox.workspace_id),
+        do: raise(ArgumentError, "sandbox #{id} has no workspace to hold a lease")
+
       {1, _} =
         Repo.update_all(
           from(w in Fountain.Workspaces.Workspace, where: w.id == ^sandbox.workspace_id),
@@ -339,10 +341,8 @@ defmodule Fountain.Factory do
         )
     end
 
-    sets = lease ++ rest
-
-    if sets != [] do
-      {1, _} = Repo.update_all(from(s in Sandbox, where: s.id == ^id), set: sets)
+    if rest != [] do
+      {1, _} = Repo.update_all(from(s in Sandbox, where: s.id == ^id), set: rest)
     end
 
     Fountain.Machines.Lease.get(id)

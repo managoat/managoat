@@ -122,7 +122,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
     test = self()
 
     expect(Managoat.Sandbox.Sprites, :destroy, fn handle ->
-      row = Repo.reload!(sandbox)
+      row = Fountain.Machines.Lease.get(sandbox.id)
 
       send(
         test,
@@ -242,7 +242,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert transition == "destroying"
       assert fenced_at
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     end
 
     test "a shared machine and a home are both destroyed, never kept", ctx do
@@ -278,8 +278,8 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert Enum.sort(destroyed_names()) ==
                Enum.sort([ctx.sandbox.machine_name, home.machine_name])
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
-      assert Repo.reload!(ctx.sandbox).user_id == nil
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).user_id == nil
       assert Repo.reload!(home).status == "terminated"
     end
 
@@ -389,7 +389,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
                  )
       end)
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert destroyed_names() == [ctx.sandbox.machine_name]
       assert_received {:server_opts, opts}
       assert Keyword.get(opts, :audit_destroy) == true
@@ -419,7 +419,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       capture_log(fn -> assert {:ok, _} = Deletion.delete_user(ctx.user) end)
 
       refute Repo.get(Fountain.Accounts.User, ctx.user.id)
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     end
 
     test "a refused destroy does not abort the deletion", ctx do
@@ -432,8 +432,8 @@ defmodule Fountain.Machines.DestroyForcedTest do
 
       assert log =~ "refused"
       refute Repo.get(Fountain.Accounts.User, ctx.user.id)
-      assert Repo.reload!(ctx.sandbox).status == "ready"
-      assert Repo.reload!(ctx.sandbox).transition == "destroying"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "destroying"
     end
 
     test "an enclosing transaction is still refused before any teardown", ctx do
@@ -442,8 +442,8 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert {:ok, {:error, :provider_transaction_open}} =
                Repo.transaction(fn -> Deletion.delete_user(ctx.user) end)
 
-      assert Repo.reload!(ctx.sandbox).status == "ready"
-      refute teardown_fenced?(Repo.reload!(ctx.sandbox))
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
+      refute teardown_fenced?(Fountain.Machines.Lease.get(ctx.sandbox.id))
     end
   end
 
@@ -482,7 +482,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert transition == "destroying"
       assert fenced_at
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
 
       # The thread survives a reclaimed machine; the next prompt provisions a
       # fresh one (decisions/0017).
@@ -509,7 +509,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       sweep(fn -> assert {0, 1, 0, _} = SandboxReaper.sweep_abandoned_sandboxes() end)
 
       assert destroyed_names() == [ctx.sandbox.machine_name]
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert Repo.reload!(second).status == "idle"
     end
 
@@ -531,7 +531,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
 
       sweep(fn -> assert {0, 1, 0, _} = SandboxReaper.sweep_abandoned_sandboxes() end)
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert [_] = events(ctx.user.id, "sandbox.expired")
     end
 
@@ -726,7 +726,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert length(deferred) == 2
 
       for row <- deferred do
-        reloaded = Repo.reload!(row)
+        reloaded = Fountain.Machines.Lease.get(row.id)
 
         refute reloaded.transition == "destroying",
                "a deferred row was fenced — the next run must see it exactly as it was"
@@ -756,7 +756,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       # because nothing happened to this tenant's machine. The next pass tries
       # again; a refusal that happened *after* the fence is
       # `sweep_fenced_teardowns/0`'s case.
-      refused = Repo.reload!(ctx.sandbox)
+      refused = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert refused.status == "ready"
       assert Enum.map(events(ctx.user.id, "sandbox.expired"), & &1.resource_id) == [other.id]
     end
@@ -791,7 +791,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       assert transition == "destroying"
       assert fenced_at
 
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
       assert Repo.reload!(ctx.conv).status == "idle"
     end
 
@@ -811,7 +811,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       capture_provider()
       assert {:ok, :released} = Termination.reap_sandbox(ctx.sandbox.id)
       assert destroyed_names() == [ctx.sandbox.machine_name]
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     end
 
     test "an admin's id folds to `admin` on both machine events, and is kept on the admin one",
@@ -852,7 +852,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       reject(&Managoat.Sandbox.Sprites.destroy/1)
 
       assert {:ok, :terminated} = Termination.reap_sandbox(ctx.sandbox.id)
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
     end
 
     test "a refused destroy is reported", ctx do
@@ -864,7 +864,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
       end)
 
       assert destroyed_names() == []
-      assert Repo.reload!(ctx.sandbox).status == "ready"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "ready"
 
       # Nothing succeeded, so nothing was recorded — `audit_reap/3`'s rule,
       # unchanged.
@@ -920,7 +920,7 @@ defmodule Fountain.Machines.DestroyForcedTest do
 
       assert [_one] = events(ctx.user.id, "sandbox.destroyed")
       assert Repo.reload!(sandbox).status == "terminated"
-      assert Repo.reload!(sandbox).transition == nil
+      assert Fountain.Machines.Lease.get(sandbox.id).transition == nil
     end
   end
 

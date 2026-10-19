@@ -16,7 +16,7 @@ defmodule Fountain.Conversations.InitialStartFailureTest do
     expect_server_start(fn _, _ -> {:error, :max_children} end)
     assert {:ok, conv} = start(ctx)
     assert conv.status == "failed"
-    sandbox = Repo.get!(Sandbox, conv.sandbox_id)
+    sandbox = Fountain.Machines.Lease.get(conv.sandbox_id)
     assert sandbox.status == "failed"
     assert sandbox.terminated_at
   end
@@ -41,7 +41,7 @@ defmodule Fountain.Conversations.InitialStartFailureTest do
     assert {:ok, conv} = start(ctx)
 
     assert conv.status == "pending", "the conversation was failed without its machine"
-    assert Repo.get!(Sandbox, conv.sandbox_id).status == "pending"
+    assert Fountain.Machines.Lease.get(conv.sandbox_id).status == "pending"
   end
 
   test "a delayed start error preserves a replacement binding and both machines", ctx do
@@ -49,7 +49,7 @@ defmodule Fountain.Conversations.InitialStartFailureTest do
 
     expect_server_start(fn _, {ConversationServer, args} ->
       conv = Repo.get!(Conversation, args[:conversation_id])
-      original = Repo.get!(Sandbox, args[:sandbox_id])
+      original = Fountain.Machines.Lease.get(args[:sandbox_id])
       replacement = insert_sandbox(user_id: ctx.user.id, status: "ready")
 
       {:ok, _} =
@@ -63,14 +63,14 @@ defmodule Fountain.Conversations.InitialStartFailureTest do
     assert_received {:bindings, original_id, replacement_id}
     assert conv.status == "idle"
     assert conv.sandbox_id == replacement_id
-    assert Repo.get!(Sandbox, original_id).status == "pending"
-    assert Repo.get!(Sandbox, replacement_id).status == "ready"
+    assert Fountain.Machines.Lease.get(original_id).status == "pending"
+    assert Fountain.Machines.Lease.get(replacement_id).status == "ready"
   end
 
   test "a start error cannot overwrite an already-provisioned conversation", ctx do
     expect_server_start(fn _, {ConversationServer, args} ->
       conv = Repo.get!(Conversation, args[:conversation_id])
-      sandbox = Repo.get!(Sandbox, args[:sandbox_id])
+      sandbox = Fountain.Machines.Lease.get(args[:sandbox_id])
       {:ok, _} = update_sandbox(sandbox, %{status: "ready"})
       {:ok, _} = Conversations.update_conversation(conv, %{status: "idle"})
       {:error, :max_children}
@@ -78,7 +78,7 @@ defmodule Fountain.Conversations.InitialStartFailureTest do
 
     assert {:ok, conv} = start(ctx)
     assert conv.status == "idle"
-    assert Repo.get!(Sandbox, conv.sandbox_id).status == "ready"
+    assert Fountain.Machines.Lease.get(conv.sandbox_id).status == "ready"
   end
 
   test "a cancelled parent keeps its terminal status", ctx do

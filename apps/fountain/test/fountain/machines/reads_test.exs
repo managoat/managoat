@@ -156,7 +156,7 @@ defmodule Fountain.Machines.ReadsTest do
         lease_node: dead_lease_holder()
       )
 
-      refute Lease.live?(Repo.reload!(ctx.sandbox))
+      refute Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id))
       reject(&Managoat.Sandbox.exec/4)
 
       capture_log(fn ->
@@ -456,7 +456,7 @@ defmodule Fountain.Machines.ReadsTest do
 
       # The park has claimed and is draining: no suspend while the read is at
       # the provider, and no second read is admitted behind it.
-      wait_until(fn -> Lease.live?(Repo.reload!(ctx.sandbox)) end)
+      wait_until(fn -> Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id)) end)
       refute_receive {:suspend, _}, 300
       reject(&Managoat.Sandbox.exec/4)
 
@@ -471,7 +471,7 @@ defmodule Fountain.Machines.ReadsTest do
       assert_receive {:suspend, 0}, 5_000
       assert_receive {:parked, {:ok, :parked}}, 5_000
       Task.await(park)
-      assert Repo.reload!(ctx.sandbox).status == "suspended"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "suspended"
     end
 
     test "park first: the read is refused while the park is at the provider", ctx do
@@ -526,7 +526,7 @@ defmodule Fountain.Machines.ReadsTest do
           end)
         end)
 
-      wait_until(fn -> Lease.live?(Repo.reload!(ctx.sandbox)) end)
+      wait_until(fn -> Lease.live?(Fountain.Machines.Lease.get(ctx.sandbox.id)) end)
       refute_receive {:destroy, _}, 300
 
       send(exec, :finish)
@@ -535,7 +535,7 @@ defmodule Fountain.Machines.ReadsTest do
       assert_receive {:destroy, 0}, 5_000
       assert_receive {:destroyed, {:ok, :destroyed}}, 5_000
       Task.await(destroy)
-      assert Repo.reload!(ctx.sandbox).status == "terminated"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).status == "terminated"
     end
 
     test "destroy first: the read is refused while the machine is being destroyed", ctx do

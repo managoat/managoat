@@ -5,9 +5,16 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
   pointers repointed, and every live sandbox's in-flight stamp carried to its
   workspace. The columns themselves are exercised by every suite that runs
   against the migrated schema.
+
+  The sandbox's own lease columns, which this migration carries from, are
+  dropped by `20261019150100_drop_sandbox_lease_columns` (#3000). So the
+  test stands the schema where a release before step 3a left it, with that
+  drop's `down/0`, writes the rows an earlier release left, runs this
+  migration down and up, and then the drop again: what an upgrade from a
+  release before 3a straight to this one runs.
   """
 
-  # The test runs the migration down and up again inside its own SQL sandbox
+  # The test runs migrations down and up inside its own SQL sandbox
   # transaction, which takes `ACCESS EXCLUSIVE` on two tables until it rolls
   # back, so it runs alone.
   use Fountain.DataCase, async: false
@@ -16,6 +23,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
 
   alias Fountain.Conversations.{Conversation, Sandbox}
   alias Fountain.Repo.Migrations.AddMachineLeaseToWorkspaces, as: Migration
+  alias Fountain.Repo.Migrations.DropSandboxLeaseColumns, as: Drop
   alias Fountain.Workspaces.Workspace
 
   unless Code.ensure_loaded?(Migration) do
@@ -25,13 +33,20 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
     )
   end
 
-  defp run(direction) do
+  unless Code.ensure_loaded?(Drop) do
+    Code.require_file(
+      "../../priv/repo/migrations/20261019150100_drop_sandbox_lease_columns.exs",
+      __DIR__
+    )
+  end
+
+  defp run(version, module, direction) do
     capture_log(fn ->
       Ecto.Migration.Runner.run(
         Repo,
         Repo.config(),
-        20_261_018_210_000,
-        Migration,
+        version,
+        module,
         :forward,
         direction,
         direction,
@@ -40,15 +55,46 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
     end)
   end
 
-  # Down, then up: what a deploy of this release does to rows an earlier
-  # release left, run against the real `up/0`.
-  defp migrate do
-    run(:down)
-    run(:up)
+  # The sandbox's lease columns back, as a release before #3000 has them.
+  setup do
+    run(20_261_019_150_100, Drop, :down)
+    :ok
   end
 
-  defp stamp(%Sandbox{} = sandbox, attrs),
-    do: sandbox |> Ecto.Changeset.change(attrs) |> Repo.update!()
+  # Down, then up, then the drop: what a deploy of this release does to rows
+  # an earlier release left, run against the real `up/0`s.
+  defp migrate do
+    run(20_261_018_210_000, Migration, :down)
+    run(20_261_018_210_000, Migration, :up)
+  end
+
+  defp migrate_and_drop do
+    migrate()
+    run(20_261_019_150_100, Drop, :up)
+  end
+
+  # Written as an earlier release wrote them: on the sandbox's own row.
+  defp stamp(%Sandbox{id: id} = sandbox, attrs) do
+    attrs = Map.new(attrs)
+
+    Repo.query!(
+      """
+      UPDATE sandboxes
+         SET transition = $1, transition_reason = $2,
+             lease_epoch = $3, lease_node = $4
+       WHERE id = $5
+      """,
+      [
+        attrs[:transition],
+        attrs[:transition_reason],
+        attrs[:lease_epoch] || 0,
+        attrs[:lease_node],
+        Ecto.UUID.dump!(id)
+      ]
+    )
+
+    sandbox
+  end
 
   test "the fill, the repoint and the carry, from the rows an earlier release left" do
     user = insert_verified_user()
@@ -74,7 +120,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
 
     terminal = insert_sandbox(user_id: user.id, workspace_id: nil, status: "terminated")
 
-    migrate()
+    migrate_and_drop()
 
     bare_ws = Repo.get!(Workspace, Repo.reload!(bare).workspace_id)
 
@@ -94,7 +140,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
     assert %Workspace{transition: "resuming", lease_epoch: 2, lease_node: "0000/<0.1.0>"} =
              Repo.reload!(ws)
 
-    assert Repo.reload!(resuming).transition == "resuming"
+    assert Fountain.Machines.Lease.get(resuming.id).transition == "resuming"
     assert Repo.reload!(terminal).workspace_id == nil
   end
 
@@ -105,6 +151,7 @@ defmodule Fountain.AddMachineLeaseToWorkspacesMigrationTest do
     migrate()
     first = Repo.reload!(sandbox).workspace_id
     migrate()
+    run(20_261_019_150_100, Drop, :up)
 
     assert Repo.reload!(sandbox).workspace_id == first
     assert Repo.aggregate(from(w in Workspace, where: w.user_id == ^user.id), :count) == 1

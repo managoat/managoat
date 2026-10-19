@@ -97,7 +97,7 @@ defmodule Fountain.Machines.RegisterServerTest do
              Conversations.register_server(ctx.sandbox.id, probe_spec([]))
 
     refute_received {:started, _}
-    assert Repo.reload!(ctx.sandbox).transition == "resuming"
+    assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "resuming"
   end
 
   describe "the child" do
@@ -106,7 +106,7 @@ defmodule Fountain.Machines.RegisterServerTest do
       assert_receive {:started, ^pid}, 5_000
       stop(pid)
 
-      row = Repo.reload!(ctx.sandbox)
+      row = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert row.status == "ready"
       assert row.lease_epoch == 0
       refute row.lease_node
@@ -531,7 +531,7 @@ defmodule Fountain.Machines.RegisterServerTest do
       assert {:ok, pid} = Conversations.register_server(ctx.sandbox.id, probe_spec([]))
       on_exit(fn -> stop(pid) end)
 
-      row = Repo.reload!(ctx.sandbox)
+      row = Fountain.Machines.Lease.get(ctx.sandbox.id)
       assert is_nil(row.transition), "the stamp outlived the operation that wrote it"
       assert is_nil(row.transition_reason)
     end
@@ -549,7 +549,7 @@ defmodule Fountain.Machines.RegisterServerTest do
       assert {:error, :sandbox_unavailable} =
                Conversations.register_server(ctx.sandbox.id, probe_spec([]))
 
-      assert Repo.reload!(ctx.sandbox).transition == "parking"
+      assert Fountain.Machines.Lease.get(ctx.sandbox.id).transition == "parking"
     end
   end
 end
