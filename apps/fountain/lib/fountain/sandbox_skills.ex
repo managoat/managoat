@@ -19,6 +19,7 @@ defmodule Fountain.SandboxSkills do
   @managoat_skill_name "managoat"
   # Every sandbox gets these.
   @bundled_skills [@managoat_skill_name]
+  @plain_name ~r/\A[A-Za-z0-9_][A-Za-z0-9._-]*\z/
 
   @doc """
   Mount `skills` (a list of inline/github maps, the agent's `skills` field)
@@ -529,6 +530,22 @@ defmodule Fountain.SandboxSkills do
       {:ok, _output, code} -> {:error, "skill reconciliation exited with #{code}"}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  @doc """
+  The directory names a mount of `skills` is sure to own under the skills
+  root: the bundled skills, the agent's inline ones, and every GitHub skill
+  that names its skill. A runtime template's skill of one of these names must
+  give way before the mount, not only be overwritten by it: a reconciliation
+  that finds a named GitHub skill's directory already there does not fetch it.
+  An unnamed GitHub install's directories are known only once it is fetched.
+  Only plain names (no `/`, not `.` or `..`) are answered.
+  """
+  @spec owned_names([map()] | nil) :: [String.t()]
+  def owned_names(skills) do
+    agent = for s <- normalize(skills), is_binary(s["name"]), do: s["name"]
+
+    Enum.uniq(for name <- @bundled_skills ++ agent, name =~ @plain_name, do: name)
   end
 
   @doc """

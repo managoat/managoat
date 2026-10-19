@@ -105,7 +105,7 @@ defmodule Managoat.Runtimes.Claude do
 
   @behaviour Managoat.Runtimes
 
-  alias Managoat.Runtimes.Layout
+  alias Managoat.Runtimes.{JsonConfig, Layout}
 
   @runtime "claude"
 
@@ -113,6 +113,12 @@ defmodule Managoat.Runtimes.Claude do
   # in the working directory those conversations ran in; still written for
   # them (see `write_config/3`).
   @legacy_mcp_config Path.join(Layout.cwd(@runtime), ".mcp.json")
+
+  # The keys of `settings.json` that are Managoat's. User-scope servers need
+  # no approval, unlike the project-scope ones this used to write, so there
+  # is no `enableAllProjectMcpServers`: a repository's own `.mcp.json` is the
+  # CLI's to decide about.
+  @settings %{"showThinkingSummaries" => true}
 
   @impl true
   def skills_root(home), do: Layout.skills_root(@runtime, home)
@@ -150,13 +156,19 @@ defmodule Managoat.Runtimes.Claude do
   conversation's config home (see the moduledoc for why the servers go in a
   file and not only over the ACP session-scoped channel).
 
-  `settings.json` is written on every call, agent or not, because it carries
-  `showThinkingSummaries`. The servers are set as the `mcpServers` of
-  `.claude.json` on every call too, `%{}` included, so an agent that drops a
-  server drops it on its next wake. The rest of that file is the CLI's own
-  state and is kept: the file is read, the key replaced, and the result
-  renamed into place, so a CLI reading it never sees half a file. A file
-  whose servers are already these is left alone: last writer wins between
+  Both files are Managoat's only in the keys it owns: `showThinkingSummaries`
+  in `settings.json`, `mcpServers` in `.claude.json`. Both are read in one
+  exec, those keys are put over what is there, and each result is renamed
+  into place (`Managoat.Runtimes.JsonConfig`), so a CLI reading it never sees
+  half a file and the rest of it is kept: the CLI's own state in
+  `.claude.json`, and whatever the runtime template put in either file when
+  the config home was made (#2998), such as a template's `hooks` in
+  `settings.json`.
+
+  `mcpServers` is replaced whole on every call, `%{}` included, so an agent
+  that drops a server drops it on its next wake, and the servers that run
+  are exactly the agent's: a template's `mcpServers` does not survive. A file
+  that already carries these values is left alone: last writer wins between
   two whole-file writers, and a write that changes nothing is a race not
   worth running. That covers an agent whose servers carry no token Fountain
   rotates; a reattach rotates the callback key, so an agent with a
@@ -182,11 +194,23 @@ defmodule Managoat.Runtimes.Claude do
     # only just booted is retried rather than failing the provision: the
     # first filesystem call into a fresh sprite timed out once in prod and
     # took the whole conversation with it.
-    with :ok <- write_retrying(handle, Path.join(home, "settings.json"), settings()),
-         :ok <- write_mcp_servers(handle, home, mcp_servers(agent)) do
-      write_legacy_project_config(handle, home, mcp_servers(agent))
+    settings = settings_path(home)
+    user = user_config_path(home)
+    servers = mcp_servers(agent)
+
+    # The servers first, and whatever `settings.json` holds: a settings file
+    # that does not parse must not keep a rotated token out of `.claude.json`.
+    with {:ok, %{^settings => current_settings, ^user => current_user}} <-
+           JsonConfig.read(handle, [settings, user]),
+         :ok <- JsonConfig.put(handle, user, current_user, %{"mcpServers" => servers}),
+         :ok <- write_legacy_project_config(handle, home, servers) do
+      JsonConfig.put(handle, settings, current_settings, @settings)
     end
   end
+
+  @doc "The CLI's settings file under `home`."
+  @spec settings_path(String.t()) :: String.t()
+  def settings_path(home), do: Path.join(home, "settings.json")
 
   @doc "The CLI's own config file under `home`, which carries the user-scope MCP servers."
   @spec user_config_path(String.t()) :: String.t()
@@ -210,69 +234,6 @@ defmodule Managoat.Runtimes.Claude do
   defp mcp_servers(%{mcp_servers: servers}) when is_map(servers), do: servers
   defp mcp_servers(_agent), do: %{}
 
-  # User-scope servers need no approval, unlike the project-scope ones this
-  # used to write, so the settings carry no `enableAllProjectMcpServers`: a
-  # repository's own `.mcp.json` is the CLI's to decide about.
-  defp settings, do: Jason.encode!(%{"showThinkingSummaries" => true}, pretty: true)
-
-  # Read, replace `mcpServers`, write beside, rename over. The read answers an
-  # empty object for a file that is not there yet (a fresh config home); the
-  # CLI's state in a readable one is kept. Mode 600: the servers carry
-  # resolved credentials. The temporary name is this call's own, so two
-  # writers never move each other's file, and the rename succeeds when it
-  # finds its file already moved: a retried exec whose first reply was lost
-  # has done its work.
-  defp write_mcp_servers(handle, home, servers) do
-    path = user_config_path(home)
-    tmp = path <> ".managoat." <> Integer.to_string(System.unique_integer([:positive])) <> ".tmp"
-
-    with {:ok, current} <- read_user_config(handle, path) do
-      if Map.get(current, "mcpServers") == servers and current != %{} do
-        :ok
-      else
-        body = Jason.encode!(Map.put(current, "mcpServers", servers), pretty: true)
-
-        with :ok <- write_retrying(handle, tmp, body, mode: 0o600) do
-          run_retrying(handle, rename_script(tmp, path), path)
-        end
-      end
-    end
-  end
-
-  @doc false
-  def rename_script(tmp, path) do
-    "if [ -e #{quote_shell(tmp)} ]; then mv -f -- #{quote_shell(tmp)} #{quote_shell(path)}; " <>
-      "else [ -f #{quote_shell(path)} ]; fi"
-  end
-
-  defp read_user_config(handle, path, attempt \\ 1) do
-    script = "if [ -f #{quote_shell(path)} ]; then cat -- #{quote_shell(path)}; fi"
-
-    case exec_retrying(handle, script, path) do
-      {:ok, out} ->
-        case decode_object(out, path) do
-          {:error, {:runtime_config, _, :unreadable}} when attempt == 1 ->
-            Process.sleep(200)
-            read_user_config(handle, path, 2)
-
-          decoded ->
-            decoded
-        end
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp decode_object("", _path), do: {:ok, %{}}
-
-  defp decode_object(text, path) do
-    case Jason.decode(text) do
-      {:ok, %{} = map} -> {:ok, map}
-      _ -> {:error, {:runtime_config, path, :unreadable}}
-    end
-  end
-
   defp write_legacy_project_config(handle, home, servers) do
     if home == Layout.legacy_home(@runtime) and servers != %{} do
       body = Jason.encode!(%{"mcpServers" => servers}, pretty: true)
@@ -281,26 +242,6 @@ defmodule Managoat.Runtimes.Claude do
       :ok
     end
   end
-
-  defp run_retrying(handle, script, path) do
-    case exec_retrying(handle, script, path) do
-      {:ok, _out} -> :ok
-      {:error, _} = error -> error
-    end
-  end
-
-  defp exec_retrying(handle, script, path) do
-    case Managoat.Sandbox.Retry.with_backoff(
-           fn -> Managoat.Sandbox.exec(handle, "bash", ["-c", script], timeout: 15_000) end,
-           label: "claude config #{path}"
-         ) do
-      {:ok, out, 0} -> {:ok, to_string(out)}
-      {:ok, _out, code} -> {:error, {:runtime_config, path, {:exit, code}}}
-      {:error, reason} -> {:error, {:runtime_config, path, reason}}
-    end
-  end
-
-  defp quote_shell(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   @doc """
   The env a turn on `model` needs in the adapter's process, beyond

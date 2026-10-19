@@ -7,7 +7,8 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
   use Fountain.DataCase, async: true
   use Mimic
 
-  alias Fountain.Conversations.{Egress, InferenceBinding, Provisioning, Reattachment, Skills}
+  alias Fountain.Conversations.{ConfigHome, Egress, InferenceBinding, Provisioning}
+  alias Fountain.Conversations.{Reattachment, Skills}
   alias Managoat.Sandbox.Handle
 
   @receive_timeout 2_000
@@ -119,5 +120,110 @@ defmodule Fountain.Conversations.ReattachmentPrepareSourceTest do
 
     assert {:error, :disk_full} =
              Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+  end
+
+  describe "the runtime template (#2998)" do
+    test "goes into a new config home before Managoat's files, beside the CA", ctx do
+      test_pid = self()
+
+      stub(ConfigHome, :seed, fn _handle, conv, _agent, mode ->
+        send(test_pid, {:seed, conv.id, mode, self()})
+        receive do: (:go -> :ok)
+      end)
+
+      stub(Provisioning, :write_runtime_config, fn _, _, _, _ ->
+        send(test_pid, :config)
+        :ok
+      end)
+
+      stub(Provisioning, :write_instructions, fn _, _, _, _ ->
+        send(test_pid, :instructions)
+        :ok
+      end)
+
+      stub(Egress, :install_ca, fn _, _, _, _ ->
+        send(test_pid, :ca)
+        :ok
+      end)
+
+      task =
+        Task.async(fn ->
+          Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+        end)
+
+      conv_id = ctx.conv.id
+      assert_receive {:seed, ^conv_id, :new, seed}, @receive_timeout
+      # The CA does not wait for it; Managoat's files in the home do.
+      assert_receive :ca, @receive_timeout
+      refute_received :config
+      refute_received :instructions
+      send(seed, :go)
+
+      assert Task.await(task) == :ok
+      assert_received :config
+      assert_received :instructions
+    end
+
+    test "a conversation with a runtime session on the machine has its home: no check", ctx do
+      reject(&ConfigHome.seed/4)
+      stub(Provisioning, :write_runtime_config, fn _, _, _, _ -> :ok end)
+      stub(Egress, :install_ca, fn _, _, _, _ -> :ok end)
+      state = Map.put(ctx.state, :runtime_session_id, "sess-1")
+
+      assert :ok = Reattachment.prepare_source(ctx.handle, state, ctx.conv, nil, [])
+    end
+
+    test "a template that cannot be copied refuses the reattach", ctx do
+      stub(ConfigHome, :seed, fn _, _, _, :new ->
+        {:error, {:runtime_template, {:not_a_json_object, "settings.json"}}}
+      end)
+
+      stub(Egress, :install_ca, fn _, _, _, _ -> :ok end)
+      reject(&Provisioning.write_runtime_config/4)
+      reject(&Provisioning.prepare_runtime_sprite/7)
+
+      assert {:error, {:runtime_template, {:not_a_json_object, "settings.json"}}} =
+               Reattachment.prepare_source(ctx.handle, ctx.state, ctx.conv, nil, [])
+    end
+  end
+
+  describe "ConfigHome.seed/4" do
+    test "a legacy home and a runtime with no template are never seeded", ctx do
+      reject(&Managoat.Runtimes.Template.seed/5)
+      assert is_nil(ctx.conv.config_home)
+      assert :ok = ConfigHome.seed(ctx.handle, ctx.conv, nil, :new)
+
+      acp = %{
+        ctx.conv
+        | config_home: Managoat.Runtimes.Layout.config_home(ctx.conv.id),
+          runtime: "acp"
+      }
+
+      assert :ok = ConfigHome.seed(ctx.handle, acp, nil, :new)
+    end
+
+    test "a conversation's own home is seeded, with the skills Managoat writes named", ctx do
+      home = Managoat.Runtimes.Layout.config_home(ctx.conv.id)
+      conv = %{ctx.conv | config_home: home, runtime: "codex"}
+      # A named GitHub skill is owned too: a template copy under its name
+      # would otherwise be taken for it, and never fetched.
+      agent = %{
+        skills: [
+          %{"name" => "mine", "content" => "x"},
+          %{"source" => "o/r"},
+          %{"source" => "o/s", "name" => "named"}
+        ]
+      }
+
+      test_pid = self()
+
+      stub(Managoat.Runtimes.Template, :seed, fn _h, runtime, ^home, mode, opts ->
+        send(test_pid, {:seeded, runtime, mode, opts[:skills]})
+        :ok
+      end)
+
+      assert :ok = ConfigHome.seed(ctx.handle, conv, agent, :into)
+      assert_received {:seeded, "codex", :into, ["managoat", "mine", "named"]}
+    end
   end
 end

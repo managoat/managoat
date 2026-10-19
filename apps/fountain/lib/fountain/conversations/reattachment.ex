@@ -130,22 +130,51 @@ defmodule Fountain.Conversations.Reattachment do
   # Each write is its own `reattach_config_*` span too: the step's p50 was
   # 1.85 s on 2026-10-05 for four writes at once, and its one span cannot say
   # which of them that is.
+  #
+  # The runtime template goes into the config home first, and only where the
+  # home is not there yet: a conversation attaching to a machine that was up
+  # before it (a launch into a workspace, or following its workspace onto a
+  # rebuilt machine). A wake finds its home and copies nothing. The runtime
+  # config and the instructions wait for it, because Managoat's files are the
+  # ones that win; the CA and the env file do not touch the home and go
+  # beside it. A template that cannot be copied refuses the reattach: the
+  # agent would otherwise run without what its environment's setup wrote for
+  # it, and nothing would say so.
+  #
+  # A conversation holding a runtime session on this machine skips even the
+  # check (an exec, ~0.2 s on a sprite, measured 2026-10-19): the session lives
+  # in its config home, so the home is there, and a rebuild that moves the
+  # conversation to a new machine clears the session (`Rebuild`).
   defp write_config(handle, state, agent, conv, sprite_env) do
     [
       fn ->
-        step(state, "reattach_config_runtime", fn ->
-          write_runtime_config(handle, state, agent, conv)
-        end)
-      end,
-      fn ->
-        step(state, "reattach_config_instructions", fn ->
-          Provisioning.write_instructions(
-            handle,
-            runtime(conv, agent),
-            agent,
-            Fountain.Conversations.ConfigHome.home(conv)
-          )
-        end)
+        with :ok <-
+               step(state, "reattach_template", fn ->
+                 if Map.get(state, :runtime_session_id),
+                   do: :ok,
+                   else: ConfigHome.seed(handle, conv, agent, :new)
+               end) do
+          [
+            fn ->
+              step(state, "reattach_config_runtime", fn ->
+                write_runtime_config(handle, state, agent, conv)
+              end)
+            end,
+            fn ->
+              step(state, "reattach_config_instructions", fn ->
+                Provisioning.write_instructions(
+                  handle,
+                  runtime(conv, agent),
+                  agent,
+                  ConfigHome.home(conv)
+                )
+              end)
+            end
+          ]
+          |> Enum.map(&async_step/1)
+          |> Enum.map(&await_step/1)
+          |> Enum.find(:ok, &(&1 != :ok))
+        end
       end,
       fn ->
         step(state, "reattach_config_ca", fn ->

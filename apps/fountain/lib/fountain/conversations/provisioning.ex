@@ -878,7 +878,16 @@ defmodule Fountain.Conversations.Provisioning do
   def run_setup_script(_handle, nil, _sprite_env, _conv_id), do: :ok
   def run_setup_script(_handle, %{setup_script: ""}, _sprite_env, _conv_id), do: :ok
 
+  # The script runs with `MANAGOAT_RUNTIME_TEMPLATE` set, and the template's
+  # runtime directories are made, empty, in the same exec just before it
+  # (#2998): what it writes there is copied into each conversation's config
+  # home when the home is made (`Managoat.Runtimes.Template`). Last in the
+  # env, so the template is where Managoat looks whatever the tenant's own
+  # variables say.
   def run_setup_script(handle, %{setup_script: script} = environment, sprite_env, conv_id) do
+    template_env = Managoat.Runtimes.Template.setup_env()
+    env = Enum.reject(sprite_env, fn {k, _v} -> List.keymember?(template_env, k, 0) end)
+
     Fountain.Telemetry.span(
       [:setup_script],
       %{conv_id: conv_id, script_size: byte_size(script)},
@@ -886,7 +895,8 @@ defmodule Fountain.Conversations.Provisioning do
         publish_stage(conv_id, "setup", "started")
 
         case exec_streamed(handle, conv_id, "setup", "fountain-setup", script,
-               env: sprite_env,
+               env: env ++ template_env,
+               prelude: Managoat.Runtimes.Template.prepare_script(),
                timeout: Map.get(environment, :setup_timeout_seconds, 120) * 1000
              ) do
           {{:ok, 0}, _tail} ->
@@ -914,16 +924,19 @@ defmodule Fountain.Conversations.Provisioning do
   #
   # The sink is a closure the adapter calls back, so the line buffer between
   # calls lives in this process's dictionary under a key of its own.
+  #
+  # `:prelude` is shell run in the same exec before the script starts.
   defp exec_streamed(handle, conv_id, stage, name, script, opts) do
     key = {__MODULE__, :stage_output, make_ref()}
     Process.put(key, StageOutput.new(conv_id, stage))
     sink = fn chunk -> Process.put(key, StageOutput.feed(Process.get(key), chunk)) end
+    {prelude, opts} = Keyword.pop(opts, :prelude, "")
 
     result =
       Sandbox.exec(
         handle,
         "bash",
-        ["-c", @stream_wrapper, name, script],
+        ["-c", prelude <> @stream_wrapper, name, script],
         [stderr_to_stdout: true, on_output: sink] ++ opts
       )
 

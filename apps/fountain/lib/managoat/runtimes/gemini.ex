@@ -38,7 +38,7 @@ defmodule Managoat.Runtimes.Gemini do
 
   @behaviour Managoat.Runtimes
 
-  alias Managoat.Runtimes.Layout
+  alias Managoat.Runtimes.{JsonConfig, Layout}
 
   @runtime "gemini"
 
@@ -82,25 +82,23 @@ defmodule Managoat.Runtimes.Gemini do
   def settings_path(home), do: Path.join(Layout.config_dir(@runtime, home), "settings.json")
 
   # Gemini reads user-scope MCP servers from `<home>/.gemini/settings.json`,
-  # under `mcpServers` (camelCase, same shape as Claude). Written on every
-  # call, an empty map included, so an agent that drops a server drops it on
-  # its next wake. Only here: duplicating it into a second settings file had
-  # gemini register every MCP tool twice on startup and spam the log with
+  # under `mcpServers` (camelCase, same shape as Claude). That key is put on
+  # every call, an empty map included, so an agent that drops a server drops
+  # it on its next wake; the rest of the file is kept, which is where a
+  # runtime template's settings live (#2998, `Managoat.Runtimes.JsonConfig`).
+  # Only here: duplicating it into a second settings file had gemini register
+  # every MCP tool twice on startup and spam the log with
   # `Tool ... already registered. Overwriting.` lines.
+  #
+  # Idempotent, so a transport blip on a fresh sprite is retried; a write
+  # that still fails is reported, not swallowed — the agent would otherwise
+  # start with none of its servers and no record of why.
   @impl true
   def write_config(handle, agent, home) do
-    payload = Jason.encode!(%{"mcpServers" => mcp_servers(agent)}, pretty: true)
     path = settings_path(home)
 
-    # Idempotent, so a transport blip on a fresh sprite is retried; a write
-    # that still fails is reported, not swallowed — the agent would otherwise
-    # start with none of its servers and no record of why.
-    case Managoat.Sandbox.Retry.with_backoff(
-           fn -> Managoat.Sandbox.write_file(handle, path, payload) end,
-           label: "gemini config write"
-         ) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:runtime_config, path, reason}}
+    with {:ok, %{^path => current}} <- JsonConfig.read(handle, [path]) do
+      JsonConfig.put(handle, path, current, %{"mcpServers" => mcp_servers(agent)})
     end
   end
 

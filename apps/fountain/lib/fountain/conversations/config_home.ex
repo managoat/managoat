@@ -335,6 +335,36 @@ defmodule Fountain.Conversations.ConfigHome do
   end
 
   @doc """
+  Copy the runtime template into the conversation's config home, once, when
+  the home is made (#2998, `Managoat.Runtimes.Template`).
+
+  `mode` is `:new` for a conversation attaching to a machine that is already
+  up (a launch into a workspace, a conversation following its workspace
+  onto a rebuilt machine, and every wake, which finds its home and copies
+  nothing), run before anything else is written into the home; and `:into`
+  for a conversation whose own provision built the machine, run once that
+  provision's setup script and its own writes into the home are done. `agent`
+  names the skills Managoat writes, whose template copies give way.
+
+  A home from before config homes (a legacy, shared one) never gets the
+  template, and nor does a runtime with no template directory (`acp`).
+  """
+  @spec seed(Managoat.Sandbox.Handle.t(), map(), map() | nil, :new | :into) ::
+          :ok | {:error, term()}
+  def seed(handle, conv, agent, mode) do
+    home = home(conv)
+    runtime = runtime(conv)
+
+    if Layout.conversation_home?(home) and is_binary(Layout.runtime_template(runtime)) do
+      Managoat.Runtimes.Template.seed(handle, runtime, home, mode,
+        skills: Fountain.SandboxSkills.owned_names(agent && agent.skills)
+      )
+    else
+      :ok
+    end
+  end
+
+  @doc """
   Remove the conversation's config home from the machine behind `handle`,
   best effort: a failure is logged and answered `:ok`, because the
   conversation is ending either way. Only a conversation's own home is

@@ -716,6 +716,81 @@ defmodule Fountain.Conversations.ConversationServerTest do
       GenServer.stop(pid)
     end
 
+    test "the runtime template goes into the config home after the setup script and Managoat's own files",
+         %{user: user} do
+      # #2998: the setup script fills the template, and Managoat's files in
+      # the home are the ones that win, so the copy comes after both.
+      stub_happy_sprite()
+      test_pid = self()
+
+      env = insert_env(user_id: user.id, setup_script: "true")
+      conv = conversation_on(user, env)
+
+      conv =
+        conv
+        |> Ecto.Changeset.change(config_home: Managoat.Runtimes.Layout.config_home(conv.id))
+        |> Repo.update!()
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :run_setup_script, fn _h, _e, _se, _c ->
+        send(test_pid, :setup)
+        :ok
+      end)
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :write_runtime_config, fn _h, _m, _a, _ho ->
+        send(test_pid, :runtime_config)
+        :ok
+      end)
+
+      Mimic.stub(Fountain.Conversations.Provisioning, :prepare_runtime_sandbox, fn _,
+                                                                                   _,
+                                                                                   _,
+                                                                                   _,
+                                                                                   _,
+                                                                                   _,
+                                                                                   _ ->
+        send(test_pid, :runtime_prepare)
+        :ok
+      end)
+
+      Mimic.stub(Fountain.Conversations.ConfigHome, :seed, fn _h, seeded, _agent, mode ->
+        send(test_pid, {:seed, seeded.id, mode})
+        :ok
+      end)
+
+      {pid, _ref, :alive} = start_server(conv)
+
+      conv_id = conv.id
+      assert_received :runtime_config
+      assert_received :setup
+      assert_received :runtime_prepare
+      assert_received {:seed, ^conv_id, :into}
+      assert Conversations._unsafe_get_sandbox!(conv.sandbox_id).status == "ready"
+      GenServer.stop(pid)
+    end
+
+    test "a runtime template that cannot be copied fails the provision", %{user: user} do
+      stub_happy_sprite()
+      conv = conversation_on(user, insert_env(user_id: user.id, setup_script: "true"))
+
+      Mimic.stub(Fountain.Conversations.ConfigHome, :seed, fn _h, _c, _a, :into ->
+        {:error, {:runtime_template, {:not_a_json_object, "settings.json"}}}
+      end)
+
+      {pid, ref} = start_unsettled(conv)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 5_000
+      assert Conversations._unsafe_get_sandbox!(conv.sandbox_id).status == "failed"
+    end
+
+    test "with no setup script there is no template to copy", %{user: user} do
+      stub_happy_sprite()
+      conv = conversation_on(user, insert_env(user_id: user.id))
+      reject(&Fountain.Conversations.ConfigHome.seed/4)
+
+      {pid, _ref, :alive} = start_server(conv)
+      assert Conversations._unsafe_get_sandbox!(conv.sandbox_id).status == "ready"
+      GenServer.stop(pid)
+    end
+
     test "a pushed bundle installs the adapter beside the CA, and nothing installs after the floor",
          %{user: user} do
       stub_happy_sprite()

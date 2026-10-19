@@ -308,12 +308,35 @@ defmodule Fountain.Conversations.FreshProvision do
     try do
       result = run_pipeline(Map.put(ctx, :adapter_preload, preload_task), handle, epoch)
       if skills_task && match?({:ok, _}, result), do: await_step(skills_task)
-      result
+      seed_config_home(ctx, handle, result)
     after
       skills_task && Task.shutdown(skills_task, :brutal_kill)
       Task.shutdown(preload_task, :brutal_kill)
     end
   end
+
+  # The runtime template the setup script filled, copied into the config home
+  # Managoat has just written (#2998): last, once the setup script has run and
+  # every file Managoat writes into the home is there, because those are the
+  # files that win. Only an environment with a setup script has a template:
+  # the template's directories are made in the setup script's own exec.
+  defp seed_config_home(ctx, handle, {:ok, reached} = result) do
+    if has_setup_script?(ctx.env) do
+      case step(ctx.state.conversation_id, "runtime_template", fn ->
+             ConfigHome.seed(handle, reached.conv, ctx.agent, :into)
+           end) do
+        :ok -> result
+        {:error, reason} -> {:error, reason, %{state: reached.state}}
+      end
+    else
+      result
+    end
+  end
+
+  defp seed_config_home(_ctx, _handle, result), do: result
+
+  defp has_setup_script?(%{setup_script: script}) when is_binary(script), do: script != ""
+  defp has_setup_script?(_env), do: false
 
   defp mount_skills(handle, ctx, sprite_env) do
     step(ctx.state.conversation_id, "skills", fn ->

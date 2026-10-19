@@ -55,8 +55,13 @@ defmodule Fountain.ConversationServerCase do
       {:ok, %{status: :running, raw: %{}}}
     end)
 
-    Mimic.stub(Managoat.Sandbox.Sprites, :exec, fn _handle, _cmd, _args, _opts ->
-      {:ok, "", 0}
+    Mimic.stub(Managoat.Sandbox.Sprites, :exec, fn
+      # `Managoat.Runtimes.JsonConfig`'s read: every file absent, one line each.
+      _handle, "bash", ["-c", _script, "managoat-json-read" | paths], _opts ->
+        {:ok, String.duplicate("-\n", length(paths)), 0}
+
+      _handle, _cmd, _args, _opts ->
+        {:ok, "", 0}
     end)
 
     Mimic.stub(Managoat.Sandbox.Sprites, :write_file, fn _handle, _path, _data, _opts -> :ok end)
