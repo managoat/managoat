@@ -24,4 +24,4 @@ images:
   # Released tags: vX.Y.Z (immutable) and vX.Y (newest patch in the line).
   # https://managoat.com/docs/guides/operate/upgrade#how-versions-work
   - name: ghcr.io/managoat/managoat
-    newTag: v0.38.0
+    newTag: v0.39.0
