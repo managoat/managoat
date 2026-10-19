@@ -285,7 +285,11 @@ export class Workspaces {
     });
   }
 
-  /** One workspace, by name or id. Names need not be unique; an ambiguous one throws. */
+  /**
+   * One workspace, by id or exact name. Unlike agents and vaults, a workspace
+   * name is never matched by prefix, and names need not be unique: an
+   * ambiguous one throws.
+   */
   async get(nameOrId: string): Promise<Workspace> {
     return this.http.data<Workspace>("GET", `${this.path}/${await this.id(nameOrId)}`);
   }
@@ -411,7 +415,7 @@ export class Workspaces {
   }
 
   private async id(nameOrId: string): Promise<string> {
-    return (await this.resolver.resolve(this.path, "workspace", nameOrId)).id;
+    return (await this.resolver.resolveExact(this.path, "workspace", nameOrId)).id;
   }
 }
 

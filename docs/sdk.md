@@ -401,7 +401,10 @@ workspace.
 A run in a workspace that names a different `environment` or `vault` is a
 `ValidationError` with code `workspace_fixes_environment`. A sandbox's own key
 cannot use workspaces: every call is a 403, so a run started from inside a
-sandbox always gets a machine of its own.
+sandbox always gets a machine of its own. Match that refusal on
+`error.status === 403` and the body's `reason`, `insufficient_scope`: its
+`error`, and so the error's `code`, is a sentence. A workspace name is
+matched exactly, never by prefix as agent and vault names are.
 
 !!! warning "Runs in one workspace can read and influence each other"
 

@@ -310,11 +310,11 @@ func waitForWorkspace(c *api.Client, id string, timeout time.Duration, progress 
 				if reason == "" {
 					return ws, errWorkspaceFailed
 				}
-				return ws, fmt.Errorf("%w: %s\n  A prompt into a conversation in it retries the setup; or delete it and create another", errWorkspaceFailed, reason)
+				return ws, fmt.Errorf("%w: %s\n  Fix the environment if it is at fault, then prompt a conversation in the workspace: that runs the setup again with the environment as it is now", errWorkspaceFailed, reason)
 			}
 		case api.StatusCode(err) == 404:
 			return ws, fmt.Errorf("no workspace %s (deleted while waiting?)", id)
-		case api.StatusCode(err) >= 400 && api.StatusCode(err) < 500:
+		case api.StatusCode(err) >= 400 && api.StatusCode(err) < 500 && api.StatusCode(err) != 429:
 			return ws, explainAPIError(err)
 		default:
 			fmt.Fprintf(progress, "▸ could not read the workspace (%v); retrying\n", err)
@@ -376,7 +376,7 @@ func explainAPIError(err error) error {
 		hint = "The agent's allowlist applies to a workspace's environment and vault too: launch it elsewhere, or add them to the agent's allowed_environment_ids or allowed_vault_ids."
 	case "insufficient_scope":
 		if output.ToString(body["required_scope"]) == "full" {
-			hint = "This key is not a full-scope key. A sandbox's own MANAGOAT_TOKEN cannot use workspaces, so a conversation started from inside a sandbox always gets a sandbox of its own. Use a key from `managoat auth login` or `managoat keys create`."
+			hint = "This needs a full-scope key. A sandbox's own MANAGOAT_TOKEN is not one: among other things it cannot use workspaces, so a conversation started from inside a sandbox gets a sandbox of its own. Use a key from `managoat auth login`."
 		}
 	case "source_in_use_by_workspace":
 		hint = "Delete the workspaces created from it first (`managoat workspace list`, then `managoat workspace delete`)."

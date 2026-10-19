@@ -20,8 +20,12 @@ and a new terminal for each tool. Without a workspace, two agents on one
 checkout means two machines and two clones.
 
 A workspace has a name, an environment, an optional vault and a sandbox
-provider. All four are fixed when you create it. To change one, create
-another workspace. A workspace belongs to the account that created it and is
+provider. All four are fixed when you create it: to point it at another
+environment, vault or provider, create another workspace. What is fixed is
+which environment and vault, not what they hold. A setup reads them as they
+are at that moment, so editing the environment changes what the next setup
+runs: a retry after a failure, or a rebuild after a loss. An environment
+several workspaces share changes all of their next rebuilds. A workspace belongs to the account that created it and is
 never shared with another account.
 
 It is not a fifth primitive. The four primitives are the configuration and
@@ -111,7 +115,8 @@ no agent. Put that configuration on the [agent](agent.md) instead.
 
 You can launch conversations into a workspace before it is ready. Their first
 prompt waits for the setup. A prompt into a conversation in a `failed`
-workspace starts the setup again and fails with it if it fails again; two
+workspace starts the setup again, with the environment as it is then, and
+fails with it if it fails again; two
 prompts that arrive together start it once.
 
 ### Conversations come and go
@@ -157,7 +162,9 @@ When the provider loses the machine, or a resume fails for good, the
 workspace stays and so does every conversation in it. Each keeps its
 transcript and loses its runtime session. The next prompt into any of them
 sets the workspace back to `provisioning` and builds a new machine from the
-environment, and every conversation in the workspace moves to it. Nothing is
+environment as it is now, and every conversation in the workspace moves to
+it. A turn still running in another of them when that happens is ended,
+`interrupted` with `reason: "machine_destroyed"`. Nothing is
 replayed, and nothing on the old disk survives, so the agents start without
 their memory and without their work in progress. Two prompts that arrive
 together rebuild it once.

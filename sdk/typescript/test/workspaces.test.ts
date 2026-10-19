@@ -117,6 +117,10 @@ test("get and delete take a name or an id; an ambiguous name says so", async () 
     [`/api/workspaces/${WS}`],
   );
   await assert.rejects(c.workspaces.get("twin"), ResolutionError);
+  // A prefix never picks a workspace: landing in the wrong one is landing in
+  // someone else's trust boundary.
+  await assert.rejects(c.workspaces.get("monorepo"), ResolutionError);
+  await assert.rejects(c.run("go", { agent: "reposage", workspace: "monorepo" }), ResolutionError);
 });
 
 test("waitForReady follows provisioning to ready, reporting each change once", async () => {

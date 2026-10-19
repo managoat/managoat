@@ -230,7 +230,8 @@ managoat run <agent> --workspace <id-or-name> --cwd /home/sprite/app -p "..."
 `provisioning`, and Managoat sets its machine up in the background.
 `--wait`, or `workspace wait` later, follows the setup until it is `ready`,
 and exits non-zero with the failing step if it is `failed`. The environment,
-vault and provider are fixed for the workspace's life.
+vault and provider are fixed for the workspace's life; an edit to the
+environment reaches its next setup, a retry or a rebuild.
 
 `--workspace` on `run` and `acp` puts the conversation on the workspace's
 machine instead of a sandbox of its own. The workspace supplies the

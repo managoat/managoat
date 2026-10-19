@@ -822,7 +822,9 @@ how a client combines the list, transcript, and live stream.
 A workspace is a sandbox the caller keeps: set up once from an environment
 and an optional vault, then any number of conversations launched into it with
 `workspace_id`, each in its own working directory. Its name, environment,
-vault and sandbox provider are fixed at create. Read
+vault and sandbox provider are fixed at create, though a setup reads the
+environment and vault as they are then, so an edit reaches the next retry or
+rebuild. Read
 [About workspaces](concepts/workspaces.md) for the lifecycle, and
 [Run several agents on one machine](guides/agents-in-one-workspace.md) for
 the task. Every workspace route needs a full-scope key; a sandbox's own key is

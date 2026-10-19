@@ -97,8 +97,9 @@ follows the setup and exits non-zero if it fails, with the failing step and
 the end of what it printed. Without `--wait`, the command returns at once and
 `managoat workspace wait app-box` waits later.
 
-The environment, the vault and the provider are fixed for the workspace's
-life. To change one, create another workspace.
+The workspace always uses this environment, vault and provider; to use
+others, create another workspace. Editing the environment does reach it, at
+its next setup: a retry after a failure, or a rebuild after a loss.
 
 ## 3. Start the three agents, each in its own folder
 
@@ -206,7 +207,7 @@ destroys the machine with its disk. Push the work first.
 
 | You see | Why | Do this |
 |---|---|---|
-| `workspace setup failed: …` | The setup script, a package or a clone failed. The message names the step. | Fix the environment and create a new workspace, or prompt a conversation in it to run the setup again. |
+| `workspace setup failed: …` | The setup script, a package or a clone failed. The message names the step. | Fix the environment, then prompt a conversation in the workspace: that runs the setup again with the environment as it is now. |
 | `422 workspace_fixes_environment` | The launch named an environment or vault other than the workspace's. | Drop `--environment` and `--vault`. |
 | `422 environment_not_allowed` or `vault_not_allowed` | The agent's allowlist does not include the workspace's environment or vault. | Add them to the agent's `allowed_environment_ids` or `allowed_vault_ids`. |
 | `403` with `required_scope: "full"` | A sandbox's own key, such as `MANAGOAT_TOKEN` inside a sandbox, cannot use workspaces. | Use a key from `managoat auth login`. |

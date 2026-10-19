@@ -76,8 +76,10 @@ requires an ownership note at each call. One search finds them all. A
 cross-tenant isolation suite in CI asserts that another account's resources
 answer 404.
 
-Every sandbox belongs to one conversation, and Managoat destroys it when that
-conversation ends. A second conversation cannot attach to it. Read
+A sandbox belongs to one conversation, and Managoat destroys it when that
+conversation ends, unless the caller launched conversations into one
+[workspace](../concepts/workspaces.md), whose machine they share. No
+conversation can attach to another's sandbox by its id. Read
 [One machine per conversation](../concepts/sandboxes.md#one-machine-per-conversation).
 
 ## Whether one conversation can reach another's

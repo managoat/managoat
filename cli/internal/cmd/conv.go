@@ -528,7 +528,7 @@ func handleStageEvent(data map[string]any) (bool, error) {
 			fmt.Fprintf(os.Stderr, "▸ turn cut off: the machine reached its max lifetime and was parked — its disk and sessions are kept, and the next prompt wakes it\n")
 			return true, errSandboxExpired
 		case "machine_destroyed":
-			fmt.Fprintf(os.Stderr, "▸ turn cut off: its machine was destroyed (a deleted workspace, or an operator's reap)\n")
+			fmt.Fprintf(os.Stderr, "▸ turn cut off: its machine was destroyed or replaced (a deleted workspace, a rebuild after a loss, the lifetime ceiling, or an operator's reap)\n")
 			return true, errMachineDestroyed
 		}
 		// Deliberate `managoat conv interrupt` (possibly from another

@@ -38,7 +38,7 @@ export interface RunConfig extends RunOptions {
   /** An environment to provision from instead of the agent's own, by name or id. */
   environment?: string;
   /**
-   * Run on a workspace's machine, by name or id, beside whatever else runs
+   * Run on a workspace's machine, by id or exact name (never a prefix), beside whatever else runs
    * there, instead of in a sandbox of the conversation's own (ADR 0097). Sent
    * as `workspace_id`. The workspace fixes the environment and vault, so
    * `environment` and `vault` may only name its own (`422
@@ -157,7 +157,9 @@ export class Managoat {
             this.resolver.resolve("/api/agents", "agent", config.agent),
             this.resolver.resolveId("/api/vaults", "vault", config.vault),
             this.resolver.resolveId("/api/environments", "environment", config.environment),
-            this.resolver.resolveId("/api/workspaces", "workspace", config.workspace),
+            config.workspace
+              ? this.resolver.resolveExact("/api/workspaces", "workspace", config.workspace).then((w) => w.id)
+              : undefined,
           ]);
 
           const body: Record<string, unknown> = { agent_id: agent.id };

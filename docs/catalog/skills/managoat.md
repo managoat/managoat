@@ -45,8 +45,8 @@ can then rebuild the whole spawn chain.
 
 ## Each child gets its own machine
 
-Every child conversation gets a sandbox of its own, as any conversation does,
-so it never shares the parent's disk. The skill tells the agent to pass what
+Every child conversation gets a sandbox of its own, even when its parent runs
+in a workspace, so it never shares the parent's disk. The skill tells the agent to pass what
 the child needs in the prompt instead. `MANAGOAT_SANDBOX_ID` is still set, as
 the id of the sandbox the agent runs on, but there is no attaching to it. See
 [Sandboxes](../../concepts/sandboxes.md#one-machine-per-conversation).

@@ -88,6 +88,30 @@ export class Resolver {
     );
   }
 
+  /**
+   * `resolve` without the conveniences: an id, or a name matched exactly,
+   * case and all. For a workspace, where a prefix that lands on the wrong one
+   * puts a run inside someone else's trust boundary.
+   */
+  async resolveExact(path: string, what: string, nameOrId: string): Promise<Named> {
+    const wanted = (nameOrId ?? "").trim();
+    if (!wanted) throw new ResolutionError(`${what} is required (a name or id)`);
+    if (UUID.test(wanted)) return { id: wanted };
+
+    const items = await this.list(path);
+    const exact = items.filter((item) => item.name === wanted);
+    if (exact.length === 1) return exact[0] as Named;
+    if (exact.length > 1) {
+      throw new ResolutionError(
+        `More than one ${what} is named ${JSON.stringify(wanted)}. Use the id: ` +
+          exact.map((item) => item.id).join(", "),
+      );
+    }
+    throw new ResolutionError(
+      `No ${what} named exactly ${JSON.stringify(wanted)}. On this account: ${describe(items)}`,
+    );
+  }
+
   async resolveId(path: string, what: string, nameOrId?: string | null): Promise<string | undefined> {
     if (!nameOrId) return undefined;
     return (await this.resolve(path, what, nameOrId)).id;
