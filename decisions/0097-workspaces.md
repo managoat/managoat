@@ -231,7 +231,12 @@ process.
   its runtime session cleared, the workspace stays, and the next prompt in
   any of them provisions a new sandbox from the workspace's environment. The
   agents lose their runtime memory and the disk's contents, as #649
-  described; nothing is replayed.
+  described; nothing is replayed. That holds for a prompt to a conversation
+  whose server is still up between turns when the machine goes: its adapter
+  fails to start, the provider is asked, and only a definitive not-found
+  makes the machine lost (#3005). The prompt that found it, which never
+  reached an agent, runs on the new sandbox under the turn number it was
+  given.
 - **The max-lifetime ceiling** (`SANDBOX_MAX_LIFETIME_HOURS`, off by default)
   splits by kind. On an implicit workspace it destroys the machine, as
   today. On an explicit workspace it **parks** the machine: the disk and the
@@ -809,3 +814,21 @@ A PR sequence, each releasable alone:
   (`machine_parked`, `machine_destroyed`) now exits `managoat run` non-zero,
   where an interrupted turn exited zero. The CLI has no sandbox file
   commands, so it has no workspace ones either.
+- 2026-10-19 — A lost machine is found by a live server too (#3005, from the
+  v0.37.0 prod proof). A conversation's server stays up between turns, so a
+  prompt after the provider lost the machine reached that server rather than
+  the wake: its adapter failed to start at the provider on every prompt, and
+  nothing marked the machine lost, so 4b's rebuild never ran. Now a turn
+  whose adapter does not start asks the provider, and only a definitive
+  not-found from `Managoat.Sandbox.get/1` counts. The turn is withdrawn (its
+  prompt never reached an agent, so its row and stage events are deleted,
+  audited as `conversation.turn.withdrawn`), the machine is retired through
+  its owner with the provider step skipped, every server on it stops, and the
+  prompt goes down the wake road, which rebuilds the machine as in 4b and
+  runs it there under the same turn number. This applies to implicit
+  workspaces as well. Each conversation the rebuild moves gets the
+  rebuild's note and no other: retiring a lost machine stops its servers
+  without one, where the wake's retire used to add a `replaced` notice that
+  contradicted it. The same failure existed for a plain conversation before
+  workspaces; it recovered only once the server stopped for another reason,
+  such as the idle park.

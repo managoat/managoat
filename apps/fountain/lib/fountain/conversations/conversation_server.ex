@@ -17,7 +17,7 @@ defmodule Fountain.Conversations.ConversationServer do
 
   alias Fountain.Conversations.{CallbackKey, Connection, Conversation, KeyHandover}
   alias Fountain.Conversations.{Egress, FreshProvision}
-  alias Fountain.Conversations.{Lifecycle, MachineEvents, McpConnections, McpServers}
+  alias Fountain.Conversations.{Lifecycle, MachineEvents, MachineLoss, McpConnections, McpServers}
   alias Fountain.Conversations.{Output, Pending}
   alias Fountain.Conversations.{PromptDelivery, ProvisionWatchdog, Reattachment, ServerPhase}
   alias Fountain.Conversations.{Redaction, SpriteEnv, Termination, TurnLaunch, TurnMachine, Wake}
@@ -1648,16 +1648,14 @@ defmodule Fountain.Conversations.ConversationServer do
     )
   end
 
+  # A machine the provider says is gone is rebuilt for this prompt (#3005).
   defp fail_turn_before_start(state, turn, reason) do
     detail = inspect(reason)
-    Logger.error("spawn failed: #{detail}")
+    Logger.error("conv #{state.conversation_id}: spawn failed: #{detail}")
 
-    TurnMachine.fail_before_start(
-      turn,
-      state.conversation_id,
-      state.sandbox_id,
-      detail
-    )
+    if MachineLoss.gone?(state.handle),
+      do: MachineLoss.hand_off(state, turn),
+      else: TurnMachine.fail_before_start(turn, state.conversation_id, state.sandbox_id, detail)
 
     %{state | current_turn: nil, turn_session_retry: nil, turn_provider_failure: nil}
   end

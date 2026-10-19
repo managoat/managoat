@@ -832,7 +832,7 @@ defmodule Fountain.Conversations.Wake do
   # wake_conversation_for/3 above; the sandbox is its own.
   defp rebuild_and_start(conv, agent, sandbox, runtime_module, initial_prompt, images) do
     with :ok <- check_saved_inference(conv, agent),
-         :ok <- retire_lost(sandbox),
+         :ok <- retire_lost(conv, sandbox),
          :ok <- room_for(sandbox),
          {:ok, marked} <- mark_waking(conv, sandbox) do
       case start_conversation_server(conv, sandbox.id, runtime_module, initial_prompt, images) do
@@ -880,15 +880,21 @@ defmodule Fountain.Conversations.Wake do
     })
   end
 
-  defp retire_lost(%Sandbox{status: status} = sandbox) when status in ["ready", "suspended"] do
-    case mark_old_sandbox_terminated(sandbox.id) do
+  # A lost machine, retired through its owner with the provider step skipped.
+  # Every other conversation bound to it is told quietly: its server stops
+  # with nothing on its transcript, because the rebuild this wake starts
+  # writes the one note each conversation it moves gets ("The sandbox was
+  # lost and a new one is being built"). A `replaced` notice here as well gave
+  # each of them two notes that disagreed (#3005).
+  defp retire_lost(conv, %Sandbox{status: status} = sandbox)
+       when status in ["ready", "suspended"] do
+    case Fountain.Conversations.MachineLoss.retire(sandbox.id, conv.id, "system:wake") do
       {:ok, _} -> :ok
-      :ok -> :ok
       {:error, _} -> {:error, :sandbox_unavailable}
     end
   end
 
-  defp retire_lost(%Sandbox{}), do: :ok
+  defp retire_lost(_conv, %Sandbox{}), do: :ok
 
   # The rebuild reserves its slot itself, inside the owner's succession; this
   # is the same check made synchronous, so a full fleet is the wake's answer

@@ -1751,6 +1751,70 @@ defmodule Fountain.Conversations do
     end_running_turn(turn, sandbox_id, status, true, Map.new(Keyword.take(opts, [:exit_code])))
   end
 
+  @doc """
+  Withdraw an actor's turn whose prompt never reached an agent (#3005): its
+  adapter did not start, and the provider then said the machine was gone.
+  Only `Fountain.Machines.Admission.end_turn/3` calls this.
+
+  Under the parent and turn locks, and only for the conversation's newest
+  turn while it is still `running` and the conversation is still bound to
+  `sandbox_id`: the turn row is deleted, with its images and its stage
+  events, and the parent goes back to `idle`. Nothing of the turn reached an
+  agent, so there is nothing of it to keep, and the prompt runs again under
+  the same turn number on the rebuilt machine, where a client following that
+  number finds it. Audited after the commit as `conversation.turn.withdrawn`.
+
+  `{:ok, turn}` for the turn withdrawn, `:noop` when the fence refused or
+  the turn had already ended (a destroy of the machine ends its running
+  turns), `{:error, reason}` from the transaction.
+  """
+  @spec _unsafe_withdraw_turn(Turn.t(), Ecto.UUID.t() | nil) ::
+          {:ok, Turn.t()} | :noop | {:error, term()}
+  def _unsafe_withdraw_turn(%Turn{} = turn, sandbox_id) do
+    # ownership: the actor supplied its own turn and sandbox binding.
+    result =
+      TurnLocks._unsafe_end_actor_turn(turn, sandbox_id, "failed", %{}, fn conv, ending ->
+        if ending.running? and TurnLocks.latest_turn?(conv.id, ending.turn.id) do
+          Repo.delete!(ending.turn)
+
+          conv =
+            if conv.status == "running",
+              do: conv |> Conversation.changeset(%{status: "idle"}) |> Repo.update!(),
+              else: conv
+
+          {:withdrawn, ending.turn, conv}
+        else
+          :noop
+        end
+      end)
+
+    case result do
+      {:ok, {:withdrawn, withdrawn, conv}} ->
+        broadcast_sidebar_update(conv.user_id)
+
+        Audit.record(%{
+          user_id: conv.user_id,
+          action: "conversation.turn.withdrawn",
+          resource_type: "turn",
+          resource_id: withdrawn.id,
+          actor: "system:conversation_server",
+          metadata: %{
+            "conversation_id" => withdrawn.conversation_id,
+            "turn_number" => withdrawn.turn_number,
+            "reason" => "machine_lost"
+          }
+        })
+
+        {:ok, withdrawn}
+
+      {:ok, :noop} ->
+        :noop
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   # Door for `Fountain.Conversations.Interruption` (#2213), which shares this
   # helper with `_unsafe_complete_turn/4` above and so cannot move with it.
   @doc false

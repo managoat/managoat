@@ -105,6 +105,13 @@ turns.
 The difference matters. Suspend keeps the agent's memory. A destroy does
 not.
 
+**A sandbox the provider loses is rebuilt on the next prompt.** That holds
+even when the conversation's process is still up between turns. The prompt
+runs on a new sandbox, the transcript is kept, and the agent starts a fresh
+session. Managoat counts a sandbox as lost only when the provider says it
+does not exist. Any other provider error fails that one turn and leaves the
+sandbox alone.
+
 A self-hoster can widen or stop the idle bound with
 `SANDBOX_IDLE_TIMEOUT_MINUTES`, and a `0` stops it. Read the
 [configuration reference](../configuration.md).
