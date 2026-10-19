@@ -83,6 +83,14 @@ function client(seen: Seen[], reads: (Workspace["status"] | number)[] = ["ready"
         });
       return json(202, { data: workspace("provisioning") });
     }
+    if (method === "POST" && url.pathname === `/api/workspaces/${WS}/retry`) {
+      const next = reads[Math.min(read, reads.length - 1)]!;
+      if (next === "failed") return json(202, { data: workspace("provisioning") });
+      return json(409, {
+        error: "workspace_not_failed",
+        message: "the workspace is already being set up; follow its status until it is ready or failed",
+      });
+    }
     if (method === "GET" && url.pathname.startsWith(`/api/workspaces/${WS}/`))
       return json(200, { data: { path: "/home/sprite", entries: [], truncated: false } });
     if (method === "POST" && url.pathname === "/api/conversations") {
@@ -180,6 +188,26 @@ test("waitForReady throws WorkspaceFailedError with the workspace's own error", 
   assert.equal(error.code, "workspace_failed");
   assert.match(error.message, /missing script: build/);
   assert.equal(error.workspace.status, "failed");
+});
+
+test("retry posts to the workspace's retry route and comes back provisioning", async () => {
+  const seen: Seen[] = [];
+  const retried = await client(seen, ["failed"]).workspaces.retry("monorepo-box");
+  assert.equal(retried.status, "provisioning");
+  const post = seen.find((s) => s.method === "POST");
+  assert.deepEqual(post && { path: post.path, body: post.body }, {
+    path: `/api/workspaces/${WS}/retry`,
+    body: undefined,
+  });
+});
+
+test("retry of a workspace that is not failed is a ManagoatError workspace_not_failed", async () => {
+  const error = await client([], ["provisioning"]).workspaces.retry(WS).catch((e: unknown) => e);
+  assert.ok(error instanceof ManagoatError);
+  assert.equal(error.status, 409);
+  assert.equal(error.code, "workspace_not_failed");
+  assert.equal(error.retryable, false);
+  assert.match(error.message, /already being set up/);
 });
 
 test("waitForReady retries a 5xx read, and gives up at its deadline", async () => {

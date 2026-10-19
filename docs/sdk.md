@@ -398,8 +398,11 @@ await managoat.workspaces.delete(ws.id);   // terminates its conversations, dest
 `sandbox_provider`) and comes back `provisioning`. `waitForReady` reads the
 workspace until it is `ready`, retrying a 5xx, and throws
 `WorkspaceFailedError`, carrying the workspace and its `error`, when the setup
-failed. `list({ implicit: true })` adds each conversation's own implicit
-workspace.
+failed. `retry` sets a failed workspace up again, from its environment as it
+is now, and comes back `provisioning` for `waitForReady` to follow; a
+workspace that is not `failed` is a `ManagoatError` with code
+`workspace_not_failed`. `list({ implicit: true })` adds each conversation's
+own implicit workspace.
 
 A run in a workspace that names a different `environment` or `vault` is a
 `ValidationError` with code `workspace_fixes_environment`. A sandbox's own key

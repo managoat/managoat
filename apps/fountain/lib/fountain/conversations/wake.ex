@@ -560,14 +560,26 @@ defmodule Fountain.Conversations.Wake do
                 # rebuild, ADR 0097): this prompt waits for it, then reaches it
                 # as any wake would. "Two prompts into a workspace with no
                 # sandbox rebuild it once; the second waits."
+                #
+                # A setup that fails meanwhile fails this prompt with it, rather
+                # than the wake building the machine again from the same
+                # environment: the prompt "waits for it and fails with it if it
+                # fails again" (ADR 0097), whoever started that setup, a
+                # co-tenant's prompt or a retry (#3013).
                 purpose == :work and provisioning_owner_live?(sandbox_id) and shared?(conv) ->
                   case Fountain.Conversations.Rebuild.await_settled(sandbox_id) do
                     :settled ->
-                      wake_conversation_for(conv.id, initial_prompt, purpose, images)
+                      if setup_failed?(sandbox_id),
+                        do: failed_with_setup(conv, sandbox_id, initial_prompt, images),
+                        else: wake_conversation_for(conv.id, initial_prompt, purpose, images)
 
                     :timeout ->
                       {:error, :sandbox_unavailable}
                   end
+
+                # The same setup, failed before this wake looked for its owner.
+                purpose == :work and shared?(conv) and setup_failed?(sandbox_id) ->
+                  failed_with_setup(conv, sandbox_id, initial_prompt, images)
 
                 provisioning_owner_live?(sandbox_id) ->
                   Logger.info(
@@ -641,6 +653,38 @@ defmodule Fountain.Conversations.Wake do
   end
 
   # ownership: the conversation's own machine.
+  # The prompt fails with the setup it waited for. Unless a newer setup has
+  # moved the conversation since (a retry started the moment this one
+  # failed), which the prompt follows by waking again. A launch's `pending`
+  # mark is undone, so the conversation does not read as active.
+  defp failed_with_setup(conv, sandbox_id, initial_prompt, images) do
+    # ownership: conv established tenant-scoped by wake_conversation_for/4.
+    case Conversations._unsafe_get_conversation(conv.id) do
+      %Conversation{sandbox_id: ^sandbox_id} ->
+        import Ecto.Query, only: [from: 2]
+
+        _ =
+          Fountain.Repo.update_all(
+            from(c in Conversation, where: c.id == ^conv.id and c.status == "pending"),
+            set: [status: "idle", updated_at: DateTime.utc_now()]
+          )
+
+        {:error, :workspace_setup_failed}
+
+      %Conversation{} ->
+        wake_conversation_for(conv.id, initial_prompt, :work, images)
+
+      nil ->
+        {:error, :workspace_setup_failed}
+    end
+  end
+
+  # Whether the machine this wake found mid-provision has since failed.
+  defp setup_failed?(sandbox_id) do
+    # ownership: the waking conversation's own machine, read by the wake.
+    match?(%Sandbox{status: "failed"}, Conversations._unsafe_get_sandbox(sandbox_id))
+  end
+
   defp shared?(%Conversation{sandbox_id: sandbox_id}) do
     case sandbox_id && Conversations._unsafe_get_sandbox(sandbox_id) do
       %Sandbox{} = sandbox -> Fountain.Workspaces.machine_kind(sandbox) == :explicit
@@ -919,7 +963,10 @@ defmodule Fountain.Conversations.Wake do
   # The ones a retry of the same prompt can succeed on without the caller
   # changing anything: the provider or the fleet was busy.
   # `machine_lost`: the next prompt rebuilds the machine (ADR 0097).
-  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy machine_lost)a
+  # `workspace_setup_failed` is the exception: the next prompt runs the setup
+  # again (#3013), which succeeds unchanged only if the failure was
+  # transient; usually the environment needs fixing first.
+  @retryable_wake_failures ~w(sandbox_unavailable sprite_probe_failed fleet_full resume_failed machine_busy conversation_busy machine_lost workspace_setup_failed)a
 
   defp retryable_wake_failure?(reason) when is_atom(reason),
     do: reason in @retryable_wake_failures

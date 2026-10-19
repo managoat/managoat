@@ -852,6 +852,7 @@ the task. Every workspace route needs a full-scope key; a sandbox's own key is
 | `GET /api/workspaces/{id}` | One workspace, with its machine's state. |
 | `POST /api/workspaces/{id}/rebuild` | Destroy its machine, **with everything on its disk**, and set up a new one from the environment as it is now. Every conversation keeps its transcript and stays in the workspace. Optional body `{"interrupt": true}`. Answers `202` with `status: "provisioning"`. See [Rebuild a workspace](#rebuild-a-workspace). |
 | `DELETE /api/workspaces/{id}` | Terminate every live conversation in it, keeping their transcripts, and destroy its machine. `204`. Not refused while conversations are running. |
+| `POST /api/workspaces/{id}/retry` | Set a `failed` workspace up again, with no prompt, from its environment and vault as they are now. Answers `202` with `status: "provisioning"`; `workspace.status` events follow, as on create. |
 | `GET /api/workspaces/{id}/files`, `/file`, `/diff`, `/git-status` | Read the workspace's current machine. See [Files, git status and git diff](#files-git-status-and-git-diff). |
 
 ```bash
@@ -866,7 +867,7 @@ A workspace carries two statuses, and they answer different questions:
 
 | Field | Values | Says |
 |---|---|---|
-| `status` | `provisioning`, `ready`, `failed` | Whether its machine's setup finished. `failed` comes with `error`, the failing step and the end of what it printed, redacted. A rebuild after a loss sets it back to `provisioning`. A park does not move it. |
+| `status` | `provisioning`, `ready`, `failed` | Whether its machine's setup finished. `failed` comes with `error`, the failing step and the end of what it printed, redacted. A retry, or a rebuild after a loss, sets it back to `provisioning`. A park does not move it. |
 | `sandbox_status` | `pending`, `starting`, `ready`, `suspended`, or `null` | What its current machine is doing. `suspended` is parked, and the next prompt wakes it. `null` means it has no live machine, after a loss or a failed setup, and the next prompt builds one. |
 
 `sandbox_id` names the current machine, and is `null` when there is none. It
@@ -901,9 +902,11 @@ reconnect.
 |---|---|
 | `404 environment_not_found`, `404 vault_not_found` | `POST` names another account's environment or vault, or one that does not exist. |
 | `422 validation_failed` | No `name` or `environment_id`, a `name` longer than 200 characters, or a `sandbox_provider` the instance does not know. |
-| `422 sandbox_provider_disabled` | `sandbox_provider` names one this instance has not enabled. |
-| `503 fleet_full` | Every sandbox slot on the provider is in use. Honor `Retry-After`. |
-| `404 not_found` | Another account's workspace, on every route. |
+| `422 sandbox_provider_disabled` | `sandbox_provider` names one this instance has not enabled, or a retry finds the workspace's provider no longer enabled. |
+| `503 fleet_full` | Every sandbox slot on the provider is in use, on a create or a retry. Honor `Retry-After`. |
+| `503 sandbox_unavailable` | A retry whose setup could not be started. The workspace stays `failed`; retry again. |
+| `409 workspace_not_failed` | A retry of a workspace that is `provisioning` or `ready`. Follow one being set up instead. |
+| `404 not_found` | Another account's workspace, on every route, and an implicit one on `DELETE` and on a retry. |
 | `409 source_in_use_by_workspace` | `DELETE /api/environments/{id}` or `DELETE /api/vaults/{id}` on one a workspace was created from. Delete the workspace first. |
 
 ### Rebuild a workspace

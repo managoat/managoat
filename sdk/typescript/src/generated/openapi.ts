@@ -1543,6 +1543,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/workspaces/{id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry a failed workspace's setup
+         * @description Sets up a failed workspace again, with no prompt: a new machine is built from the environment and vault as they are now, so fix the environment first. Answers 202 with status provisioning; the status moves to ready, or to failed with an error, and each change is a workspace.status event on GET /api/events/stream, as on create. A prompt into the failed workspace starts the same setup: a retry and a prompt arriving together set it up once, and the prompt waits for it. Refused with 409 workspace_not_failed unless the workspace is failed, with 422 sandbox_provider_disabled when its provider is no longer configured, and with 503 fleet_full when every sandbox slot on its provider is in use. An implicit workspace is 404: its setup is its conversation's.
+         */
+        post: operations["FountainWeb.WorkspaceController.retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/workspaces/{workspace_id}/diff": {
         parameters: {
             query?: never;
@@ -11250,6 +11270,100 @@ export interface operations {
                 };
             };
             /** @description Every sandbox slot in use (fleet_full), or the machine busy with another operation (sandbox_unavailable) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    "FountainWeb.WorkspaceController.retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Workspace */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No acceptable representation */
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NegotiationError"];
+                };
+            };
+            /** @description Not failed (workspace_not_failed) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The workspace's provider is not enabled (sandbox_provider_disabled) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Every sandbox slot in use (fleet_full), or the setup could not be started (sandbox_unavailable); the workspace stays failed */
             503: {
                 headers: {
                     [name: string]: unknown;

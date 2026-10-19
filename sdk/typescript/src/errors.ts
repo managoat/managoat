@@ -32,6 +32,7 @@ export type ManagoatErrorCode =
   | "workspace_failed"
   | "turns_running"
   | "rebuild_in_progress"
+  | "workspace_not_failed"
   | "sandbox_provider_disabled"
   | "insufficient_scope"
   | "not_found"
@@ -153,8 +154,8 @@ export class TimeoutError extends ManagoatError {
 /**
  * A workspace's setup failed (`status: "failed"`), seen by
  * `workspaces.waitForReady`. `workspace.error` says which step failed and
- * the end of what it printed, redacted. A prompt into a conversation in the
- * workspace retries the setup.
+ * the end of what it printed, redacted. `workspaces.retry` sets it up again, as
+ * a prompt into a conversation in the workspace does.
  */
 export class WorkspaceFailedError extends ManagoatError {
   readonly workspace: Workspace;

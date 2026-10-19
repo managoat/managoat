@@ -872,7 +872,9 @@ defmodule Fountain.Machines.Lease do
     # changeset rather than cast by it.
     %Sandbox{
       built_from_revision: Map.get(attrs, :built_from_revision),
-      built_from_digests: Map.get(attrs, :built_from_digests)
+      built_from_digests: Map.get(attrs, :built_from_digests),
+      # So a later rebuild from `old` sees it has been rebuilt from (#3013).
+      predecessor_id: old.id
     }
     |> Sandbox.changeset(%{
       machine_name: Map.get(attrs, :machine_name),

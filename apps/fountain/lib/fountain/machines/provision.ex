@@ -407,7 +407,9 @@ defmodule Fountain.Machines.Provision do
 
   1. Revalidate: a machine somebody asked to destroy is not rebuilt
      (`:fenced`), and nor is one still being provisioned
-     (`{:not_rebuildable, status}`).
+     (`{:not_rebuildable, status}`), nor a row the workspace has already
+     been rebuilt from while this caller waited for the lease (`:occupied`,
+     whose answer is to follow that rebuild).
   2. The old row's running turns are ended, while its conversations are still
      bound to it.
   3. **Succeed** (`Lease.succeed/3`), inside the fleet reservation of the
@@ -430,7 +432,9 @@ defmodule Fountain.Machines.Provision do
   Options are `run/3`'s plus `:attrs` (required: the new machine's
   `:machine_name`, which must not be the old one's, optionally `:agent_id`);
   `:environment` is recorded on the new row as it is inserted
-  and `:provider` (`:destroy`, the default, or `:already_gone`). Answers
+  and `:provider` (`:destroy`, the default, or `:already_gone`), and
+  `:notice`, the note the moved conversations get in place of the lost
+  machine's. Answers
   `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
   refusals and failures, plus `Lease.succeed/3`'s; the reservation's
   `:fleet_full` writes nothing.
@@ -467,6 +471,15 @@ defmodule Fountain.Machines.Provision do
 
       old.status in @provisionable ->
         {:error, {:not_rebuildable, old.status}}
+
+      # Somebody rebuilt the workspace from this row while this caller waited
+      # for the lease: a retry of a failed workspace and a prompt into it, or
+      # two prompts (#3013). That attempt is the one setup they share, even
+      # when it failed again, so this caller follows it rather than building a
+      # second machine (ADR 0097: the prompt "waits for it and fails with it
+      # if it fails again").
+      superseded_row?(old) ->
+        {:error, :occupied}
 
       true ->
         attrs = opts |> Keyword.fetch!(:attrs) |> Map.new() |> Map.merge(built_from(opts))
@@ -575,6 +588,22 @@ defmodule Fountain.Machines.Provision do
           {:ok, Lease.get(next.id)}
         end
     end
+  end
+
+  # Whether `old` has been rebuilt from already: a row names it as its
+  # predecessor (`Lease.succeed/3`). Timestamps are to the second, so they
+  # cannot order a row and a successor made in the same second (review of
+  # #3013). A row strictly newer than `old` counts too, for the rows made
+  # before the predecessor was recorded: only a succession adds a row to a
+  # workspace after its first.
+  defp superseded_row?(%Sandbox{id: id, workspace_id: workspace_id, inserted_at: inserted_at}) do
+    Repo.exists?(
+      from(s in Sandbox,
+        where:
+          s.workspace_id == ^workspace_id and s.id != ^id and
+            (s.predecessor_id == ^id or s.inserted_at > ^inserted_at)
+      )
+    )
   end
 
   defp unoccupied(%Sandbox{workspace_id: workspace_id, id: id}) do
@@ -845,6 +874,8 @@ defmodule Fountain.Machines.Provision do
   # already moved and says nothing, and a conversation with no server would
   # otherwise learn of the lost memory only from the agent.
   defp tell_moved(%Sandbox{} = old, moved, opts) do
+    # A caller whose rebuild is not of a lost machine (a failed workspace's
+    # retry, #3013) says so in its own words.
     message =
       Keyword.get(
         opts,

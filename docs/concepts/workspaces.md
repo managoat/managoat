@@ -146,10 +146,17 @@ variables. To configure the runtimes the agents will use, the setup script
 writes into the runtime template instead, described next.
 
 You can launch conversations into a workspace before it is ready. Their first
-prompt waits for the setup. A prompt into a conversation in a `failed`
-workspace starts the setup again, with the environment as it is then, and
-fails with it if it fails again; two
-prompts that arrive together start it once.
+prompt waits for the setup.
+
+A `failed` workspace can be set up again directly, with no conversation:
+fix the environment, then retry it (`POST /api/workspaces/{id}/retry`,
+`managoat workspace retry`, or `workspaces.retry` in the SDK). The retry
+builds a new machine from the environment and vault as they are then, and the
+status goes back to `provisioning` and on to `ready` or `failed`, with the
+same events as on create. A prompt into a conversation in a `failed`
+workspace starts the same setup, waits for it, and fails with it if it fails
+again. A retry and a prompt, or two prompts, that arrive together start it
+once. Only a `failed` workspace can be retried.
 
 ### Configure the runtimes from the setup
 

@@ -47,6 +47,18 @@ defmodule Fountain.Machines.BootSweep do
   defp sweep do
     reconcile_workspaces()
     sweep_leases()
+    settle_stranded_retries()
+  end
+
+  # A workspace retry (#3013) the last boot answered and never started is
+  # `provisioning` with nothing building it: back to `failed`, so the next
+  # retry is allowed.
+  defp settle_stranded_retries do
+    # ownership: a boot-time system sweep over every account, before any request.
+    _ = Fountain.Workspaces._unsafe_settle_stranded_retries()
+  rescue
+    error ->
+      Logger.error("machine boot sweep: retry settle failed: #{Exception.message(error)}")
   end
 
   defp reconcile_workspaces do

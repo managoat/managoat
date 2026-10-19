@@ -1,7 +1,7 @@
 defmodule FountainWeb.WorkspaceController do
   @moduledoc """
-  `/api/workspaces` (ADR 0097, "The workspace API"): create, list, show and
-  delete the caller's workspaces. Full scope only (the router's
+  `/api/workspaces` (ADR 0097, "The workspace API"): create, list, show,
+  delete and retry the caller's workspaces. Full scope only (the router's
   `:require_full_scope`, and `FountainWeb.Plugs.SandboxKeyScope`, which
   refuses a sandbox's own key every route not on its allowlist). Every read
   is scoped by the caller; another account's workspace is 404.
@@ -119,6 +119,63 @@ defmodule FountainWeb.WorkspaceController do
         error
     end
   end
+
+  operation(:retry,
+    summary: "Retry a failed workspace's setup",
+    description:
+      "Sets up a failed workspace again, with no prompt: a new machine is built from the " <>
+        "environment and vault as they are now, so fix the environment first. Answers 202 " <>
+        "with status provisioning; the status moves to ready, or to failed with an error, " <>
+        "and each change is a workspace.status event on GET /api/events/stream, as on " <>
+        "create. A prompt into the failed workspace starts the same setup: a retry and a " <>
+        "prompt arriving together set it up once, and the prompt waits for it. Refused " <>
+        "with 409 workspace_not_failed unless the workspace is failed, with 422 " <>
+        "sandbox_provider_disabled when its provider is no longer configured, and with 503 " <>
+        "fleet_full when every sandbox slot on its provider is in use. An implicit " <>
+        "workspace is 404: its setup is its conversation's.",
+    parameters: [id: [in: :path, type: :string, required: true]],
+    responses: [
+      accepted: {"Workspace", "application/json", Schemas.WorkspaceResponse},
+      not_found: {"Not found", "application/json", Schemas.Error},
+      conflict: {"Not failed (workspace_not_failed)", "application/json", Schemas.Error},
+      unprocessable_entity:
+        {"The workspace's provider is not enabled (sandbox_provider_disabled)",
+         "application/json", Schemas.Error},
+      service_unavailable:
+        {"Every sandbox slot in use (fleet_full), or the setup could not be started " <>
+           "(sandbox_unavailable); the workspace stays failed", "application/json", Schemas.Error}
+    ]
+  )
+
+  def retry(conn, %{"id" => id}) do
+    with %Fountain.Workspaces.Workspace{implicit: false} = workspace <-
+           Workspaces.get_workspace(id, conn.assigns.current_user.id) || {:error, :not_found},
+         {:ok, workspace} <- Workspaces.retry_workspace(workspace, Audited.attribution(conn)) do
+      conn
+      |> put_status(:accepted)
+      |> render_one(workspace)
+    else
+      # An implicit workspace's setup is its conversation's provision.
+      %Fountain.Workspaces.Workspace{implicit: true} ->
+        {:error, :not_found}
+
+      {:error, {:workspace_not_failed, status}} ->
+        conn
+        |> put_status(:conflict)
+        |> json(%{error: "workspace_not_failed", message: not_failed_message(status)})
+
+      # `{:sandbox_provider_disabled, provider, :workspace}` goes to the
+      # fallback, which gives the workspace's advice (#3010).
+      error ->
+        error
+    end
+  end
+
+  defp not_failed_message("provisioning"),
+    do: "the workspace is already being set up; follow its status until it is ready or failed"
+
+  defp not_failed_message(status),
+    do: "the workspace is #{status}: only a failed workspace's setup can be retried"
 
   operation(:delete,
     summary: "Delete a workspace",

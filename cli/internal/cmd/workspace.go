@@ -108,6 +108,23 @@ and exits non-zero if it fails.`,
 	rebuildCmd.Flags().Bool("wait", false, "wait until the workspace is ready, and fail if its setup fails")
 	rebuildCmd.Flags().Duration("timeout", 30*time.Minute, "how long --wait waits")
 	rebuildCmd.Flags().Bool("json", false, "print the workspace as JSON")
+	retryCmd := &cobra.Command{
+		Use:   "retry <id-or-name>",
+		Short: "Set a failed workspace up again",
+		Long: `Set a failed workspace up again, with no prompt: a new machine is built
+from the environment and vault as they are now, so fix the environment first.
+Only a failed workspace can be retried.
+
+Without --wait the command returns as soon as the setup has started, with
+status provisioning. With --wait it follows the setup and exits non-zero if it
+fails again. A prompt into a conversation in the workspace starts the same
+setup; a retry and a prompt arriving together set it up once.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error { return workspaceRetry(cmd, args[0]) },
+	}
+	retryCmd.Flags().Bool("wait", false, "wait until the workspace is ready, and fail if its setup fails again")
+	retryCmd.Flags().Duration("timeout", 30*time.Minute, "how long --wait waits")
+	retryCmd.Flags().Bool("json", false, "print the workspace as JSON")
 
 	wsCmd.AddCommand(
 		createCmd,
@@ -115,6 +132,7 @@ and exits non-zero if it fails.`,
 		showCmd,
 		waitCmd,
 		rebuildCmd,
+		retryCmd,
 		&cobra.Command{
 			Use:   "delete <id-or-name>",
 			Short: "Delete a workspace: terminate its conversations and destroy its machine",
@@ -358,6 +376,48 @@ func workspaceWaitCmd(cmd *cobra.Command, target string) error {
 	return err
 }
 
+func workspaceRetry(cmd *cobra.Command, target string) error {
+	f := cmd.Flags()
+	wait, _ := f.GetBool("wait")
+	timeout, _ := f.GetDuration("timeout")
+	jsonOut, _ := f.GetBool("json")
+
+	c := activeClient()
+	id, err := resolveWorkspaceID(c, target)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := c.Post("/workspaces/"+id+"/retry", nil, &resp); err != nil {
+		if api.StatusCode(err) == 404 {
+			return fmt.Errorf("no workspace %s (an implicit workspace is set up again by its conversation's next prompt)", id)
+		}
+		return explainAPIError(err)
+	}
+	ws := resp.Data
+	if !jsonOut {
+		fmt.Printf("workspace  ↻  %s (%s)  %s\n", output.ToString(ws["name"]), id, output.ToString(ws["status"]))
+	}
+	if wait {
+		final, err := waitForWorkspace(c, id, timeout, os.Stderr)
+		if final != nil {
+			ws = final
+		}
+		if err != nil {
+			if jsonOut {
+				_ = output.PrintJSON(ws)
+			}
+			return err
+		}
+	}
+	if jsonOut {
+		return output.PrintJSON(ws)
+	}
+	return nil
+}
+
 func workspaceDelete(target string) error {
 	c := activeClient()
 	id, err := resolveWorkspaceID(c, target)
@@ -388,8 +448,8 @@ func getWorkspace(c *api.Client, id string) (map[string]any, error) {
 }
 
 // errWorkspaceFailed is what a wait ends with when the setup failed. The
-// workspace keeps its error; a prompt into one of its conversations retries
-// the setup.
+// workspace keeps its error; `workspace retry`, or a prompt into one of its
+// conversations, runs the setup again.
 var errWorkspaceFailed = errors.New("workspace setup failed")
 
 // waitForWorkspace reads the workspace until its status is ready or failed,
@@ -425,7 +485,7 @@ func waitForWorkspace(c *api.Client, id string, timeout time.Duration, progress 
 				if reason == "" {
 					return ws, errWorkspaceFailed
 				}
-				return ws, fmt.Errorf("%w: %s\n  Fix the environment if it is at fault, then prompt a conversation in the workspace: that runs the setup again with the environment as it is now", errWorkspaceFailed, reason)
+				return ws, fmt.Errorf("%w: %s\n  Fix the environment if it is at fault, then `managoat workspace retry %s`: that runs the setup again with the environment as it is now", errWorkspaceFailed, reason, id)
 			}
 		case api.StatusCode(err) == 404:
 			return ws, fmt.Errorf("no workspace %s (deleted while waiting?)", id)
@@ -501,6 +561,8 @@ func explainAPIError(err error) error {
 		hint = "Delete the workspaces created from it first (`managoat workspace list`, then `managoat workspace delete`)."
 	case "invalid_sandbox_api_access":
 		hint = "sandbox_api_access \"none\" needs a sandbox of the conversation's own: launch it without a workspace."
+	case "workspace_not_failed":
+		hint = "Only a failed workspace's setup can be retried: `managoat workspace wait` follows one being set up."
 	case "machine_name_with_workspace":
 		hint = "A workspace names its own machine: drop machine_name."
 	case "sandbox_attach_unsupported":
