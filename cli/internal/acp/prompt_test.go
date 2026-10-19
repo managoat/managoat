@@ -468,3 +468,16 @@ func TestWakeFailureCarriesItsAdvice(t *testing.T) {
 		t.Fatalf("terminal=%v outcome=%+v", terminal, outcome)
 	}
 }
+
+func TestReattachRefusalCarriesItsAdvice(t *testing.T) {
+	outcome, terminal := classifyStage(Event{Stage: "reattach", State: "failed", Data: `{"reason":"sandbox_provider_disabled","retryable":false,"advice":"set its credentials"}`})
+	want := "could not reattach to the sandbox: sandbox_provider_disabled — set its credentials"
+	if !terminal || outcome.err != want {
+		t.Fatalf("terminal=%v outcome=%+v", terminal, outcome)
+	}
+
+	outcome, _ = classifyStage(Event{Stage: "reattach", State: "failed", Data: `{"reason":"not_found","retryable":false}`})
+	if !strings.Contains(outcome.err, "provision a fresh one") {
+		t.Fatalf("outcome=%+v", outcome)
+	}
+}

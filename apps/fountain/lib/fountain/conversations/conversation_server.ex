@@ -551,8 +551,10 @@ defmodule Fountain.Conversations.ConversationServer do
             # Provisioned in a previous BEAM lifetime: reattach, never recreate.
             # `suspended` here is a park that landed mid-wake (the reaper's, or
             # a co-tenant's, ADR 0097), resumed through its owner first.
-            case Reattachment.awake(sandbox, conv.id) do
-              {:ok, sandbox} -> reattach(state, conv, sandbox, agent, env, secrets)
+            with :ok <- Reattachment.provider_usable(sandbox, conv.id),
+                 {:ok, sandbox} <- Reattachment.awake(sandbox, conv.id) do
+              reattach(state, conv, sandbox, agent, env, secrets)
+            else
               {:error, _} -> {:stop, :normal, state}
             end
 
@@ -561,6 +563,7 @@ defmodule Fountain.Conversations.ConversationServer do
 
           # A lost machine: rebuilt in its workspace, or followed to the one
           # another conversation rebuilt (ADR 0097, `Conversations.Rebuild`).
+          # A follow needs no provider check: the wake refused a disabled one.
           terminal when terminal in ["terminated", "failed"] ->
             case FreshProvision.rebuild(state, conv, sandbox, agent, env, secrets) do
               {:follow, state, live} -> reattach(state, current(conv), live, agent, env, secrets)
@@ -626,7 +629,7 @@ defmodule Fountain.Conversations.ConversationServer do
     # about the sandbox, and the next wake mints again.
     with {:ok, _info} <-
            Managoat.Sandbox.Retry.with_backoff(
-             fn -> Managoat.Sandbox.get(handle) end,
+             fn -> Reattachment.lookup(handle) end,
              label: "sprite lookup on wake"
            ),
          {:ok, state} <- Egress.prepare_state(state),

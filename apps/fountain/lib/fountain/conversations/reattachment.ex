@@ -15,6 +15,69 @@ defmodule Fountain.Conversations.Reattachment do
   @relaunch_window_s 600
 
   @doc """
+  Refuse a reattach to a machine on a provider this instance can no longer
+  reach (#3004), before anything calls the provider: a disabled provider's
+  adapter raises on its missing credential, and a server that met the raise
+  was restarted straight back into it, until the crash loop exhausted the
+  restart budget every conversation server shares and took them all down.
+  That is what a boot without, say, `E2B_API_KEY` did to every conversation
+  on a `ready` E2B machine, and what a launch onto one did.
+
+  The refusal is the wake's (`Wake.machine_provider_usable/1`): the `reattach`
+  stage fails, not retryable, with the advice a wake's refusal carries; the
+  prompts the server was started for are reported as not run with the same
+  advice; and the row is left as it is, for the provider's return.
+  """
+  @spec provider_usable(map(), String.t()) ::
+          :ok | {:error, {:sandbox_provider_disabled, atom(), :workspace | :sandbox}}
+  def provider_usable(sandbox, conv_id) do
+    case Fountain.Conversations.Wake.machine_provider_usable(sandbox) do
+      :ok ->
+        :ok
+
+      {:error, {:sandbox_provider_disabled, provider, whose} = reason} = error ->
+        Logger.warning(
+          "conv #{conv_id}: sandbox #{sandbox.id} is on disabled provider #{provider}; " <>
+            "not reattaching"
+        )
+
+        Output.publish_stage(conv_id, "reattach", "failed", %{
+          reason: "sandbox_provider_disabled",
+          retryable: false,
+          advice: Fountain.SandboxProviders.disabled_message(provider, whose)
+        })
+
+        untaken(conv_id, reason)
+        error
+    end
+  end
+
+  @doc """
+  The reattach's provider lookup, with a raise folded into an error the
+  server's transient arm answers (retryable, the row untouched). An adapter
+  raises on a missing credential (`E2B.Api.api_key!/0`,
+  `Sprites.Client.get!/0`), and a raise there restarted the `:transient`
+  server straight back into it (#3004). `provider_usable/2` refuses a
+  disabled provider before this; this is for what it lets through, the
+  instance default with no credential. The stage gets the exception's
+  module, the log the exception and its stacktrace, as `Park` and `Destroy`
+  log a raising adapter. Only a raise: an exit inside the adapter still
+  stops the server as it did.
+  """
+  @spec lookup(Managoat.Sandbox.Handle.t()) :: {:ok, map()} | {:error, term()}
+  def lookup(handle) do
+    Managoat.Sandbox.get(handle)
+  rescue
+    error ->
+      Logger.warning(
+        "sandbox lookup for #{handle.name} raised: " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
+      {:error, {:lookup_raised, error.__struct__}}
+  end
+
+  @doc """
   Bring a parked machine up before a server reattaches to it: a `suspended`
   row is resumed through its owner (`Machine.ensure_up/2`), with the fleet
   gate and the provider call a wake makes, and read again. Any other row is

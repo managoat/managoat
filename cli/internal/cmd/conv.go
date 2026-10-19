@@ -510,7 +510,14 @@ func handleStageEvent(data map[string]any) (bool, error) {
 		// Since #799 the event says which kind of failure it was: a
 		// transient one (provider unreachable) left the sandbox as it was
 		// and the next prompt reattaches again; a definitive not-found
-		// retired it and the next prompt provisions fresh.
+		// retired it and the next prompt provisions fresh. A refusal the
+		// caller has to act on says what to change instead: the machine's
+		// provider having been disabled keeps the sandbox, and a prompt again
+		// is refused again until it is back (#3004).
+		if advice := innerDataString(data, "advice"); advice != "" {
+			fmt.Fprintf(os.Stderr, "▸ reattach failed (%s) — %s\n", innerDataString(data, "reason"), advice)
+			return true, errReattachFailed
+		}
 		if innerDataString(data, "retryable") == "true" {
 			fmt.Fprintf(os.Stderr, "▸ reattach failed (%s) — the sandbox is untouched; prompt again to retry\n", innerDataString(data, "reason"))
 			return true, errReattachFailed

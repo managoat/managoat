@@ -335,6 +335,11 @@ func classifyStage(ev Event) (turnOutcome, bool) {
 		return turnOutcome{err: "the sandbox never started: " + reasonText(meta)}, true
 
 	case ev.Stage == "reattach" && ev.State == "failed":
+		// A refusal that says what to change, such as the machine's provider
+		// having been disabled, which no prompt again gets past (#3004).
+		if advice, ok := meta["advice"].(string); ok && advice != "" {
+			return turnOutcome{err: "could not reattach to the sandbox: " + reasonText(meta) + " — " + advice}, true
+		}
 		return turnOutcome{err: "could not reattach to the sandbox — prompt again to provision a fresh one"}, true
 
 	case ev.Stage == "terminate" && ev.State == "done":

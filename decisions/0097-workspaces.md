@@ -1192,3 +1192,20 @@ A PR sequence, each releasable alone:
   nothing about the machine, which is another owner's, and nothing when no
   prompt is queued. A woken or launched prompt that reaches a server already
   stopped is a known limit, under Consequences.
+- 2026-10-19 — A machine whose row says `ready`, on a provider disabled
+  since (#3004's last gap), is refused as a parked one is, and does not keep
+  serving: every adapter call needs the provider's credential, so nothing
+  can reach the machine until it is back. A launch into the workspace starts
+  no server and leaves its prompt to the wake, whose refusal carries the
+  workspace's advice; a server reattaching to it, the boot sweep's
+  included, stops before any provider call with a `reattach` `failed` stage
+  (`sandbox_provider_disabled`, not retryable, with the same `advice`) and
+  reports any prompt it holds as not run with it. The row is left as it is,
+  and the reaper's idle and ceiling sweep skips it: its park could not reach
+  the provider, and the fallback destroy would have retired the row over a
+  machine still running there. Before, the adapter raised on its missing
+  credential and the server was restarted into the raise until the restart
+  budget every conversation server shares ran out, which took all of them
+  down. The instance default keeps its lazy credential check here too, so a
+  reattach's lookup now turns a raise into its retryable failure rather than
+  a crash.

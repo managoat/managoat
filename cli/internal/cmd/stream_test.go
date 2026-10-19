@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -291,5 +292,28 @@ func TestWakeFailureShowsItsAdvice(t *testing.T) {
 	terminal, err := handleStageEvent(map[string]any{"stage": "wake", "state": "failed", "data": `{"reason":"sandbox_provider_disabled","retryable":false,"advice":"this workspace runs on it"}`})
 	if !terminal || err == nil || !strings.Contains(err.Error(), "sandbox_provider_disabled") || !strings.HasSuffix(err.Error(), "— this workspace runs on it") {
 		t.Fatalf("terminal=%v err=%v", terminal, err)
+	}
+}
+
+func TestReattachRefusalShowsItsAdvice(t *testing.T) {
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	original := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = original })
+
+	terminal, err := handleStageEvent(map[string]any{"stage": "reattach", "state": "failed", "data": `{"reason":"sandbox_provider_disabled","retryable":false,"advice":"this workspace runs on it"}`})
+	if !terminal || !errors.Is(err, errReattachFailed) {
+		t.Fatalf("terminal=%v err=%v", terminal, err)
+	}
+	output, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), "reattach failed (sandbox_provider_disabled) — this workspace runs on it") || strings.Contains(string(output), "fresh sandbox") {
+		t.Errorf("stderr = %q", output)
 	}
 }
