@@ -493,6 +493,20 @@ directory" or `cwd` when this is built.
   review 0058 asks for (#2262), and the migration must carry any
   `destroying` stamp from a sandbox row to its workspace.
 - `Machines.Occupancy` stops being degenerate, and the park reads it for real.
+- **Known limit: a prompt can be reported as not run without its receipt.**
+  A woken conversation's prompt reaches its new server in a cast sent just
+  after the server is registered. A server whose setup stops it at once (a
+  reattach refused its machine, say) can be gone before that cast arrives,
+  and a message to a dead process is dropped. Its stop then reports a bare
+  `wake` `failed`, with no `prompt_receipt_id` or `client_request_id`, and
+  the receipt stays pending. It counts against a rebuild for a wake's window,
+  and the next boot reports it as `deployment_interrupted` if it is still
+  within the receipt's TTL. The stopping server cannot pick up the receipt
+  itself: a pending receipt for its conversation may belong to a wake that
+  has not reached registration yet, which will start the next server and run
+  that prompt. Closing the gap would mean handing the prompt to the server
+  in its start arguments rather than in a cast, and that is not worth it for
+  a report this narrow (#3001).
 - New API surface: `/api/workspaces` (create, list, show, delete, and the four
   file reads), two launch fields, the SDK and CLI for them, and a manual page.
 - Provisioning on create gives a workspace a setup step independent of any
@@ -1156,3 +1170,14 @@ A PR sequence, each releasable alone:
   2,000-character cap the error keeps its words and the end of the output.
   And a retry sends `provisioning` once: the succession it runs no longer
   announces it again (`announce: false`).
+- 2026-10-19 — The last of #3001. The primitives figure
+  (`docs/images/primitives.svg`, its inline copy in `docs/primitives.md` and
+  the README's alt text) no longer says one sandbox per conversation: the
+  machine is a workspace's sandbox, or a conversation's own implicit one.
+  The other items were checked against `main` and were already fixed by
+  #3016. Ending turns in bulk at the ceiling and on a destroy was already
+  audited through `Admission.end_turns_on/3`, and a rebuild after a loss now
+  is too. `fail_machine` records the failure's own reason. A not-run report
+  carries its receipt whenever the prompt is still in the stopping server's
+  mailbox. Where it is not, the gap is now a known limit under
+  Consequences.

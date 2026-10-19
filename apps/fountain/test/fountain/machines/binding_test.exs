@@ -342,6 +342,39 @@ defmodule Fountain.Machines.BindingTest do
                Machine.end_turn(ctx.turn, {:orphan, "attach_failed"}, sandbox_id: ctx.sandbox.id)
     end
 
+    # #3001: the ceiling ends every running turn on an explicit workspace's
+    # machine at once, the co-tenant's included, and each gets its own
+    # `conversation.turn.orphaned` row naming the operation's actor (an admin
+    # reduced to "admin", as a teardown's actor is) and the reason.
+    test "a ceiling park audits every turn it ends, with the operation's actor", ctx do
+      stub(Managoat.Sandbox, :suspend, fn _ -> :ok end)
+      explicit_workspace!(ctx.sandbox)
+
+      quietly(fn ->
+        assert {:ok, :parked} =
+                 Park.run(ctx.sandbox.id,
+                   reason: :max_lifetime,
+                   actor: "admin:#{ctx.user.id}",
+                   requesting_conversation_id: ctx.conv.id
+                 )
+      end)
+
+      for turn <- [ctx.turn, ctx.cotenant_turn] do
+        assert %Turn{status: "interrupted"} = Repo.reload!(turn)
+      end
+
+      rows = Audit.list_for_user(ctx.user.id, action_prefix: "conversation.turn.orphaned")
+
+      assert rows |> Enum.map(& &1.resource_id) |> Enum.sort() ==
+               Enum.sort([ctx.turn.id, ctx.cotenant_turn.id])
+
+      for row <- rows do
+        assert row.actor == "admin"
+        assert row.metadata["reason"] == "machine_parked"
+        assert row.metadata["conversation_id"] in [ctx.conv.id, ctx.cotenant.id]
+      end
+    end
+
     test "the replacement's destroy ends the predecessor's turn; the successor's write finds it ended",
          ctx do
       # Counterexample 3's real path: a wake builds a fresh machine and
