@@ -58,6 +58,13 @@ export type SandboxChange = S["SandboxChange"];
  * directory of its own.
  */
 export type Workspace = S["Workspace"];
+/**
+ * A field of an environment that a workspace's machine is built from: what
+ * `Workspace.changed_fields` and `WorkspaceStatusEvent.changed_fields` name
+ * when an edit since the machine was built left it `stale`. Names only; no
+ * value is ever sent.
+ */
+export type WorkspaceField = Workspace["changed_fields"][number];
 /** What `workspaces.create` sends. Its environment, vault and provider are fixed for its life. */
 export type WorkspaceInput = S["WorkspaceCreateRequest"];
 /** A `workspace.status` frame on the account event stream. Live only: it is never replayed. */

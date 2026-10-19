@@ -116,6 +116,19 @@ defmodule Fountain.Crypto do
     end
   end
 
+  @doc """
+  A 32-byte key for one purpose, named by `info`: HKDF-SHA256 (RFC 5869,
+  one block) over `MASTER_SECRETS_KEY` with a zero salt, as the broker CA's
+  seed is derived (`Fountain.Broker.Native.ca_seed/0`). It is never the key
+  that wraps a DEK, and a different `info` gives an unrelated key. Rotating
+  the master key rotates it.
+  """
+  @spec derived_key(String.t()) :: <<_::256>>
+  def derived_key(info) when is_binary(info) do
+    prk = :crypto.mac(:hmac, :sha256, <<0::256>>, master_key())
+    :crypto.mac(:hmac, :sha256, prk, info <> <<1>>)
+  end
+
   # Private
 
   defp master_key do

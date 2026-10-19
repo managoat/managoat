@@ -9,6 +9,7 @@ import {
   WorkspaceFailedError,
   type AccountEvent,
   type Workspace,
+  type WorkspaceField,
   type WorkspaceStatusEvent,
 } from "../src/index.ts";
 
@@ -28,6 +29,10 @@ const workspace = (status: Workspace["status"], extra: Partial<Workspace> = {}):
   error: null,
   sandbox_id: status === "ready" ? "cccccccc-1111-1111-1111-111111111111" : null,
   sandbox_status: status === "ready" ? "ready" : null,
+  revision: "99999999-1111-1111-1111-111111111111",
+  built_from_revision: status === "ready" ? "99999999-1111-1111-1111-111111111111" : null,
+  stale: false,
+  changed_fields: [],
   inserted_at: "2026-10-18T00:00:00Z",
   updated_at: "2026-10-18T00:00:00Z",
   ...extra,
@@ -221,7 +226,16 @@ test("a sandbox key's refusal is code insufficient_scope, with the scope it need
 
 test("events() yields workspace.status and conversations notices as their own kinds", async () => {
   const stage = { conversation_id: "conv-1", kind: "stage", stage: "turn", state: "done", ts: "2026-10-19T00:00:00Z" };
-  const status = { workspace_id: WS, name: "monorepo-box", status: "failed", error: "setup script exited 1" };
+  const status = {
+    workspace_id: WS,
+    name: "monorepo-box",
+    status: "ready",
+    error: null,
+    revision: "99999999-2222-2222-2222-222222222222",
+    built_from_revision: "99999999-1111-1111-1111-111111111111",
+    stale: true,
+    changed_fields: ["setup_script", "env_vars"],
+  };
   const frames = [
     `id: 5\nevent: stage\ndata: ${JSON.stringify(stage)}\n\n`,
     `event: workspace.status\ndata: ${JSON.stringify(status)}\n\n`,
@@ -254,6 +268,10 @@ test("events() yields workspace.status and conversations notices as their own ki
     }
   }
   assert.deepEqual(statuses, [{ ...status, kind: "workspace.status" }]);
+  // Whether its machine is behind its environment, by field name (#2987).
+  const changed: WorkspaceField[] = statuses[0]!.changed_fields;
+  assert.equal(statuses[0]!.stale, true);
+  assert.deepEqual(changed, ["setup_script", "env_vars"]);
   // A notice carries no event id, so it never moves the reconnect cursor.
   assert.equal("id" in seen[1]!, false);
 });

@@ -571,7 +571,8 @@ defmodule Fountain.AuditGuardrailTest do
 
     {:ok, :provisioned, :built} =
       Machine.provision(sandbox.id, fn _handle, _epoch -> {:ok, :built} end,
-        actor: "system:conversation_server"
+        actor: "system:conversation_server",
+        environment: nil
       )
   end
 

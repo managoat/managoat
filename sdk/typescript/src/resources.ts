@@ -255,6 +255,11 @@ export interface WaitForReadyOptions {
  * follow. Launch without a workspace to give a conversation a sandbox of its
  * own.
  *
+ * Editing its environment does not change the machine. A workspace says when
+ * its machine is behind (`stale`) and which fields changed since it was built
+ * (`changed_fields`, names only), and each such edit is a `workspace.status`
+ * event on `events()`.
+ *
  * Its machine is parked when idle, like any sandbox, and woken by the next
  * prompt. The max-lifetime ceiling parks it rather than destroying it, so it
  * lives until you delete it or its provider loses it, and Managoat does not

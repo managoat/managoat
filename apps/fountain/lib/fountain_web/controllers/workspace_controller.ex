@@ -43,10 +43,12 @@ defmodule FountainWeb.WorkspaceController do
     user = conn.assigns.current_user
     implicit? = params["implicit"] in [true, "true", "1"]
     workspaces = Workspaces.list_workspaces(user.id, implicit: implicit?)
+    sandboxes = Workspaces.current_sandboxes(workspaces)
 
     render(conn, :index,
       workspaces: workspaces,
-      sandboxes: Workspaces.current_sandboxes(workspaces)
+      sandboxes: sandboxes,
+      standing: Workspaces.staleness(workspaces, sandboxes)
     )
   end
 
@@ -62,7 +64,7 @@ defmodule FountainWeb.WorkspaceController do
   def show(conn, %{"id" => id}) do
     case Workspaces.get_workspace(id, conn.assigns.current_user.id) do
       nil -> {:error, :not_found}
-      workspace -> render(conn, :show, workspace: workspace, sandbox: current(workspace))
+      workspace -> render_one(conn, workspace)
     end
   end
 
@@ -101,7 +103,7 @@ defmodule FountainWeb.WorkspaceController do
            Workspaces.create_workspace(user.id, attrs, Audited.attribution(conn)) do
       conn
       |> put_status(:created)
-      |> render(:show, workspace: workspace, sandbox: current(workspace))
+      |> render_one(workspace)
     else
       # The fallback's message names the agent's sandbox_provider override,
       # which is not what a workspace's caller sent.
@@ -147,5 +149,14 @@ defmodule FountainWeb.WorkspaceController do
     end
   end
 
-  defp current(workspace), do: Workspaces.current_sandbox(workspace)
+  defp render_one(conn, workspace) do
+    sandboxes = Workspaces.current_sandboxes([workspace])
+    standing = Workspaces.staleness([workspace], sandboxes)
+
+    render(conn, :show,
+      workspace: workspace,
+      sandbox: Map.get(sandboxes, workspace.id),
+      standing: Map.fetch!(standing, workspace.id)
+    )
+  end
 end

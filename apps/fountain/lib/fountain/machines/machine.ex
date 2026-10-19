@@ -715,7 +715,10 @@ defmodule Fountain.Machines.Machine do
         provision(
           sandbox_id,
           Fountain.Machines.Setup.pipeline(setup, network),
-          Keyword.put_new(opts, :actor, "system:machine")
+          opts
+          |> Keyword.put_new(:actor, "system:machine")
+          # What the steps build from is the setup's environment (#2987).
+          |> Keyword.put(:environment, setup.environment)
         )
 
       {_unsettled, _opts} ->

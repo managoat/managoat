@@ -108,6 +108,10 @@ when `failed` (redacted like the transcript), on `GET /api/workspaces` and
 (`ready`, `suspended`, or none after a loss). Each status change is a
 `workspace.status` event on the account event stream. A create when the
 fleet ceiling is full is refused with the launch's `503 fleet_full`.
+A workspace also says whether its machine is behind its environment
+(`revision`, `built_from_revision`, `stale`, `changed_fields`; see History,
+2026-10-19, #2987), and an edit that moves a ready one's environment is a
+`workspace.status` event too.
 `DELETE /api/workspaces/:id` deletes it (see Lifecycle). Create and delete
 are audited in the context, with the caller, outside any transaction.
 
@@ -872,3 +876,25 @@ A PR sequence, each releasable alone:
   included. A channel resume naming the conversation's own `cwd` resumes
   whatever the environment's mounts are now. Environment validation is
   unchanged: an ineligible mount is still cloned. 0039 is amended.
+- 2026-10-19 — A workspace says which environment revision its machine was
+  built from (#2987). An environment's `revision` is replaced, by a trigger
+  on the row, on every update that changes a field a machine is built from
+  (`repositories`, `packages`, `setup_script`, `setup_timeout_seconds`,
+  `env_vars`, `networking_type`, `networking_config`), and not for its name,
+  metadata or secrets, which reach a live machine through the broker (#2548);
+  a trigger, so every writer moves it. Every provision records on its
+  sandbox row, with the owner's own `provisioning` write (the stamp, or the
+  successor's insert on a rebuild), the revision it read and a digest per
+  field: HMAC-SHA256 under a key derived from the master key for this use
+  alone, over the environment's id, the field's name and its canonical JSON,
+  so nobody holding only the database can test a guess at a low-entropy
+  value; no value is stored. `GET /api/workspaces` and `:id` carry
+  `revision`, `built_from_revision`, `stale` and `changed_fields` (names
+  only), and so does `workspace.status`, which is also sent to each ready
+  explicit workspace on the environment after every edit that moves its
+  revision: one query for the lot, however many share it. Calls made here:
+  the event is `workspace.status`, not a new `workspace.stale`, because it is
+  the workspace's whole state, which a client already follows, and a second
+  kind could disagree with it; `stale` compares the digests, so an edit that
+  is reverted moves the revision but is not stale; and a machine with no
+  record (built before this) is not stale, since nothing is known about it.

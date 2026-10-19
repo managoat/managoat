@@ -28,6 +28,27 @@ runs: a retry after a failure, or a rebuild after a loss. An environment
 several workspaces share changes all of their next rebuilds. A workspace belongs to the account that created it and is
 never shared with another account.
 
+An edit does not change a machine that is already built, so a workspace tells
+you when its machine is behind. It reports `stale: true` and `changed_fields`,
+the names of the environment's fields that changed since the machine was
+built: `repositories`, `packages`, `setup_script`, `setup_timeout_seconds`,
+`env_vars`, `networking_type` or `networking_config`. Only names are given,
+never values. Editing the environment's name, its metadata or a secret does
+not make a workspace stale, and secrets reach the running machine through the
+broker anyway. Each edit that moves a ready workspace's environment is also a
+`workspace.status` event, so a client can show "rebuild needed" as it
+happens.
+
+`stale` says what the machine was built from, which is not everything a
+conversation on it runs with. `repositories`, `packages` and `setup_script`
+exist only as what the setup did to the disk, so an edit to them reaches the
+machine only through a rebuild. `env_vars` and the networking fields are also
+read again by each conversation as it starts: a conversation launched or
+woken after the edit gets the new variables in its process and the new
+network allowlist, while the machine's env file, and the conversations
+already running, keep the old ones until a rebuild. `setup_timeout_seconds`
+matters only to the next setup.
+
 It is not a fifth primitive. The four primitives are the configuration and
 the run; a workspace is the machine a run happens on, made something you can
 name. Every conversation already has one. A conversation launched without a

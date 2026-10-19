@@ -37,8 +37,10 @@ defmodule FountainWeb.EventsController do
         "missed across all owned conversations, including finished ones. Without a cursor, " <>
         "only events recorded after connection are sent. `?streams=` filters log events as elsewhere (not `workspace.status`); " <>
         "`?blocks=true` adds server-parsed blocks. A `workspace.status` event (data " <>
-        "`{workspace_id, name, status, error}`) is sent when one of the caller's workspaces " <>
-        "changes status; it carries no id and is not replayed, so a client that reconnects " <>
+        "`{workspace_id, name, status, error, revision, built_from_revision, stale, " <>
+        "changed_fields}`) is sent when one of the caller's workspaces changes status, " <>
+        "and, for a ready one, after every edit that moves its environment's revision; " <>
+        "it carries no id and is not replayed, so a client that reconnects " <>
         "re-reads its workspaces. Heartbeats every 15 s; closes after " <>
         "60 s idle so the client reconnects. The first byte is a `: connected` comment.",
     parameters: [

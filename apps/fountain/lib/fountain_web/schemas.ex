@@ -88,6 +88,57 @@ defmodule FountainWeb.Schemas do
     })
   end
 
+  defmodule WorkspaceStaleness do
+    @moduledoc false
+    # The four properties a workspace and its `workspace.status` frame share
+    # (#2987), defined once.
+
+    def revision,
+      do: %Schema{
+        type: :string,
+        format: :uuid,
+        nullable: true,
+        description:
+          "The environment's current revision. It changes on every edit of a field the " <>
+            "machine is built from (repositories, packages, setup_script, " <>
+            "setup_timeout_seconds, env_vars, networking_type, networking_config), and not " <>
+            "for its name, metadata or secrets. Null with no environment."
+      }
+
+    def built_from_revision,
+      do: %Schema{
+        type: :string,
+        format: :uuid,
+        nullable: true,
+        description:
+          "The environment revision the current machine was built from. Null when it has " <>
+            "no live machine, or one built before this was recorded."
+      }
+
+    def stale,
+      do: %Schema{
+        type: :boolean,
+        description:
+          "True when at least one field the machine was built from has changed since " <>
+            "(changed_fields). An edit that was reverted moves revision but is not stale. " <>
+            "False with no live machine, or with no record of what it was built from. It " <>
+            "describes the machine as built: a conversation started after an edit to " <>
+            "env_vars or the networking fields already runs with the new values."
+      }
+
+    def changed_fields,
+      do: %Schema{
+        type: :array,
+        items: %Schema{
+          type: :string,
+          enum: Fountain.Workspaces.Staleness.field_names()
+        },
+        description:
+          "The names of the environment's fields that differ from what the machine was " <>
+            "built from. Names only: no value, env_vars' included, is ever given."
+      }
+  end
+
   defmodule Workspace do
     @moduledoc false
     require OpenApiSpex
@@ -150,6 +201,10 @@ defmodule FountainWeb.Schemas do
               "wakes. Null when it has none live: lost at its provider, or a failed provision, " <>
               "and the next prompt builds the next."
         },
+        revision: FountainWeb.Schemas.WorkspaceStaleness.revision(),
+        built_from_revision: FountainWeb.Schemas.WorkspaceStaleness.built_from_revision(),
+        stale: FountainWeb.Schemas.WorkspaceStaleness.stale(),
+        changed_fields: FountainWeb.Schemas.WorkspaceStaleness.changed_fields(),
         inserted_at: %Schema{type: :string, format: :"date-time"},
         updated_at: %Schema{type: :string, format: :"date-time"}
       },
@@ -164,6 +219,10 @@ defmodule FountainWeb.Schemas do
         :error,
         :sandbox_id,
         :sandbox_status,
+        :revision,
+        :built_from_revision,
+        :stale,
+        :changed_fields,
         :inserted_at,
         :updated_at
       ]
@@ -219,16 +278,31 @@ defmodule FountainWeb.Schemas do
       title: "StreamWorkspaceStatus",
       description:
         "A `workspace.status` frame on the events SSE stream: one of the caller's " <>
-          "workspaces changed status. Sent live only, with no event id, so it is not " <>
-          "replayed after a reconnect; read GET /api/workspaces/{id} for the state.",
+          "explicit workspaces changed status, or an edit to its environment changed how " <>
+          "its machine stands against it (stale, changed_fields). Sent live only, with no " <>
+          "event id, so it is not replayed after a reconnect; read GET " <>
+          "/api/workspaces/{id} for the state.",
       type: :object,
       properties: %{
         workspace_id: %Schema{type: :string, format: :uuid},
         name: %Schema{type: :string, nullable: true},
         status: %Schema{type: :string, enum: Fountain.Workspaces.Workspace.statuses()},
-        error: %Schema{type: :string, nullable: true}
+        error: %Schema{type: :string, nullable: true},
+        revision: FountainWeb.Schemas.WorkspaceStaleness.revision(),
+        built_from_revision: FountainWeb.Schemas.WorkspaceStaleness.built_from_revision(),
+        stale: FountainWeb.Schemas.WorkspaceStaleness.stale(),
+        changed_fields: FountainWeb.Schemas.WorkspaceStaleness.changed_fields()
       },
-      required: [:workspace_id, :name, :status, :error]
+      required: [
+        :workspace_id,
+        :name,
+        :status,
+        :error,
+        :revision,
+        :built_from_revision,
+        :stale,
+        :changed_fields
+      ]
     })
   end
 
@@ -1781,6 +1855,15 @@ defmodule FountainWeb.Schemas do
         },
         repositories: %Schema{type: :array, items: Repository},
         metadata: %Schema{type: :object, additionalProperties: true},
+        revision: %Schema{
+          type: :string,
+          format: :uuid,
+          description:
+            "Changes on every edit of a field a machine is built from (repositories, " <>
+              "packages, setup_script, setup_timeout_seconds, env_vars, networking_type, " <>
+              "networking_config), and not for name, metadata or secrets. A workspace " <>
+              "reports the revision its machine was built from (built_from_revision)."
+        },
         secret_count: %Schema{type: :integer, description: "Secrets stored on this environment."},
         agent_count: %Schema{
           type: :integer,

@@ -273,6 +273,11 @@ defmodule Fountain.Machines.Provision do
     * `:conversation_id` — recorded in the audit metadata.
     * `:request_ip` — attribution, passed to the audit event.
     * `:busy_wait_ms` — the bound above. Tests shorten it; no call site does.
+    * `:environment` — the `%Environment{}` (or `nil`) the pipeline builds
+      from, as its caller read it. Its revision and field digests are
+      recorded on the row with the `provisioning` stamp
+      (`Fountain.Workspaces.Staleness`, #2987). Required: `nil` says the
+      machine is built from no environment.
   """
   @spec run(Ecto.UUID.t(), pipeline(), keyword()) ::
           {:ok, :provisioned, term()}
@@ -282,6 +287,7 @@ defmodule Fountain.Machines.Provision do
   def run(sandbox_id, fun, opts)
       when is_binary(sandbox_id) and is_function(fun, 2) and is_list(opts) do
     _actor = Keyword.fetch!(opts, :actor)
+    _environment = Keyword.fetch!(opts, :environment)
 
     if Repo.in_transaction?() do
       {:error, :transaction_open}
@@ -422,7 +428,8 @@ defmodule Fountain.Machines.Provision do
      to the new row and clears the workspace's stamp.
 
   Options are `run/3`'s plus `:attrs` (required: the new machine's
-  `:machine_name`, which must not be the old one's, optionally `:agent_id`)
+  `:machine_name`, which must not be the old one's, optionally `:agent_id`);
+  `:environment` is recorded on the new row as it is inserted
   and `:provider` (`:destroy`, the default, or `:already_gone`). Answers
   `{:ok, :rebuilt, sandbox, result}` with the new row, or the bracket's own
   refusals and failures, plus `Lease.succeed/3`'s; the reservation's
@@ -444,6 +451,7 @@ defmodule Fountain.Machines.Provision do
              is_list(opts) do
     _actor = Keyword.fetch!(opts, :actor)
     _attrs = Keyword.fetch!(opts, :attrs)
+    _environment = Keyword.fetch!(opts, :environment)
 
     if Repo.in_transaction?() do
       {:error, :transaction_open}
@@ -461,7 +469,7 @@ defmodule Fountain.Machines.Provision do
         {:error, {:not_rebuildable, old.status}}
 
       true ->
-        attrs = opts |> Keyword.fetch!(:attrs) |> Map.new()
+        attrs = opts |> Keyword.fetch!(:attrs) |> Map.new() |> Map.merge(built_from(opts))
 
         # The old machine's running turns end first, while the conversations
         # are still bound to it: the owner's door ends a turn only on the
@@ -682,6 +690,13 @@ defmodule Fountain.Machines.Provision do
     |> Repo.insert()
   end
 
+  # The `:environment` option as the row's record of it
+  # (`Fountain.Workspaces.Staleness.built_from/1`). Required by `run/3` and
+  # `rebuild/3`, so no caller can build a machine and leave an earlier
+  # attempt's record, or none, behind it (review of #2987).
+  defp built_from(opts),
+    do: opts |> Keyword.fetch!(:environment) |> Fountain.Workspaces.Staleness.built_from()
+
   @doc """
   How long `run/3` waits for a lease somebody else holds before refusing.
 
@@ -770,7 +785,7 @@ defmodule Fountain.Machines.Provision do
         interrupted? = interrupted?(sandbox)
         sandbox = clear_foreign_stamp(sandbox, epoch)
 
-        case stamp(sandbox, epoch) do
+        case stamp(sandbox, epoch, opts) do
           {:ok, %Sandbox{} = marked} -> build(marked, epoch, interrupted?, fun, opts)
           settled -> settled
         end
@@ -865,11 +880,16 @@ defmodule Fountain.Machines.Provision do
   # Step 4. The durable intent, before any provider call. `transition_reason`
   # carries whether this is a first attempt or a rebuild, which is the one thing
   # an operator reading the row mid-provision wants to know.
-  defp stamp(%Sandbox{} = sandbox, epoch) do
+  #
+  # What the machine is built from (#2987) goes in the same write, so it is
+  # recorded only by the attempt that holds the machine, and again by a
+  # second attempt, which reads the environment afresh.
+  defp stamp(%Sandbox{} = sandbox, epoch, opts) do
     case Lease.cas_update(
            sandbox.id,
            epoch,
-           [transition: "provisioning", transition_reason: nil],
+           [transition: "provisioning", transition_reason: nil] ++
+             Map.to_list(built_from(opts)),
            []
          ) do
       {:ok, %Sandbox{} = marked} ->

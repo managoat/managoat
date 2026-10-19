@@ -189,6 +189,7 @@ defmodule Fountain.Conversations.FreshProvision do
           &pipeline(ctx, &1, &2),
           actor: "system:conversation_server",
           conversation_id: conv.id,
+          environment: ctx.env,
           on_claim: &announce_and_check(state, sandbox, &1)
         )
       end

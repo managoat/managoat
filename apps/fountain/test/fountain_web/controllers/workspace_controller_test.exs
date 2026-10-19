@@ -183,6 +183,48 @@ defmodule FountainWeb.WorkspaceControllerTest do
       assert body["error"] =~ "exited 1"
       assert body["sandbox_status"] == nil
       assert body["sandbox_id"] == nil
+      assert body["built_from_revision"] == nil
+      assert body["stale"] == false
+    end
+
+    test "says which revision its machine was built from and which fields moved since (#2987)",
+         ctx do
+      data = create!(ctx)
+      assert data["revision"] == ctx.env.revision
+      # Not built yet: nothing recorded.
+      assert data["built_from_revision"] == nil
+      assert data["stale"] == false
+      assert data["changed_fields"] == []
+
+      sandbox = Repo.get!(Sandbox, data["sandbox_id"])
+
+      sandbox
+      |> Ecto.Changeset.change(
+        Map.put(Fountain.Workspaces.Staleness.built_from(ctx.env), :status, "ready")
+      )
+      |> Repo.update!()
+
+      {:ok, edited} =
+        Fountain.Environments.update_environment(ctx.env, %{
+          env_vars: %{"API_TOKEN" => "tok-very-private-value"},
+          name: "renamed"
+        })
+
+      raw = api(ctx) |> get("/api/workspaces/#{data["id"]}") |> response(200)
+      refute raw =~ "tok-very-private-value"
+      refute raw =~ "API_TOKEN"
+
+      body = Jason.decode!(raw)["data"]
+      assert body["built_from_revision"] == ctx.env.revision
+      assert body["revision"] == edited.revision
+      assert body["stale"] == true
+      assert body["changed_fields"] == ["env_vars"]
+
+      assert %{"data" => [listed]} =
+               api(ctx) |> get("/api/workspaces") |> json_response(200)
+
+      assert Map.take(listed, ~w(revision built_from_revision stale changed_fields)) ==
+               Map.take(body, ~w(revision built_from_revision stale changed_fields))
     end
   end
 

@@ -17,6 +17,8 @@ defmodule FountainWeb.EnvironmentJSON do
       networking_config: env.networking_config,
       repositories: env.repositories,
       metadata: env.metadata,
+      # The revision a workspace's machine is compared with (#2987).
+      revision: env.revision,
       secret_count: env.secret_count,
       agent_count: env.agent_count,
       inserted_at: env.inserted_at,

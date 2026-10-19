@@ -55,6 +55,7 @@ defmodule Fountain.Machines.RebuildFollowTest do
         actor: "system:conversation_server",
         conversation_id: ctx.mine.id,
         provider: :already_gone,
+        environment: nil,
         attrs: %{machine_name: "rebuilt-#{System.unique_integer([:positive])}"}
       ],
       extra

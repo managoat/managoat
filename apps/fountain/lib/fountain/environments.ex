@@ -141,13 +141,24 @@ defmodule Fountain.Environments do
     if changeset.changes == %{} do
       result
     else
-      audited(
-        result,
-        "environment.updated",
-        merge_metadata(opts, Audit.changed_fields(changeset))
-      )
+      result
+      |> audited("environment.updated", merge_metadata(opts, Audit.changed_fields(changeset)))
+      |> revision_moved(env)
     end
   end
+
+  # An edit of a provision-time field gives the row a new `revision` (its
+  # trigger), which every explicit workspace built from it is now behind:
+  # their clients are told, after the commit (#2987).
+  defp revision_moved({:ok, %Environment{revision: new} = updated} = ok, %Environment{
+         revision: old
+       })
+       when new != old do
+    :ok = Fountain.Workspaces.environment_changed(updated)
+    ok
+  end
+
+  defp revision_moved(other, _env), do: other
 
   @doc """
   Delete an environment. See `create_environment/2` for `opts`.

@@ -291,9 +291,12 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
       assert workspace_sessions(workspace.id) == []
       assert Sessions.lookup(token) == :error
 
-      assert Repo.reload!(sandbox).status == "ready"
+      ready = Repo.reload!(sandbox)
+      assert ready.status == "ready"
+      # What it was built from (#2987).
+      assert ready.built_from_revision == ctx.env.revision
       assert %Workspace{status: "ready", error: nil} = Repo.reload!(workspace)
-      assert_receive {:workspace_status, %{status: "ready"}}
+      assert_receive {:workspace_status, %{status: "ready", stale: false, changed_fields: []}}
 
       assert [%{actor: "system:workspace_setup"}] =
                Audit.list_for_user(ctx.user.id, action_prefix: "sandbox.provisioned")
@@ -602,6 +605,7 @@ defmodule Fountain.Workspaces.ExplicitWorkspacesTest do
                    ctx.sandbox.id,
                    fn _h, _e -> {:ok, :built} end,
                    actor: "system:wake",
+                   environment: nil,
                    attrs: %{machine_name: "rebuilt-#{System.unique_integer([:positive])}"}
                  )
       end)
