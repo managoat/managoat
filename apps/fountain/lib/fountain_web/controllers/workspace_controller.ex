@@ -164,18 +164,8 @@ defmodule FountainWeb.WorkspaceController do
         |> put_status(:conflict)
         |> json(%{error: "workspace_not_failed", message: not_failed_message(status)})
 
-      {:error, {:sandbox_provider_disabled, provider}} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{
-          error: "sandbox_provider_disabled",
-          # #3010's words for a workspace's own provider.
-          message:
-            "sandbox provider #{provider} is not configured on this instance, and this " <>
-              "workspace runs on it — set its credentials, or create a workspace with " <>
-              "another sandbox_provider, or without one for the instance default"
-        })
-
+      # `{:sandbox_provider_disabled, provider, :workspace}` goes to the
+      # fallback, which gives the workspace's advice (#3010).
       error ->
         error
     end

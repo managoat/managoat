@@ -383,7 +383,7 @@ defmodule Fountain.Workspaces do
              | :sandbox_unavailable
              | :provider_transaction_open
              | {:workspace_not_failed, String.t()}
-             | {:sandbox_provider_disabled, atom()}}
+             | {:sandbox_provider_disabled, atom() | String.t(), :workspace}}
   def retry_workspace(workspace, opts \\ [])
 
   def retry_workspace(%Workspace{implicit: false, user_id: user_id} = workspace, opts)
@@ -452,9 +452,9 @@ defmodule Fountain.Workspaces do
       if provider == Fountain.SandboxProviders.default_provider() or
            Fountain.SandboxProviders.enabled?(provider),
          do: {:ok, provider},
-         else: {:error, {:sandbox_provider_disabled, provider}}
+         else: {:error, {:sandbox_provider_disabled, provider, :workspace}}
     else
-      {:error, {:sandbox_provider_disabled, name}}
+      {:error, {:sandbox_provider_disabled, name, :workspace}}
     end
   end
 
