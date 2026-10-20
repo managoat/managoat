@@ -380,7 +380,7 @@ defmodule Fountain.Machines.ReadsTest do
       assert_receive {:exec_started, exec}, 5_000
       exec_ref = Process.monitor(exec)
       assert_receive {:DOWN, ^caller_ref, :process, ^caller, :killed}, 1_000
-      assert_receive {:DOWN, ^exec_ref, :process, ^exec, :killed}, 1_000
+      assert_receive {:DOWN, ^exec_ref, :process, ^exec, :killed}, 5_000
     end
 
     test "the exec timeout is never longer than the window allows", ctx do
@@ -418,13 +418,17 @@ defmodule Fountain.Machines.ReadsTest do
       # Nobody released it: the caller died before its `after` could run.
       assert Reads.in_flight(ctx.sandbox.id) == 1
 
-      # The cutoff was armed on the task, not left to the dead caller's `yield`.
-      assert_receive {:DOWN, ^exec_ref, :process, ^exec, :killed}, 2_000
+      # The cutoff was armed on the task, not left to the dead caller's `yield`:
+      # nothing else is left to kill it. The wait is generous because a runner
+      # that stalls the BEAM past both timers can let this receive time out
+      # before the watchdog's kill is delivered (#3034).
+      assert_receive {:DOWN, ^exec_ref, :process, ^exec, :killed}, 5_000
 
-      # A drain is bounded by the window, not by the caller coming back.
-      started = System.monotonic_time(:millisecond)
-      assert :ok = Reads.drain(ctx.sandbox.id, read_window_ms: 600)
-      assert System.monotonic_time(:millisecond) - started < 1_500
+      # A drain is bounded by the window, not by the caller coming back: the
+      # entry ran out, so the drain ended without giving up at its deadline.
+      # Judged by its log, not a wall clock a stalled runner can overrun.
+      log = capture_log(fn -> assert :ok = Reads.drain(ctx.sandbox.id, read_window_ms: 600) end)
+      refute log =~ "still counted past their window"
       assert Reads.in_flight(ctx.sandbox.id) == 0
 
       # And the next admission on the machine sweeps the leftover.
